@@ -122,6 +122,19 @@ CREATE TABLE IF NOT EXISTS scripts (
 CREATE INDEX IF NOT EXISTS idx_scripts_series_id ON scripts(series_id);
 CREATE INDEX IF NOT EXISTS idx_scripts_updated ON scripts(updated_at);
 CREATE INDEX IF NOT EXISTS idx_series_updated ON series(updated_at);
+
+CREATE TABLE IF NOT EXISTS operations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         REAL NOT NULL,
+    type       TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'pending',
+    detail     TEXT NOT NULL DEFAULT '',
+    model      TEXT NOT NULL DEFAULT '',
+    duration_ms REAL NOT NULL DEFAULT 0,
+    extra_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_operations_ts ON operations(ts DESC);
 """
 
 # Pydantic models that live as JSON blobs in their parent row.
@@ -183,6 +196,80 @@ class SQLiteStorageBackend(StorageBackend):
             self._conn.executescript(SCHEMA_SQL)
             self._conn.commit()
         return self._conn
+
+    # -- operations log -------------------------------------------------------
+
+    def log_operation(
+        self,
+        op_type: str,
+        status: str = "pending",
+        detail: str = "",
+        model: str = "",
+        duration_ms: float = 0,
+        extra: dict | None = None,
+    ) -> int:
+        """Insert an operation log entry. Returns the row id."""
+        cur = self.conn.execute(
+            """INSERT INTO operations (ts, type, status, detail, model, duration_ms, extra_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                time.time(), op_type, status, detail[:1000], model,
+                round(duration_ms, 1),
+                json.dumps(extra or {}, ensure_ascii=False),
+            ),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_operation(
+        self,
+        op_id: int,
+        status: str,
+        detail: str = "",
+        duration_ms: float = 0,
+        extra: dict | None = None,
+    ) -> bool:
+        """Update an existing operation entry."""
+        parts = ["status = ?", "duration_ms = ?"]
+        params: list = [status, round(duration_ms, 1)]
+        if detail:
+            parts.append("detail = ?")
+            params.append(detail[:1000])
+        if extra:
+            parts.append("extra_json = ?")
+            params.append(json.dumps(extra, ensure_ascii=False))
+        params.append(op_id)
+        cur = self.conn.execute(
+            f"UPDATE operations SET {', '.join(parts)} WHERE id = ?",
+            params,
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def get_recent_operations(
+        self, limit: int = 100, op_type: str = ""
+    ) -> list[dict]:
+        """Return recent operation log entries, newest first."""
+        if op_type:
+            rows = self.conn.execute(
+                "SELECT * FROM operations WHERE type = ? ORDER BY ts DESC LIMIT ?",
+                (op_type, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM operations ORDER BY ts DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["extra"] = json.loads(d.pop("extra_json", "{}"))
+            results.append(d)
+        return results
+
+    def clear_operations(self) -> None:
+        self.conn.execute("DELETE FROM operations")
+        self.conn.commit()
 
     def close(self) -> None:
         if self._conn is not None:

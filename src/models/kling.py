@@ -95,6 +95,7 @@ class KlingModel(VideoGenModel):
         sound = kwargs.get("sound")  # "on" or "off"
         cfg_scale = kwargs.get("cfg_scale")  # 0-1
 
+        op_id = enter_operation("video", detail=prompt[:200], model=model_name)
         start_time = time.time()
 
         is_i2v = bool(img_url or img_path)
@@ -184,10 +185,13 @@ class KlingModel(VideoGenModel):
 
                 generation_time = time.time() - start_time
                 logger.info(f"[Kling] Done in {generation_time:.1f}s -> {output_path}")
+                update_operation(op_id, "success", detail=f"Video: {output_path[:100]}", duration_ms=generation_time * 1000)
                 return output_path, generation_time
 
             elif status == "failed":
                 msg = result_data["data"].get("task_status_msg", "Unknown error")
+                update_operation(op_id, "error", detail=f"Kling failed: {msg[:200]}", duration_ms=0)
                 raise RuntimeError(f"Kling task failed: {msg}")
 
+        update_operation(op_id, "error", detail=f"Kling timed out after {max_wait}s", duration_ms=0)
         raise RuntimeError(f"Kling task timed out after {max_wait}s")

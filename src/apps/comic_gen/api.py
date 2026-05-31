@@ -23,6 +23,7 @@ from .models import (
 )
 from .llm import ScriptProcessor, DEFAULT_STORYBOARD_POLISH_PROMPT, DEFAULT_VIDEO_POLISH_PROMPT, DEFAULT_R2V_POLISH_PROMPT
 from ...utils.oss_utils import OSSImageUploader, sign_oss_urls_in_data
+from ...utils.op_logger import get_recent, clear as clear_operations
 from ...utils import setup_logging
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv, set_key
@@ -79,6 +80,22 @@ app.mount("/files", StaticFiles(directory="output"), name="files")
 
 # Initialize pipeline
 pipeline = ComicGenPipeline()
+
+@app.get("/debug/operations")
+async def debug_operations(limit: int = 50, type: str = ""):
+    """Returns recent operation log entries for debugging."""
+    return {
+        "entries": get_recent(limit=limit, op_type=type),
+        "total": len(get_recent(limit=1000)),
+    }
+
+
+@app.post("/debug/operations/clear")
+async def clear_operations():
+    """Clears the operation log buffer."""
+    clear_operations()
+    return {"status": "cleared"}
+
 
 @app.get("/debug/config")
 async def debug_config():
@@ -662,6 +679,9 @@ class EnvConfig(ProviderRoutingConfig):
     KLING_ACCESS_KEY: Optional[str] = None
     KLING_SECRET_KEY: Optional[str] = None
     VIDU_API_KEY: Optional[str] = None
+    LLM_PROVIDER: Optional[str] = None
+    LLM_API_KEY: Optional[str] = None
+    LLM_MODEL: Optional[str] = None
     endpoint_overrides: Dict[str, str] = Field(default_factory=dict)
 
 
@@ -736,7 +756,7 @@ def save_user_config(config_dict: dict):
         # .env for development
         for key, value in config_dict.items():
             if value is not None:
-                set_key(config_path, key, value)
+                set_key(config_path, key, value, quote_mode="never")
 
 
 def remove_user_config_keys(keys: list):
@@ -2014,26 +2034,36 @@ async def get_env_config():
     """Get current environment configuration."""
     try:
         from ...utils.endpoints import PROVIDER_DEFAULTS
+
+        def _env(key: str, default: str = "") -> str:
+            val = os.getenv(key, default)
+            if val and len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                return val[1:-1]
+            return val
+
         endpoint_overrides = {}
         for provider in PROVIDER_DEFAULTS:
             env_key = f"{provider}_BASE_URL"
-            value = os.getenv(env_key)
+            value = _env(env_key)
             if value:
                 endpoint_overrides[env_key] = value
 
         return {
-            "DASHSCOPE_API_KEY": os.getenv("DASHSCOPE_API_KEY", ""),
-            "ALIBABA_CLOUD_ACCESS_KEY_ID": os.getenv("ALIBABA_CLOUD_ACCESS_KEY_ID", ""),
-            "ALIBABA_CLOUD_ACCESS_KEY_SECRET": os.getenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", ""),
-            "OSS_BUCKET_NAME": os.getenv("OSS_BUCKET_NAME", ""),
-            "OSS_ENDPOINT": os.getenv("OSS_ENDPOINT", ""),
-            "OSS_BASE_PATH": os.getenv("OSS_BASE_PATH", ""),
-            "KLING_ACCESS_KEY": os.getenv("KLING_ACCESS_KEY", ""),
-            "KLING_SECRET_KEY": os.getenv("KLING_SECRET_KEY", ""),
-            "VIDU_API_KEY": os.getenv("VIDU_API_KEY", ""),
-            "KLING_PROVIDER_MODE": _normalize_provider_mode(os.getenv("KLING_PROVIDER_MODE")),
-            "VIDU_PROVIDER_MODE": _normalize_provider_mode(os.getenv("VIDU_PROVIDER_MODE")),
-            "PIXVERSE_PROVIDER_MODE": _normalize_provider_mode(os.getenv("PIXVERSE_PROVIDER_MODE")),
+            "DASHSCOPE_API_KEY": _env("DASHSCOPE_API_KEY"),
+            "ALIBABA_CLOUD_ACCESS_KEY_ID": _env("ALIBABA_CLOUD_ACCESS_KEY_ID"),
+            "ALIBABA_CLOUD_ACCESS_KEY_SECRET": _env("ALIBABA_CLOUD_ACCESS_KEY_SECRET"),
+            "OSS_BUCKET_NAME": _env("OSS_BUCKET_NAME"),
+            "OSS_ENDPOINT": _env("OSS_ENDPOINT"),
+            "OSS_BASE_PATH": _env("OSS_BASE_PATH"),
+            "KLING_ACCESS_KEY": _env("KLING_ACCESS_KEY"),
+            "KLING_SECRET_KEY": _env("KLING_SECRET_KEY"),
+            "VIDU_API_KEY": _env("VIDU_API_KEY"),
+            "KLING_PROVIDER_MODE": _normalize_provider_mode(_env("KLING_PROVIDER_MODE")),
+            "VIDU_PROVIDER_MODE": _normalize_provider_mode(_env("VIDU_PROVIDER_MODE")),
+            "PIXVERSE_PROVIDER_MODE": _normalize_provider_mode(_env("PIXVERSE_PROVIDER_MODE")),
+            "LLM_PROVIDER": _env("LLM_PROVIDER", "dashscope"),
+            "LLM_API_KEY": _env("LLM_API_KEY"),
+            "LLM_MODEL": _env("LLM_MODEL"),
             "endpoint_overrides": endpoint_overrides,
         }
     except Exception as e:

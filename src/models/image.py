@@ -9,6 +9,7 @@ from http import HTTPStatus
 import dashscope
 from dashscope import ImageSynthesis
 from ..utils import get_logger
+from ..utils.op_logger import enter_operation, update_operation
 from ..utils.endpoints import get_provider_base_url
 from ..utils.media_refs import MEDIA_REF_UNKNOWN, classify_media_ref
 from ..utils.oss_utils import OSSImageUploader
@@ -101,6 +102,7 @@ class WanxImageModel(ImageGenModel):
         logger.info(f"Prompt: {prompt}")
         logger.info(f"Model: {final_model_name}, Size: {size}, N: {n}")
 
+        op_id = enter_operation("image", detail=prompt[:200], model=final_model_name)
         try:
             api_start_time = time.time()
             # Use HTTP API for wan2.6+ models and qwen-image models
@@ -132,6 +134,11 @@ class WanxImageModel(ImageGenModel):
 
             logger.info(f"Generation success. Image URL: {image_url}")
             logger.info(f"API duration: {api_duration:.2f}s")
+
+            update_operation(op_id, "success",
+                             detail=f"Image: {image_url[:100]}",
+                             duration_ms=api_duration * 1000,
+                             output_path=output_path[:200])
             
             # Download image
             self._download_image(image_url, output_path)
@@ -141,6 +148,9 @@ class WanxImageModel(ImageGenModel):
             import traceback
             logger.error(f"Error during generation: {e}")
             logger.error(traceback.format_exc())
+            update_operation(op_id, "error",
+                             detail=f"Error: {str(e)[:200]}",
+                             duration_ms=(time.time() - api_start_time) * 1000)
             raise
 
     def _generate_dashscope_image_http(

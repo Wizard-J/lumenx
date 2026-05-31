@@ -8,6 +8,7 @@ from dashscope import VideoSynthesis
 import dashscope
 from .base import VideoGenModel
 from ..utils import get_logger
+from ..utils.op_logger import enter_operation, update_operation
 from ..utils.endpoints import get_provider_base_url
 
 from typing import Callable, Dict, List, Mapping, Optional, Tuple
@@ -266,6 +267,7 @@ class WanxModel(VideoGenModel):
         logger.info(f"Starting generation with model: {final_model_name}")
         logger.info(f"Prompt: {prompt}")
 
+        op_id = enter_operation("video", detail=prompt[:200], model=final_model_name)
         try:
             api_start_time = time.time()
 
@@ -534,12 +536,19 @@ class WanxModel(VideoGenModel):
             logger.info(f"Generation success. Video URL: {video_url}")
             logger.info(f"API duration: {api_duration:.2f}s")
 
+            update_operation(op_id, "success",
+                             detail=f"Video: {video_url[:100]}",
+                             duration_ms=api_duration * 1000,
+                             output_path=output_path[:200])
             # Download video
             self._download_video(video_url, output_path)
             return output_path, api_duration
 
         except Exception as e:
             logger.error(f"Error during generation: {e}")
+            update_operation(op_id, "error",
+                             detail=f"Error: {str(e)[:200]}",
+                             duration_ms=0)
             raise
 
     def _generate_wan_i2v_http(self, prompt: str, img_url: str, model_name: str = "wan2.6-i2v",

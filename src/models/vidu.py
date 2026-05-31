@@ -84,6 +84,7 @@ class ViduModel(VideoGenModel):
         resolution = (kwargs.get("resolution") or "720p").lower()
         aspect_ratio = kwargs.get("aspect_ratio", "16:9")
 
+        op_id = enter_operation("video", detail=prompt[:200], model=kwargs.get("model", "vidu"))
         start_time = time.time()
 
         is_i2v = bool(img_url or img_path)
@@ -148,11 +149,14 @@ class ViduModel(VideoGenModel):
 
                 generation_time = time.time() - start_time
                 logger.info(f"[Vidu] Done in {generation_time:.1f}s -> {output_path}")
+                update_operation(op_id, "success", detail=f"Video: {output_path[:100]}", duration_ms=generation_time * 1000)
                 return output_path, generation_time
 
             elif normalized == "failed":
+                update_operation(op_id, "error", detail=f"Vidu failed: {str(data)[:200]}", duration_ms=0)
                 raise RuntimeError(f"Vidu task failed: {data}")
 
+        update_operation(op_id, "error", detail=f"Vidu timed out after {max_wait}s", duration_ms=0)
         raise RuntimeError(f"Vidu task timed out after {max_wait}s")
 
     def _submit_t2v(self, *, prompt: str, model: str = None, duration: int = 5,
