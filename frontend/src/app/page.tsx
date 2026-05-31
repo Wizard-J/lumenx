@@ -30,7 +30,7 @@ const AssetLibraryPage = dynamic(() => import("@/components/library/AssetLibrary
 function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [workflowMode, setWorkflowMode] = useState<"r2v" | "i2v_legacy">("r2v");
+  const [workflowMode, setWorkflowMode] = useState<"r2v" | "i2v_legacy">("i2v_legacy");
   const [isCreating, setIsCreating] = useState(false);
   const createSeries = useProjectStore((state) => state.createSeries);
   const t = useTranslations("workspace");
@@ -46,7 +46,7 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
       const series = await createSeries(title.trim(), description.trim() || undefined, workflowMode);
       setTitle("");
       setDescription("");
-      setWorkflowMode("r2v");
+      setWorkflowMode("i2v_legacy");
       onClose();
       window.location.hash = `#/series/${series.id}`;
     } catch (error) {
@@ -90,7 +90,7 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
-                onClick={() => setWorkflowMode("r2v")}
+                onClick={() => setWorkflowMode("i2v_legacy")}
                 className={`relative p-4 rounded-xl border-2 text-left transition-all ${
                   workflowMode === "r2v"
                     ? "border-primary bg-primary/10"
@@ -441,7 +441,7 @@ export default function Home() {
     setIsSyncing(true);
     try {
       const backendProjects = await api.getProjects();
-      if (backendProjects && backendProjects.length > 0) {
+      if (backendProjects) {
         setProjects(backendProjects);
       }
     } catch (error) {

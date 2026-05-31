@@ -15,7 +15,7 @@ interface CreateProjectDialogProps {
 export default function CreateProjectDialog({ isOpen, onClose }: CreateProjectDialogProps) {
     const [title, setTitle] = useState("");
     const [text, setText] = useState("");
-    const [workflowMode, setWorkflowMode] = useState<"r2v" | "i2v_legacy">("r2v");
+    const [workflowMode, setWorkflowMode] = useState<"r2v" | "i2v_legacy">("i2v_legacy");
     const [isCreating, setIsCreating] = useState(false);
     const createProject = useProjectStore((state) => state.createProject);
     const t = useTranslations("project");

@@ -2691,6 +2691,25 @@ class ComicGenPipeline:
             self._save_series_data_unlocked()
             return series
 
+    def delete_project(self, script_id: str) -> Script:
+        """Delete a project and its associated data."""
+        with self._save_lock:
+            script = self.scripts.get(script_id)
+            if not script:
+                raise ValueError("Project not found")
+            # If project belongs to a Series, remove from episode_ids
+            if script.series_id:
+                series = self.series_store.get(script.series_id)
+                if series and script_id in series.episode_ids:
+                    series.episode_ids.remove(script_id)
+                    self._save_series_data_unlocked()
+            # Delete from memory and persistent storage
+            del self.scripts[script_id]
+            self._storage.delete_script(script_id)
+            self._save_data()
+            return script
+
+
     def delete_series(self, series_id: str) -> None:
         """Delete a Series and disassociate its episodes."""
         with self._save_lock:
@@ -2705,7 +2724,36 @@ class ComicGenPipeline:
                     script.episode_number = None
             self._save_data()
             del self.series_store[series_id]
+            self._storage.delete_series(series_id)
             self._save_series_data_unlocked()
+
+    def _sync_assets_to_series(self, series: Series, episode: Script) -> None:
+        """Merge episode assets into Series. Episode-local assets take priority by ID."""
+        ep_char_ids = {c.id for c in episode.characters}
+        ep_scene_ids = {s.id for s in episode.scenes}
+        ep_prop_ids = {p.id for p in episode.props}
+
+        # Merge characters: episode first, then series (non-duplicate)
+        merged_chars = list(episode.characters)
+        for c in series.characters:
+            if c.id not in ep_char_ids:
+                merged_chars.append(c)
+        series.characters = merged_chars
+
+        # Merge scenes
+        merged_scenes = list(episode.scenes)
+        for s in series.scenes:
+            if s.id not in ep_scene_ids:
+                merged_scenes.append(s)
+        series.scenes = merged_scenes
+
+        # Merge props
+        merged_props = list(episode.props)
+        for p in series.props:
+            if p.id not in ep_prop_ids:
+                merged_props.append(p)
+        series.props = merged_props
+
 
     def add_episode_to_series(self, series_id: str, script_id: str, episode_number: Optional[int] = None) -> Series:
         """Add an existing Script/Project as an Episode to a Series."""
@@ -2727,6 +2775,8 @@ class ComicGenPipeline:
             script.episode_number = episode_number or len(series.episode_ids)
             series.updated_at = time.time()
             self._save_data()
+            # Sync episode assets to Series (merge, episode-local takes priority)
+            self._sync_assets_to_series(series, script)
             self._save_series_data_unlocked()
             return series
 

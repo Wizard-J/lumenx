@@ -1,14 +1,17 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { motion, AnimatePresence } from "framer-motion";
-import { Image as ImageIcon, Play, ChevronRight } from "lucide-react";
+import { Image as ImageIcon, Play, ChevronRight, Sparkles, Loader2, Terminal } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Series, Character, Scene, Prop, Project } from "@/store/projectStore";
 import AssetCard from "@/components/common/AssetCard";
+import CharacterWorkbench from "@/components/modules/CharacterWorkbench";
 import { useTranslations } from "next-intl";
+import { useLogStore } from "@/store/logStore";
 import SeriesSidebar, { type SidebarItem } from "./SeriesSidebar";
+import GlobalLogSidebar from "@/components/layout/GlobalLogPanel";
 
 const SeriesModelSettingsModal = dynamic(() => import("./SeriesModelSettingsModal"), { ssr: false });
 const SeriesPromptConfigModal = dynamic(() => import("./SeriesPromptConfigModal"), { ssr: false });
@@ -33,6 +36,7 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
   const [showModelSettings, setShowModelSettings] = useState(false);
   const [showPromptConfig, setShowPromptConfig] = useState(false);
   const [showImportAssets, setShowImportAssets] = useState(false);
+  const { showLogs, toggleLogs, setShowLogs } = useLogStore();
 
   const t = useTranslations("series");
   const tc = useTranslations("common");
@@ -188,7 +192,7 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
       />
 
       {/* ── Content Area ── */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden bg-surface">
         <AnimatePresence mode="wait">
           {activeItem.kind === "asset" ? (
             <AssetContentPanel
@@ -196,6 +200,7 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
               tab={activeItem.tab}
               assets={getAssets(activeItem.tab)}
               label={ASSET_LABELS[activeItem.tab]}
+              seriesId={seriesId}
             />
           ) : selectedEpisode ? (
             <EpisodeContentPanel
@@ -227,6 +232,9 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
         seriesId={seriesId}
         onImported={refreshSeriesData}
       />
+
+      {/* Global Log Sidebar */}
+      <GlobalLogSidebar open={showLogs} onClose={() => setShowLogs(false)} />
     </main>
   );
 }
@@ -244,12 +252,93 @@ function AssetContentPanel({
   tab,
   assets,
   label,
+  seriesId,
 }: {
   tab: AssetTab;
   assets: (Character | Scene | Prop)[];
   label: string;
+  seriesId: string;
 }) {
   const t = useTranslations("series");
+  const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
+  const [generatingAll, setGeneratingAll] = useState(false);
+  const [workbenchAsset, setWorkbenchAsset] = useState<(Character | Scene | Prop) | null>(null);
+  const [workbenchGeneratingTypes, setWorkbenchGeneratingTypes] = useState<{ type: string; batchSize: number }[]>([]);
+
+  const assetTypeSingular = tab === "characters" ? "character" : tab === "scenes" ? "scene" : "prop";
+
+  const handleWorkbenchGenerate = useCallback(async (genType: string, prompt: string, applyStyle: boolean, negativePrompt: string, batchSize: number) => {
+    if (!workbenchAsset) return;
+    const assetId = workbenchAsset.id;
+    setWorkbenchGeneratingTypes(prev => [...prev, { type: genType, batchSize }]);
+    try {
+      await api.generateSeriesAsset(seriesId, assetId, assetTypeSingular, {
+        generation_type: genType,
+        prompt,
+        apply_style: applyStyle,
+        negative_prompt: negativePrompt,
+        batch_size: batchSize,
+      });
+      const pollInterval = setInterval(async () => {
+        try {
+          const updatedSeries = await api.getSeries(seriesId);
+          const assetList = tab === "characters" ? updatedSeries.characters
+            : tab === "scenes" ? updatedSeries.scenes : updatedSeries.props;
+          const asset = assetList.find((a: any) => a.id === assetId);
+          if (asset?.full_body_asset?.variants?.length > 0 ||
+              asset?.three_view_asset?.variants?.length > 0 ||
+              asset?.headshot_asset?.variants?.length > 0 ||
+              asset?.image_asset?.variants?.length > 0) {
+            clearInterval(pollInterval);
+            setWorkbenchGeneratingTypes([]);
+            window.location.reload();
+          }
+        } catch { /* retry */ }
+      }, 3000);
+      setTimeout(() => clearInterval(pollInterval), 120000);
+    } catch (e) {
+      console.error("Workbench generate failed:", e);
+      setWorkbenchGeneratingTypes([]);
+    }
+  }, [workbenchAsset, seriesId, assetTypeSingular, tab]);
+
+  const handleGenerateSingle = async (assetId: string) => {
+    setGeneratingIds(prev => new Set(prev).add(assetId));
+    try {
+      await api.generateSeriesAsset(seriesId, assetId, assetTypeSingular);
+      const pollInterval = setInterval(async () => {
+        try {
+          const updatedSeries = await api.getSeries(seriesId);
+          const assetList = tab === "characters" ? updatedSeries.characters
+            : tab === "scenes" ? updatedSeries.scenes : updatedSeries.props;
+          const asset = assetList.find((a: any) => a.id === assetId);
+          if (asset?.full_body_asset?.variants?.length > 0 ||
+              asset?.image_asset?.variants?.length > 0) {
+            clearInterval(pollInterval);
+            setGeneratingIds(prev => { const next = new Set(prev); next.delete(assetId); return next; });
+            window.location.reload();
+          }
+        } catch { }
+      }, 3000);
+      setTimeout(() => clearInterval(pollInterval), 120000);
+    } catch (e) {
+      console.error("Failed to generate:", e);
+      setGeneratingIds(prev => { const next = new Set(prev); next.delete(assetId); return next; });
+    }
+  };
+
+  const handleGenerateAll = async () => {
+    setGeneratingAll(true);
+    for (const asset of assets) {
+      try {
+        await api.generateSeriesAsset(seriesId, asset.id, assetTypeSingular);
+        await new Promise(r => setTimeout(r, 500));
+      } catch (e) {
+        console.error(`Failed to generate ${asset.id}:`, e);
+      }
+    }
+    setGeneratingAll(false);
+  };
 
   return (
     <motion.div
@@ -257,23 +346,37 @@ function AssetContentPanel({
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: -16 }}
       transition={contentTransition}
-      className="flex-1 flex flex-col overflow-hidden"
+      className="flex-1 flex flex-col overflow-hidden bg-surface"
     >
       {/* Header */}
-      <div className="px-8 pt-6 pb-4">
-        <h2 className="text-xl font-display font-bold text-foreground">
-          {label}
-          <span className="text-sm font-normal text-text-secondary ml-2">
-            {t("itemCount", { count: assets.length })}
-          </span>
-        </h2>
-        <p className="text-xs text-text-muted mt-1">
-          {t("sharedAssetsEditHint")}
-        </p>
+      <div className="p-6 border-b border-glass-border">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-display font-bold text-foreground">
+              {label}
+              <span className="text-sm font-normal text-text-secondary ml-2">
+                {t("itemCount", { count: assets.length })}
+              </span>
+            </h2>
+            <p className="text-xs text-text-muted mt-1">
+              {t("sharedAssetsEditHint")}
+            </p>
+          </div>
+          {assets.length > 0 && (
+            <button
+              onClick={handleGenerateAll}
+              disabled={generatingAll}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 disabled:opacity-50 transition-all shrink-0"
+            >
+              {generatingAll ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+              {generatingAll ? t("generating") : t("generateAllImages")}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Grid */}
-      <div className="flex-1 overflow-y-auto px-8 pb-8">
+      <div className="flex-1 overflow-y-auto p-6">
         {assets.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 text-text-secondary">
             <motion.div
@@ -288,7 +391,7 @@ function AssetContentPanel({
           </div>
         ) : (
           <motion.div
-            className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
+            className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6"
             initial="hidden"
             animate="visible"
             variants={{
@@ -308,12 +411,58 @@ function AssetContentPanel({
                   },
                 }}
               >
-                <AssetCard asset={asset} type={tab} />
+                <div
+                  className="relative group/card cursor-pointer"
+                  onClick={() => { if (tab === "characters") setWorkbenchAsset(asset); }}
+                >
+                  <AssetCard asset={asset} type={tab} />
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleGenerateSingle(asset.id); }}
+                    disabled={generatingIds.has(asset.id)}
+                    className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/60 text-amber-400 opacity-0 group-hover/card:opacity-100 hover:bg-black/80 disabled:opacity-50 transition-all"
+                    title={t("generateSingle")}
+                  >
+                    {generatingIds.has(asset.id) ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Sparkles size={14} />
+                    )}
+                  </button>
+                </div>
               </motion.div>
             ))}
           </motion.div>
         )}
       </div>
+
+      {/* Character Workbench Modal */}
+      <AnimatePresence>
+        {workbenchAsset && tab === "characters" && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={() => setWorkbenchAsset(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="w-[90vw] max-w-5xl max-h-[90vh] overflow-y-auto rounded-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <CharacterWorkbench
+                asset={workbenchAsset}
+                onClose={() => { setWorkbenchAsset(null); setWorkbenchGeneratingTypes([]); }}
+                onUpdateDescription={() => {}}
+                onGenerate={handleWorkbenchGenerate}
+                generatingTypes={workbenchGeneratingTypes}
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -342,7 +491,7 @@ function EpisodeContentPanel({
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: -16 }}
       transition={contentTransition}
-      className="flex-1 flex flex-col overflow-hidden"
+      className="flex-1 flex flex-col overflow-hidden bg-surface"
     >
       {/* Header */}
       <div className="px-8 pt-6 pb-4 flex items-start justify-between border-b border-glass-border">

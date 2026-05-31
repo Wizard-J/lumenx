@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Plus, Settings2 } from "lucide-react";
+import { Plus, Settings2, Sparkles, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useProjectStore } from "@/store/projectStore";
 import { api } from "@/lib/api";
@@ -15,6 +15,7 @@ export default function StoryboardR2V() {
     const currentProject = useProjectStore((state) => state.currentProject);
     const updateProject = useProjectStore((state) => state.updateProject);
     const t = useTranslations("storyboardR2V");
+    const ts = useTranslations("storyboard");
 
     // Derive shots from project frames or initialize empty
     const [shots, setShots] = useState<ShotNode[]>(() => {
@@ -51,6 +52,7 @@ export default function StoryboardR2V() {
 
     // Modal & drawer state
     const [configModalOpen, setConfigModalOpen] = useState(false);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [drawerState, setDrawerState] = useState<{ isOpen: boolean; targetShotIndex: number | null }>({
         isOpen: false,
         targetShotIndex: null,
@@ -112,6 +114,93 @@ export default function StoryboardR2V() {
             return updated;
         });
     }, []);
+
+    // Analyze script text to generate storyboard frames with asset tags
+    const handleAnalyzeToStoryboard = useCallback(async () => {
+        if (!currentProject) return;
+
+        const text = currentProject.originalText;
+        if (!text || !text.trim()) {
+            alert(ts("enterScriptFirst"));
+            return;
+        }
+
+        if (shots.length > 1 || (shots.length === 1 && shots[0].prompt.trim())) {
+            if (!confirm(ts("overwriteConfirm"))) return;
+        }
+
+        setIsAnalyzing(true);
+        try {
+            const updatedProject = await api.analyzeToStoryboard(currentProject.id, text);
+            const frames = updatedProject.frames || [];
+            if (frames.length === 0) {
+                alert(ts("aiInvalidOutput"));
+                return;
+            }
+
+            // Build lookups: asset ID -> name for character/scene/prop
+            const charById: Record<string, string> = {};
+            for (const c of (updatedProject.characters || characters)) {
+                charById[c.id] = c.name;
+            }
+            const sceneById: Record<string, string> = {};
+            for (const s of (updatedProject.scenes || scenes)) {
+                sceneById[s.id] = s.name;
+            }
+            const propById: Record<string, string> = {};
+            for (const p of (updatedProject.props || props)) {
+                propById[p.id] = p.name;
+            }
+
+            // Convert frames to shots with auto-filled asset tags
+            const newShots: ShotNode[] = frames.map((frame: any) => {
+                const tags: string[] = [];
+                if (frame.scene_id && sceneById[frame.scene_id]) {
+                    tags.push(`[scene:${sceneById[frame.scene_id]}]`);
+                }
+                if (frame.character_ids) {
+                    for (const cid of frame.character_ids) {
+                        if (charById[cid]) {
+                            tags.push(`[character:${charById[cid]}]`);
+                        }
+                    }
+                }
+                if (frame.prop_ids) {
+                    for (const pid of frame.prop_ids) {
+                        if (propById[pid]) {
+                            tags.push(`[prop:${propById[pid]}]`);
+                        }
+                    }
+                }
+
+                const actionDesc = frame.action_description || "";
+                const visualAtm = frame.visual_atmosphere || "";
+                const dialogue = frame.dialogue ? ` 对话: ${frame.dialogue}` : "";
+                const fullPrompt = [tags.join(" "), visualAtm, actionDesc, dialogue]
+                    .filter(Boolean).join(" ");
+
+                return {
+                    id: frame.id || `shot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                    prompt: fullPrompt,
+                    tabMode: "direct_r2v" as const,
+                    imageUrl: frame.rendered_image_url || frame.image_url || undefined,
+                    videoUrl: frame.video_url || undefined,
+                    videoStatus: frame.video_url ? ("completed" as const) : undefined,
+                };
+            });
+
+            setShots(newShots);
+            updateProject(currentProject.id, updatedProject);
+            alert(ts("framesGenerated", { count: newShots.length }));
+        } catch (error: any) {
+            console.error("Analyze to storyboard failed:", error);
+            const msg = error?.response?.data?.detail || error?.message || t("genFailedDetail", { detail: "" });
+            alert(ts("genFailedDetail", { detail: msg }));
+        } finally {
+            setIsAnalyzing(false);
+        }
+    }, [currentProject, shots, characters, scenes, props, updateProject]);
+
 
     // Update shot prompt
     const updatePrompt = useCallback((index: number, prompt: string) => {
@@ -376,6 +465,18 @@ export default function StoryboardR2V() {
                     <span className="text-sm font-medium text-foreground">
                         {shots.length} {shots.length === 1 ? "Shot" : "Shots"}
                     </span>
+                    <motion.button
+                        whileHover={{ scale: 1.04 }}
+                        whileTap={{ scale: 0.96 }}
+                        onClick={handleAnalyzeToStoryboard}
+                        disabled={isAnalyzing}
+                        className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-amber-400 hover:text-amber-300 disabled:opacity-50 transition-colors"
+                        title="从剧本自动生成分镜"
+                    >
+                        {isAnalyzing ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} strokeWidth={2} />}
+                        {isAnalyzing ? "生成中..." : "生成分镜"}
+                    </motion.button>
+
                     <motion.button
                         whileHover={{ scale: 1.04 }}
                         whileTap={{ scale: 0.96 }}

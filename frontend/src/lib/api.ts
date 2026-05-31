@@ -631,6 +631,16 @@ export const api = {
         const response = await axios.get(`${API_URL}/series/${seriesId}/assets`);
         return response.data;
     },
+
+    generateSeriesAsset: async (seriesId: string, assetId: string, assetType: string, params?: any) => {
+        const response = await axios.post(`${API_URL}/series/${seriesId}/assets/generate`, {
+            asset_id: assetId,
+            asset_type: assetType,
+            ...params,
+        });
+        return response.data;
+    },
+
     importSeriesAssets: async (seriesId: string, sourceSeriesId: string, assetIds: string[]) => {
         const response = await axios.post(`${API_URL}/series/${seriesId}/assets/import`, { source_series_id: sourceSeriesId, asset_ids: assetIds });
         return response.data;

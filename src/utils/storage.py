@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS series (
     art_direction_json TEXT,
     prompt_config_json TEXT NOT NULL DEFAULT '{}',
     model_settings_json TEXT NOT NULL DEFAULT '{}',
-    workflow_mode     TEXT NOT NULL DEFAULT 'r2v',
+    workflow_mode     TEXT NOT NULL DEFAULT 'i2v_legacy',
     episode_ids_json  TEXT NOT NULL DEFAULT '[]',
     created_at        REAL NOT NULL,
     updated_at        REAL NOT NULL
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS scripts (
     art_direction_json TEXT,
     model_settings_json TEXT NOT NULL DEFAULT '{}',
     prompt_config_json TEXT NOT NULL DEFAULT '{}',
-    workflow_mode     TEXT NOT NULL DEFAULT 'r2v',
+    workflow_mode     TEXT NOT NULL DEFAULT 'i2v_legacy',
     merged_video_url  TEXT,
     series_id         TEXT,
     episode_number    INTEGER,

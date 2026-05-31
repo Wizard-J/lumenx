@@ -875,22 +875,11 @@ async def get_project(script_id: str):
 @app.delete("/projects/{script_id}")
 async def delete_project(script_id: str):
     """Deletes a project by ID. WARNING: This permanently removes the project from backend storage."""
-    script = pipeline.get_script(script_id)
-    if not script:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
     try:
-        # If project belongs to a Series, remove from episode_ids
-        if script.series_id:
-            series = pipeline.get_series(script.series_id)
-            if series and script_id in series.episode_ids:
-                series.episode_ids.remove(script_id)
-                pipeline._save_series_data()
-
-        # Remove from pipeline scripts
-        del pipeline.scripts[script_id]
-        pipeline._save_data()
+        script = pipeline.delete_project(script_id)
         return {"status": "deleted", "id": script_id, "title": script.title}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
