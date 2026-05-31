@@ -14,7 +14,6 @@ from src.apps.comic_gen.models import (
 )
 from src.apps.comic_gen.pipeline import ComicGenPipeline
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -28,13 +27,10 @@ def pipeline(tmp_path):
          patch("src.apps.comic_gen.pipeline.VideoGenerator"), \
          patch("src.apps.comic_gen.pipeline.AudioGenerator"), \
          patch("src.apps.comic_gen.pipeline.ExportManager"):
-        p = ComicGenPipeline()
-    p.data_file = str(tmp_path / "projects.json")
-    p.series_data_file = str(tmp_path / "series.json")
+        p = ComicGenPipeline(db_path=str(tmp_path / "lumenx.db"))
     p.scripts = {}
     p.series_store = {}
     return p
-
 
 def _make_script(title="Episode 1", text="Some text", **overrides) -> Script:
     """Helper to create a Script with sensible defaults."""
@@ -49,21 +45,17 @@ def _make_script(title="Episode 1", text="Some text", **overrides) -> Script:
     defaults.update(overrides)
     return Script(**defaults)
 
-
 def _make_character(name="Hero", **kw) -> Character:
     return Character(id=kw.pop("id", str(uuid.uuid4())), name=name,
                      description=kw.pop("description", "A brave hero"), **kw)
-
 
 def _make_scene(name="Forest", **kw) -> Scene:
     return Scene(id=kw.pop("id", str(uuid.uuid4())), name=name,
                  description=kw.pop("description", "A dark forest"), **kw)
 
-
 def _make_prop(name="Sword", **kw) -> Prop:
     return Prop(id=kw.pop("id", str(uuid.uuid4())), name=name,
                 description=kw.pop("description", "A magic sword"), **kw)
-
 
 # ===================================================================
 # 1. Models tests
@@ -90,7 +82,6 @@ class TestModels:
         sc = _make_script()
         assert sc.series_id is None
         assert sc.episode_number is None
-
 
 # ===================================================================
 # 2. Pipeline CRUD tests
@@ -154,7 +145,6 @@ class TestSeriesCRUD:
         with pytest.raises(ValueError, match="Series not found"):
             pipeline.delete_series("missing")
 
-
 # ===================================================================
 # 3. Episode association tests
 # ===================================================================
@@ -210,7 +200,6 @@ class TestEpisodeAssociation:
         assert episodes[0].title == "Ep1"
         assert episodes[1].title == "Ep2"
 
-
 # ===================================================================
 # 4. Asset resolution tests
 # ===================================================================
@@ -256,7 +245,6 @@ class TestResolveEpisodeAssets:
         assert len(result["props"]) == 1
         assert result["props"][0].name == "Series Sword"
 
-
 # ===================================================================
 # 5. PromptConfig three-level fallback tests
 # ===================================================================
@@ -301,7 +289,6 @@ class TestGetEffectivePrompt:
         with pytest.raises(ValueError, match="Invalid prompt_type"):
             pipeline.get_effective_prompt("nonexistent_type", ep)
 
-
 # ===================================================================
 # 6. Text splitting tests
 # ===================================================================
@@ -343,7 +330,6 @@ class TestSplitTextByMarkers:
         assert "BBB" in chunks[0]
         # Second chunk should start from CCC onwards
         assert "CCC" in chunks[1]
-
 
 # ===================================================================
 # 7. Cross-series import tests

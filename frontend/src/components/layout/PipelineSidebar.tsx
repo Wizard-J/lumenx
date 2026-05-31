@@ -3,10 +3,12 @@
 import { motion } from "framer-motion";
 import {
     ChevronRight,
-    ChevronLeft
+    ChevronLeft,
+    Terminal
 } from "lucide-react";
 import clsx from "clsx";
 import { useTranslations } from "next-intl";
+import { useLogStore } from "@/store/logStore";
 import LumenXBranding from "./LumenXBranding";
 import type { BreadcrumbSegment } from "./BreadcrumbBar";
 
@@ -146,6 +148,17 @@ export default function PipelineSidebar({ activeStep, onStepChange, steps, bread
                     );
                 })}
             </nav>
+
+            {/* Log toggle */}
+            <div className="px-4 pb-1">
+                <button
+                    onClick={useLogStore.getState().toggleLogs}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-text-muted hover:text-purple-400 hover:bg-purple-500/10 transition-colors"
+                >
+                    <Terminal size={14} />
+                    Request Log
+                </button>
+            </div>
 
             <div className="p-4 border-t border-glass-border">
                 <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-glass border border-border-subtle">

@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   Plus, FolderOpen, RefreshCw, Library, Calendar, Play, Trash2, FileUp, X, ChevronDown, FileText,
-  Zap, Film,
+  Zap, Film, Terminal,
 } from "lucide-react";
 import { useProjectStore, Series, Project } from "@/store/projectStore";
 import ProjectCard from "@/components/project/ProjectCard";
@@ -12,6 +12,8 @@ import CreateProjectDialog from "@/components/project/CreateProjectDialog";
 import EnvConfigDialog from "@/components/project/EnvConfigDialog";
 import CreativeCanvas from "@/components/canvas/CreativeCanvas";
 import AppShell from "@/components/layout/AppShell";
+import GlobalLogSidebar from "@/components/layout/GlobalLogPanel";
+import { useLogStore } from "@/store/logStore";
 import type { GlobalTab } from "@/components/layout/GlobalSidebar";
 import dynamic from "next/dynamic";
 import { api } from "@/lib/api";
@@ -387,6 +389,7 @@ export default function Home() {
   const deleteSeries = useProjectStore((state) => state.deleteSeries);
   const setProjects = useProjectStore((state) => state.setProjects);
   const fetchSeriesList = useProjectStore((state) => state.fetchSeriesList);
+  const { showLogs, toggleLogs, setShowLogs } = useLogStore();
   const t = useTranslations("workspace");
   const tc = useTranslations("common");
 
@@ -615,6 +618,17 @@ export default function Home() {
                   {tc("sync")}
                 </button>
                 <button
+                  onClick={toggleLogs}
+                  className={`px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm ${
+                    showLogs
+                      ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
+                      : "bg-hover-bg hover:bg-glass text-foreground"
+                  }`}
+                  title="Request Log"
+                >
+                  <Terminal size={16} />
+                </button>
+                <button
                   onClick={() => setIsImportDialogOpen(true)}
                   className="bg-hover-bg hover:bg-glass text-foreground px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors text-sm"
                 >
@@ -725,6 +739,9 @@ export default function Home() {
         onClose={() => setIsImportDialogOpen(false)}
         onSuccess={() => fetchSeriesList()}
       />
+
+      {/* Global Log Sidebar */}
+      <GlobalLogSidebar open={showLogs} onClose={() => setShowLogs(false)} />
     </main>
   );
 }

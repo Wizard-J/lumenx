@@ -1,4 +1,5 @@
 from typing import Dict, Any, List, Optional, Tuple
+from ...utils.storage import SQLiteStorageBackend
 import json
 import os
 import re
@@ -48,7 +49,7 @@ def _safe_resolve_path(base_dir: str, untrusted_rel: str) -> str:
     return resolved
 
 class ComicGenPipeline:
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: Dict[str, Any] = None, db_path: str = "output/lumenx.db"):
         self.config = config or {}
         self.script_processor = ScriptProcessor()
         self.asset_generator = AssetGenerator(self.config.get('assets'))
@@ -57,9 +58,14 @@ class ComicGenPipeline:
         self.audio_generator = AudioGenerator(self.config.get('audio'))
         self.export_manager = ExportManager(self.config.get('export'))
         
-        self.data_file = "output/projects.json"
-        self.series_data_file = "output/series.json"
-        self._save_lock = threading.RLock()  # Reentrant lock to prevent concurrent file writes
+        # SQLite storage (replaces JSON files with transactional guarantees)
+        self._storage = SQLiteStorageBackend(db_path)
+        self._save_lock = threading.RLock()
+        
+        # Auto-migrate from legacy JSON files on first run
+        if db_path == "output/lumenx.db" and self._storage.needs_migration():
+            self._storage.migrate_from_json()
+        
         self.scripts: Dict[str, Script] = self._load_data()
         self.series_store: Dict[str, Series] = self._load_series_data()
         
@@ -106,23 +112,29 @@ class ComicGenPipeline:
         return self.scripts.get(script_id)
 
     def _load_data(self) -> Dict[str, Script]:
-        if not os.path.exists(self.data_file):
-            return {}
+        """Load scripts from SQLite (with automatic JSON migration on first run)."""
+        result: Dict[str, Script] = {}
         try:
-            with open(self.data_file, 'r') as f:
-                data = json.load(f)
-                return {k: Script(**v) for k, v in data.items()}
+            for d in self._storage.list_scripts():
+                result[d["id"]] = Script(**d)
         except Exception as e:
-            logger.error(f"Failed to load data: {e}")
-            return {}
+            logger.error(f"Failed to load scripts: {e}")
+        return result
 
-    def _save_data(self):
-        """Save data with thread lock to prevent concurrent write issues."""
+    def _save_data(self, script_id: Optional[str] = None):
+        """Save scripts to SQLite.  If *script_id* is given, only that script
+        is written; otherwise every script is upserted (faithful to legacy
+        batch-save semantics).
+        """
         with self._save_lock:
             try:
-                os.makedirs(os.path.dirname(self.data_file), exist_ok=True)
-                with open(self.data_file, 'w') as f:
-                    json.dump({k: v.dict() for k, v in self.scripts.items()}, f, indent=2)
+                if script_id:
+                    s = self.scripts.get(script_id)
+                    if s:
+                        self._storage.save_script(s.model_dump())
+                else:
+                    for s in self.scripts.values():
+                        self._storage.save_script(s.model_dump())
             except Exception as e:
                 logger.error(f"Failed to save data: {e}")
 
@@ -159,6 +171,8 @@ class ComicGenPipeline:
         new_script.style_prompt = existing_script.style_prompt
         new_script.merged_video_url = existing_script.merged_video_url
         new_script.workflow_mode = existing_script.workflow_mode
+        new_script.series_id = existing_script.series_id
+        new_script.episode_number = existing_script.episode_number
         
         # Replace the script in memory
         self.scripts[script_id] = new_script
@@ -2606,22 +2620,20 @@ class ComicGenPipeline:
     # ============================================================
 
     def _load_series_data(self) -> Dict[str, Series]:
-        if not os.path.exists(self.series_data_file):
-            return {}
+        """Load series from SQLite."""
+        result: Dict[str, Series] = {}
         try:
-            with open(self.series_data_file, 'r') as f:
-                data = json.load(f)
-                return {k: Series(**v) for k, v in data.items()}
+            for d in self._storage.list_series():
+                result[d["id"]] = Series(**d)
         except Exception as e:
             logger.error(f"Failed to load series data: {e}")
-            return {}
+        return result
 
     def _save_series_data_unlocked(self):
-        """Save series data without acquiring the lock (caller must hold self._save_lock)."""
+        """Save all series to SQLite (caller must hold self._save_lock)."""
         try:
-            os.makedirs(os.path.dirname(self.series_data_file) or ".", exist_ok=True)
-            with open(self.series_data_file, 'w') as f:
-                json.dump({k: v.model_dump() for k, v in self.series_store.items()}, f, indent=2)
+            for s in self.series_store.values():
+                self._storage.save_series(s.model_dump())
         except Exception as e:
             logger.error(f"Failed to save series data: {e}")
 
@@ -2629,6 +2641,20 @@ class ComicGenPipeline:
         """Save series data with thread lock."""
         with self._save_lock:
             self._save_series_data_unlocked()
+    
+    def _save_series(self, series_id: Optional[str] = None):
+        """Save a single series or all series to SQLite."""
+        with self._save_lock:
+            try:
+                if series_id:
+                    s = self.series_store.get(series_id)
+                    if s:
+                        self._storage.save_series(s.model_dump())
+                else:
+                    for s in self.series_store.values():
+                        self._storage.save_series(s.model_dump())
+            except Exception as e:
+                logger.error(f"Failed to save series: {e}")
 
     def create_series(self, title: str, description: str = "", workflow_mode: str = "i2v_legacy") -> Series:
         """Create a new Series."""
@@ -2726,11 +2752,17 @@ class ComicGenPipeline:
         series = self.series_store.get(series_id)
         if not series:
             raise ValueError("Series not found")
+        # Use the storage layer for proper ordering (episode_number, created_at)
         episodes = []
-        for ep_id in series.episode_ids:
-            script = self.scripts.get(ep_id)
-            if script:
-                episodes.append(script)
+        try:
+            for d in self._storage.get_series_episodes(series_id):
+                episodes.append(Script(**d))
+        except Exception:
+            # Fallback to in-memory ordering by episode_ids
+            for ep_id in series.episode_ids:
+                script = self.scripts.get(ep_id)
+                if script:
+                    episodes.append(script)
         return episodes
 
     def resolve_episode_assets(self, episode: Script, series: Optional[Series] = None) -> Dict[str, List]:

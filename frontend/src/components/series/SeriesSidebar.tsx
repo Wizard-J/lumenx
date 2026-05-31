@@ -11,10 +11,12 @@ import {
   Settings,
   MessageSquareCode,
   Download,
+  Terminal,
 } from "lucide-react";
 import clsx from "clsx";
 import type { Series, Project } from "@/store/projectStore";
 import { useTranslations } from "next-intl";
+import { useLogStore } from "@/store/logStore";
 
 // ── Types ──
 
@@ -327,6 +329,13 @@ export default function SeriesSidebar({
 
       {/* ── Bottom tools ── */}
       <div className="border-t border-glass-border p-3 space-y-1">
+        <button
+          onClick={() => useLogStore.getState().toggleLogs()}
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-text-secondary hover:text-purple-400 hover:bg-purple-500/10 transition-colors group"
+        >
+          <Terminal size={16} className="group-hover:text-purple-400 transition-colors" />
+          <span className="text-sm">Request Log</span>
+        </button>
         <button
           onClick={onOpenImportAssets}
           className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-text-secondary hover:text-foreground hover:bg-hover-bg transition-colors group"
