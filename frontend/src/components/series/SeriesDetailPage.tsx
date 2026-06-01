@@ -2,12 +2,11 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
-import { motion, AnimatePresence } from "framer-motion";
 import { Image as ImageIcon, Play, ChevronRight, Sparkles, Loader2, Terminal, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Series, Character, Scene, Prop, Project } from "@/store/projectStore";
 import AssetCard from "@/components/common/AssetCard";
-import CharacterWorkbench from "@/components/modules/CharacterWorkbench";
+import CastWorkbenchModal from "@/components/modules/cast/CastWorkbenchModal";
 import { useTranslations } from "next-intl";
 import { useLogStore } from "@/store/logStore";
 import SeriesSidebar, { type SidebarItem } from "./SeriesSidebar";
@@ -275,105 +274,11 @@ function AssetContentPanel({
   const t = useTranslations("series");
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
   const [generatingAll, setGeneratingAll] = useState(false);
-  const [workbenchAsset, setWorkbenchAsset] = useState<(Character | Scene | Prop) | null>(null);
-  const [workbenchGeneratingTypes, setWorkbenchGeneratingTypes] = useState<{ type: string; batchSize: number }[]>([]);
-  const [workbenchVersion, setWorkbenchVersion] = useState(0);
-
-  // Sync workbenchAsset when series data changes (e.g., after polling updates)
-  const workbenchAssetIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    workbenchAssetIdRef.current = workbenchAsset?.id || null;
-  }, [workbenchAsset]);
-  useEffect(() => {
-    const assetId = workbenchAssetIdRef.current;
-    if (assetId && series) {
-      const assetList = tab === "characters" ? series.characters
-        : tab === "scenes" ? series.scenes : series.props;
-      const freshAsset = assetList.find((a: any) => a.id === assetId);
-      if (freshAsset) {
-        setWorkbenchAsset(freshAsset);
-      }
-    }
-  }, [series, tab]);
+  const [workbenchEntity, setWorkbenchEntity] = useState<{ id: string; kind: "character" | "scene" | "prop" } | null>(null);
 
   const assetTypeSingular = tab === "characters" ? "character" : tab === "scenes" ? "scene" : "prop";
 
-  const handleWorkbenchGenerate = useCallback(async (genType: string, prompt: string, applyStyle: boolean, negativePrompt: string, batchSize: number) => {
-    if (!workbenchAsset) return;
-    const assetId = workbenchAsset.id;
-    setWorkbenchGeneratingTypes(prev => [...prev, { type: genType, batchSize }]);
-    try {
-      await api.generateSeriesAsset(seriesId, assetId, assetTypeSingular, {
-        generation_type: genType,
-        prompt,
-        apply_style: applyStyle,
-        negative_prompt: negativePrompt,
-        batch_size: batchSize,
-      });
-      const pollInterval = setInterval(async () => {
-        try {
-          const updatedSeries = await api.getSeries(seriesId);
-          const assetList = tab === "characters" ? updatedSeries.characters
-            : tab === "scenes" ? updatedSeries.scenes : updatedSeries.props;
-          const asset = assetList.find((a: any) => a.id === assetId);
 
-          // Check the specific asset type being generated (not any asset)
-          const assetKeyMap: Record<string, string> = {
-            full_body: 'full_body_asset',
-            three_view: 'three_view_asset',
-            headshot: 'headshot_asset',
-          };
-          // For non-character assets (scene/prop), always check image_asset
-          const isNonChar = tab === "scenes" || tab === "props";
-          const targetKey = isNonChar ? 'image_asset' : (assetKeyMap[genType] || 'image_asset');
-          const targetAsset = asset?.[targetKey];
-
-          if (targetAsset?.variants?.length > 0) {
-            clearInterval(pollInterval);
-            setWorkbenchGeneratingTypes([]);
-            onSeriesUpdate(updatedSeries);
-            const updatedAsset = (tab === "characters" ? updatedSeries.characters
-              : tab === "scenes" ? updatedSeries.scenes : updatedSeries.props)
-              .find((a: any) => a.id === assetId);
-            if (updatedAsset) {
-              setWorkbenchAsset(updatedAsset);
-              setWorkbenchVersion(v => v + 1);
-            }
-          }
-        } catch { /* retry */ }
-      }, 3000);
-      setTimeout(() => clearInterval(pollInterval), 120000);
-    } catch (e) {
-      console.error("Workbench generate failed:", e);
-      setWorkbenchGeneratingTypes([]);
-    }
-  }, [workbenchAsset, seriesId, assetTypeSingular, tab]);
-
-  const handleSelectWorkbenchVariant = useCallback((type: string, variantId: string) => {
-    if (!workbenchAsset || !series) return;
-    const typeMap: Record<string, string> = {
-      full_body: 'full_body_asset',
-      three_view: 'three_view_asset',
-      headshot: 'headshot_asset',
-    };
-    const assetKey = typeMap[type] || 'full_body_asset';
-    const updated = { ...series };
-    const list = tab === 'characters' ? [...(updated.characters || [])]
-      : tab === 'scenes' ? [...(updated.scenes || [])]
-      : [...(updated.props || [])];
-    const idx = list.findIndex((a: any) => a.id === workbenchAsset.id);
-    if (idx >= 0) {
-      const asset = { ...list[idx] };
-      if (!asset[assetKey]) asset[assetKey] = {};
-      asset[assetKey] = { ...asset[assetKey], selected_id: variantId };
-      list[idx] = asset;
-      if (tab === 'characters') updated.characters = list;
-      else if (tab === 'scenes') updated.scenes = list;
-      else updated.props = list;
-      onSeriesUpdate(updated as Series);
-      setWorkbenchAsset(asset);
-    }
-  }, [workbenchAsset, series, tab, onSeriesUpdate]);
 
   const handleGenerateSingle = async (assetId: string) => {
     setGeneratingIds(prev => new Set(prev).add(assetId));
@@ -489,7 +394,7 @@ function AssetContentPanel({
               >
                 <div
                   className="relative group/card cursor-pointer"
-                  onClick={() => setWorkbenchAsset(asset)}
+                  onClick={() => setWorkbenchEntity({ id: asset.id, kind: tab === "characters" ? "character" : tab === "scenes" ? "scene" : "prop" })}
                 >
                   <AssetCard asset={asset} type={tab} />
                   <button
@@ -517,36 +422,18 @@ function AssetContentPanel({
         )}
       </div>
 
-      {/* Character Workbench Modal */}
-      <AnimatePresence>
-        {workbenchAsset && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-            onClick={() => setWorkbenchAsset(null)}
-          >
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="w-[90vw] max-w-5xl max-h-[90vh] overflow-y-auto rounded-2xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <CharacterWorkbench
-                key={`wb-${workbenchAsset.id}-v${workbenchVersion}`}
-                asset={workbenchAsset}
-                onClose={() => { setWorkbenchAsset(null); setWorkbenchGeneratingTypes([]); }}
-                onUpdateDescription={() => {}}
-                onSelectVariant={handleSelectWorkbenchVariant}
-                onGenerate={handleWorkbenchGenerate}
-                generatingTypes={workbenchGeneratingTypes}
-              />
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Unified Asset Workbench Modal (uses CastWorkbenchModal) */}
+      <CastWorkbenchModal
+        isOpen={workbenchEntity !== null}
+        kind={workbenchEntity?.kind ?? null}
+        entityId={workbenchEntity?.id ?? null}
+        seriesId={seriesId}
+        onSeriesUpdated={(updated: Series) => {
+          onSeriesUpdate(updated);
+          setSeries(updated);
+        }}
+        onClose={() => setWorkbenchEntity(null)}
+      />
     </motion.div>
   );
 }

@@ -32,6 +32,40 @@ export type CastKind = "character" | "scene" | "prop";
 // Module-level poll registry — survives modal close/reopen.
 export const activePolls = new Map<string, ReturnType<typeof setInterval>>();
 
+function startSeriesAssetPoll(
+    entityId: string,
+    taskId: string,
+    seriesId: string,
+    kind: CastKind,
+    onUpdated: () => void,
+    progressToastId?: string,
+) {
+    if (activePolls.has(entityId)) return;
+    const interval = setInterval(async () => {
+        try {
+            const status = await api.getTaskStatus(taskId);
+            if (status?.status === "completed") {
+                clearInterval(interval);
+                activePolls.delete(entityId);
+                if (progressToastId) toast.dismiss(progressToastId);
+                onUpdated();
+                toast.success(`生成完成`);
+            } else if (status?.status === "failed") {
+                clearInterval(interval);
+                activePolls.delete(entityId);
+                if (progressToastId) toast.dismiss(progressToastId);
+                toast.error("生成失败", { body: status?.error?.slice(0, 200) || "未知错误" });
+            }
+        } catch (err) {
+            clearInterval(interval);
+            activePolls.delete(entityId);
+            if (progressToastId) toast.dismiss(progressToastId);
+            toast.error("轮询异常", { body: "请刷新页面查看结果" });
+        }
+    }, 2500);
+    activePolls.set(entityId, interval);
+}
+
 function startAssetPoll(
     entityId: string,
     taskId: string,
@@ -85,6 +119,10 @@ interface CastWorkbenchModalProps {
     kind: CastKind | null;
     entityId: string | null;
     onClose: () => void;
+    /** If set, use Series-level APIs instead of project-level */
+    seriesId?: string;
+    /** Called after Series asset generation completes, with updated series data */
+    onSeriesUpdated?: (series: any) => void;
 }
 
 interface ImageVariant {
@@ -179,7 +217,7 @@ function readSelectedId(entity: any, kind: CastKind): string | null {
     return entity?.image_asset?.selected_id ?? null;
 }
 
-export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose }: CastWorkbenchModalProps) {
+export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose, seriesId, onSeriesUpdated }: CastWorkbenchModalProps) {
     const t = useTranslations("castWorkbench");
     const currentProject = useProjectStore((state) => state.currentProject);
     const currentSeries = useProjectStore((state) => state.currentSeries);
@@ -316,11 +354,24 @@ export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose }: 
         });
 
         try {
-            const resp = await api.generateAsset(
-                currentProject.id,
+            const projectId = seriesId || currentProject?.id;
+            if (!projectId) return;
+            
+            const resp = seriesId
+                ? await api.generateSeriesAsset(seriesId, entity.id, kind, {
+                    generation_type: "full_body",
+                    prompt: prompt.trim(),
+                    apply_style: applyStyle,
+                    negative_prompt: [applyStyle ? styleNegative : "", getTemplateNegative(kind, selectedTemplate)].filter(Boolean).join(", "),
+                    batch_size: effectiveBatchSize,
+                    model_name: modelOverride || currentProject?.model_settings?.t2i_model,
+                    aspect_ratio: aspectRatioOverride || undefined,
+                })
+                : await api.generateAsset(
+                projectId,
                 entity.id,
                 kind,
-                currentProject.style_preset || "realistic",
+                currentProject?.style_preset || "realistic",
                 applyStyle ? stylePositive : "",
                 "full_body",
                 prompt.trim(),
@@ -333,13 +384,27 @@ export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose }: 
 
             const taskId = (resp as any)?._task_id;
             if (taskId) {
-                const capturedEntityId = entity.id;
-                const capturedKind = kind;
-                const capturedProjectId = currentProject.id;
-                startAssetPoll(capturedEntityId, taskId, capturedProjectId, capturedKind, "all", () => ({
-                    updateProject: useProjectStore.getState().updateProject,
-                    removeGeneratingTask: useProjectStore.getState().removeGeneratingTask,
-                }), progressId);
+                if (seriesId) {
+                    // Series mode: poll with Series API
+                    const capturedEntityId = entity.id;
+                    const capturedKind = kind;
+                    const capturedSeriesId = seriesId;
+                    startSeriesAssetPoll(capturedEntityId, taskId, capturedSeriesId, capturedKind, () => {
+                        if (onSeriesUpdated) {
+                            import("@/lib/api").then(({ api }) => {
+                                api.getSeries(capturedSeriesId).then(onSeriesUpdated).catch(() => {});
+                            });
+                        }
+                    }, progressId);
+                } else {
+                    const capturedEntityId = entity.id;
+                    const capturedKind = kind;
+                    const capturedProjectId = currentProject!.id;
+                    startAssetPoll(capturedEntityId, taskId, capturedProjectId, capturedKind, "all", () => ({
+                        updateProject: useProjectStore.getState().updateProject,
+                        removeGeneratingTask: useProjectStore.getState().removeGeneratingTask,
+                    }), progressId);
+                }
             } else if (resp) {
                 toast.dismiss(progressId);
                 updateProject(currentProject.id, resp);
