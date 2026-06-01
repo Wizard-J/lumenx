@@ -139,6 +139,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [endpointsOpen, setEndpointsOpen] = useState(false);
+  const [showLegacyProviders, setShowLegacyProviders] = useState(false);
 
   // ── Default Model Settings ──
   const [modelSettings, setModelSettings] = useState<DefaultModelSettings>(() =>
@@ -304,49 +305,6 @@ export default function SettingsPage() {
           </div>
         ) : (
           <>
-            <div>
-              <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
-                <span>DashScope API Key <span className="text-red-500">*</span></span>
-                <span className="text-text-muted font-normal text-xs">e.g. sk-xxx</span>
-              </label>
-              <input type="password" value={config.DASHSCOPE_API_KEY} onChange={(e) => handleChange("DASHSCOPE_API_KEY", e.target.value)} placeholder="Required for DashScope-first model routing" className={inputClass} />
-            </div>
-
-            <div className="bg-input-bg border border-glass-border rounded-lg p-4 space-y-4">
-              <p className="text-xs text-text-secondary">Storage is local-first by default. These credentials are only needed when enabling OSS mirror.</p>
-              <div>
-                <label className="block text-sm font-medium text-text-secondary mb-2">Alibaba Cloud Access Key ID</label>
-                <input type="password" value={config.ALIBABA_CLOUD_ACCESS_KEY_ID} onChange={(e) => handleChange("ALIBABA_CLOUD_ACCESS_KEY_ID", e.target.value)} placeholder="Optional, for OSS mirror" className={inputClass} />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-text-secondary mb-2">Alibaba Cloud Access Key Secret</label>
-                <input type="password" value={config.ALIBABA_CLOUD_ACCESS_KEY_SECRET} onChange={(e) => handleChange("ALIBABA_CLOUD_ACCESS_KEY_SECRET", e.target.value)} placeholder="Optional, for OSS mirror" className={inputClass} />
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-glass-border">
-              <h3 className="text-sm font-bold text-foreground mb-2">OSS Mirror (Optional)</h3>
-              <p className="text-[10px] text-text-muted mb-4">Generated assets always save locally first. Configure OSS to keep an optional cloud mirror.</p>
-              <div className="space-y-4">
-                <div>
-                  <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
-                    <span>OSS Bucket Name</span>
-                  </label>
-                  <input type="text" value={config.OSS_BUCKET_NAME} onChange={(e) => handleChange("OSS_BUCKET_NAME", e.target.value)} placeholder="your_bucket_name (optional)" className={inputClass} />
-                </div>
-                <div>
-                  <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
-                    <span>OSS Endpoint</span>
-                  </label>
-                  <input type="text" value={config.OSS_ENDPOINT} onChange={(e) => handleChange("OSS_ENDPOINT", e.target.value)} placeholder="oss-cn-beijing.aliyuncs.com (optional)" className={inputClass} />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-text-secondary mb-2">OSS Base Path</label>
-                  <input type="text" value={config.OSS_BASE_PATH} onChange={(e) => handleChange("OSS_BASE_PATH", e.target.value)} placeholder="lumenx" className={inputClass} />
-                </div>
-              </div>
-            </div>
-
             <div className="pt-4 border-t border-glass-border">
               <h3 className="text-sm font-bold text-foreground mb-4">LLM Provider</h3>
               <div className="bg-surface border border-glass-border rounded-lg p-4 space-y-4">
@@ -383,58 +341,6 @@ export default function SettingsPage() {
                       <input type="text" value={config.LLM_MODEL} onChange={(e) => handleChange("LLM_MODEL", e.target.value)} placeholder="gpt-4o" className={inputClass} />
                     </div>
                   </>
-                )}
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-glass-border">
-              <h3 className="text-sm font-bold text-foreground mb-4">Kling Provider</h3>
-              <div className="bg-surface border border-glass-border rounded-lg p-4 space-y-4">
-                <div className="flex flex-wrap gap-2">
-                  <button type="button" onClick={() => handleChange("KLING_PROVIDER_MODE", "dashscope")} className={modeButtonClass(config.KLING_PROVIDER_MODE === "dashscope")}>
-                    DashScope
-                  </button>
-                  <button type="button" onClick={() => handleChange("KLING_PROVIDER_MODE", "vendor")} className={modeButtonClass(config.KLING_PROVIDER_MODE === "vendor")}>
-                    Vendor Direct
-                  </button>
-                </div>
-                <p className="text-xs text-text-muted">
-                  DashScope mode uses your DashScope API key. Vendor-direct mode requires Kling Access Key and Secret Key.
-                </p>
-                {config.KLING_PROVIDER_MODE === "vendor" && (
-                  <>
-                    <div>
-                      <label className="block text-sm font-medium text-text-secondary mb-2">Kling Access Key <span className="text-red-500">*</span></label>
-                      <input type="password" value={config.KLING_ACCESS_KEY} onChange={(e) => handleChange("KLING_ACCESS_KEY", e.target.value)} placeholder="Kling API Access Key" className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-text-secondary mb-2">Kling Secret Key <span className="text-red-500">*</span></label>
-                      <input type="password" value={config.KLING_SECRET_KEY} onChange={(e) => handleChange("KLING_SECRET_KEY", e.target.value)} placeholder="Kling API Secret Key" className={inputClass} />
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-glass-border">
-              <h3 className="text-sm font-bold text-foreground mb-4">Vidu Provider</h3>
-              <div className="bg-input-bg border border-glass-border rounded-lg p-4 space-y-4">
-                <div className="flex flex-wrap gap-2">
-                  <button type="button" onClick={() => handleChange("VIDU_PROVIDER_MODE", "dashscope")} className={modeButtonClass(config.VIDU_PROVIDER_MODE === "dashscope")}>
-                    DashScope
-                  </button>
-                  <button type="button" onClick={() => handleChange("VIDU_PROVIDER_MODE", "vendor")} className={modeButtonClass(config.VIDU_PROVIDER_MODE === "vendor")}>
-                    Vendor Direct
-                  </button>
-                </div>
-                <p className="text-xs text-text-muted">
-                  DashScope mode uses your DashScope API key. Vendor-direct mode requires a Vidu API key.
-                </p>
-                {config.VIDU_PROVIDER_MODE === "vendor" && (
-                  <div>
-                    <label className="block text-sm font-medium text-text-secondary mb-2">Vidu API Key <span className="text-red-500">*</span></label>
-                    <input type="password" value={config.VIDU_API_KEY} onChange={(e) => handleChange("VIDU_API_KEY", e.target.value)} placeholder="Vidu API Key" className={inputClass} />
-                  </div>
                 )}
               </div>
             </div>
@@ -552,7 +458,138 @@ export default function SettingsPage() {
         )}
       </section>
 
-      {/* ── Section 2: Default Model Settings ── */}
+      {/* ── Section 2: Cloud & Vendor Providers ── */}
+      <section className="glass-panel rounded-xl p-6 space-y-6">
+        <button
+          type="button"
+          onClick={() => setShowLegacyProviders(!showLegacyProviders)}
+          className="flex items-center gap-3 w-full text-left"
+        >
+          <div className="p-2 bg-gradient-to-br from-slate-500/20 to-slate-600/20 rounded-lg">
+            {showLegacyProviders ? <ChevronDown size={20} className="text-slate-400" /> : <ChevronRight size={20} className="text-slate-400" />}
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-foreground">Cloud & Vendor Providers</h2>
+            <p className="text-xs text-text-secondary">DashScope, OSS storage, ComfyUI, and legacy vendor-direct routing</p>
+          </div>
+        </button>
+        {showLegacyProviders && (
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-sm font-bold text-foreground mb-4">DashScope API Key</h3>
+              <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+                <span>API Key <span className="text-red-500">*</span></span>
+                <span className="text-text-muted font-normal text-xs">e.g. sk-xxx</span>
+              </label>
+              <input type="password" value={config.DASHSCOPE_API_KEY} onChange={(e) => handleChange("DASHSCOPE_API_KEY", e.target.value)} placeholder="Required for DashScope-first model routing" className={inputClass} />
+            </div>
+
+            <div className="pt-4 border-t border-glass-border">
+              <h3 className="text-sm font-bold text-foreground mb-4">OSS Mirror (Optional)</h3>
+              <p className="text-xs text-text-muted mb-3">Storage is local-first by default. Configure OSS for optional cloud mirror.</p>
+              <div>
+                <label className="block text-sm font-medium text-text-secondary mb-2">Alibaba Cloud Access Key ID</label>
+                <input type="password" value={config.ALIBABA_CLOUD_ACCESS_KEY_ID} onChange={(e) => handleChange("ALIBABA_CLOUD_ACCESS_KEY_ID", e.target.value)} placeholder="Optional, for OSS mirror" className={inputClass} />
+              </div>
+              <div className="mt-3">
+                <label className="block text-sm font-medium text-text-secondary mb-2">Alibaba Cloud Access Key Secret</label>
+                <input type="password" value={config.ALIBABA_CLOUD_ACCESS_KEY_SECRET} onChange={(e) => handleChange("ALIBABA_CLOUD_ACCESS_KEY_SECRET", e.target.value)} placeholder="Optional, for OSS mirror" className={inputClass} />
+              </div>
+              <div className="mt-3">
+                <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+                  <span>OSS Bucket Name</span>
+                </label>
+                <input type="text" value={config.OSS_BUCKET_NAME} onChange={(e) => handleChange("OSS_BUCKET_NAME", e.target.value)} placeholder="your_bucket_name (optional)" className={inputClass} />
+              </div>
+              <div className="mt-3">
+                <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+                  <span>OSS Endpoint</span>
+                </label>
+                <input type="text" value={config.OSS_ENDPOINT} onChange={(e) => handleChange("OSS_ENDPOINT", e.target.value)} placeholder="oss-cn-beijing.aliyuncs.com (optional)" className={inputClass} />
+              </div>
+              <div className="mt-3">
+                <label className="block text-sm font-medium text-text-secondary mb-2">OSS Base Path</label>
+                <input type="text" value={config.OSS_BASE_PATH} onChange={(e) => handleChange("OSS_BASE_PATH", e.target.value)} placeholder="lumenx" className={inputClass} />
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-glass-border">
+              <h3 className="text-sm font-bold text-foreground mb-4">ComfyUI Provider</h3>
+              <p className="text-xs text-text-muted mb-3">Connect to a remote ComfyUI server for custom workflow-based generation.</p>
+              <div className="space-y-3">
+                <div>
+                  <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+                    <span>ComfyUI Base URL</span>
+                    <span className="text-text-muted font-normal text-xs">http://localhost:8188</span>
+                  </label>
+                  <input type="text" value={config.COMFYUI_BASE_URL ?? ""} onChange={(e) => handleChange("COMFYUI_BASE_URL", e.target.value)} placeholder="http://localhost:8188" className={inputClass} />
+                </div>
+                <div>
+                  <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+                    <span>API Key (Optional)</span>
+                    <span className="text-text-muted font-normal text-xs">If server requires auth</span>
+                  </label>
+                  <input type="password" value={config.COMFYUI_API_KEY ?? ""} onChange={(e) => handleChange("COMFYUI_API_KEY", e.target.value)} placeholder="Optional API key" className={inputClass} />
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-glass-border">
+              <h3 className="text-sm font-bold text-foreground mb-4">Kling Provider</h3>
+              <div className="bg-surface border border-glass-border rounded-lg p-4 space-y-4">
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => handleChange("KLING_PROVIDER_MODE", "dashscope")} className={modeButtonClass(config.KLING_PROVIDER_MODE === "dashscope")}>
+                    DashScope
+                  </button>
+                  <button type="button" onClick={() => handleChange("KLING_PROVIDER_MODE", "vendor")} className={modeButtonClass(config.KLING_PROVIDER_MODE === "vendor")}>
+                    Vendor Direct
+                  </button>
+                </div>
+                <p className="text-xs text-text-muted">
+                  DashScope mode uses your DashScope API key. Vendor-direct mode requires Kling Access Key and Secret Key.
+                </p>
+                {config.KLING_PROVIDER_MODE === "vendor" && (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-text-secondary mb-2">Kling Access Key <span className="text-red-500">*</span></label>
+                      <input type="password" value={config.KLING_ACCESS_KEY} onChange={(e) => handleChange("KLING_ACCESS_KEY", e.target.value)} placeholder="Kling API Access Key" className={inputClass} />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-text-secondary mb-2">Kling Secret Key <span className="text-red-500">*</span></label>
+                      <input type="password" value={config.KLING_SECRET_KEY} onChange={(e) => handleChange("KLING_SECRET_KEY", e.target.value)} placeholder="Kling API Secret Key" className={inputClass} />
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-glass-border">
+              <h3 className="text-sm font-bold text-foreground mb-4">Vidu Provider</h3>
+              <div className="bg-input-bg border border-glass-border rounded-lg p-4 space-y-4">
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => handleChange("VIDU_PROVIDER_MODE", "dashscope")} className={modeButtonClass(config.VIDU_PROVIDER_MODE === "dashscope")}>
+                    DashScope
+                  </button>
+                  <button type="button" onClick={() => handleChange("VIDU_PROVIDER_MODE", "vendor")} className={modeButtonClass(config.VIDU_PROVIDER_MODE === "vendor")}>
+                    Vendor Direct
+                  </button>
+                </div>
+                <p className="text-xs text-text-muted">
+                  DashScope mode uses your DashScope API key. Vendor-direct mode requires a Vidu API key.
+                </p>
+                {config.VIDU_PROVIDER_MODE === "vendor" && (
+                  <div>
+                    <label className="block text-sm font-medium text-text-secondary mb-2">Vidu API Key <span className="text-red-500">*</span></label>
+                    <input type="password" value={config.VIDU_API_KEY} onChange={(e) => handleChange("VIDU_API_KEY", e.target.value)} placeholder="Vidu API Key" className={inputClass} />
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* ── Section 3: Default Model Settings ── */}
       <section className="glass-panel rounded-xl p-6 space-y-6">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-gradient-to-br from-blue-500/20 to-purple-500/20 rounded-lg">

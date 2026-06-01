@@ -938,6 +938,8 @@ class EnvConfig(ProviderRoutingConfig):
     VIDEO_API_KEY: Optional[str] = None
     VIDEO_BASE_URL: Optional[str] = None
     VIDEO_MODEL: Optional[str] = None
+    COMFYUI_BASE_URL: Optional[str] = None
+    COMFYUI_API_KEY: Optional[str] = None
     endpoint_overrides: Dict[str, str] = Field(default_factory=dict)
 
 
@@ -3555,6 +3557,8 @@ def get_env_config():
             "VIDEO_API_KEY": _env("VIDEO_API_KEY"),
             "VIDEO_BASE_URL": _env("VIDEO_BASE_URL"),
             "VIDEO_MODEL": _env("VIDEO_MODEL"),
+            "COMFYUI_BASE_URL": _env("COMFYUI_BASE_URL"),
+            "COMFYUI_API_KEY": _env("COMFYUI_API_KEY"),
             "endpoint_overrides": endpoint_overrides,
         }
     except Exception as e:
