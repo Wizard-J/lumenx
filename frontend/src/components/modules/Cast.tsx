@@ -76,6 +76,19 @@ export default function Cast() {
     const tStep = useTranslations("stepHeader");
     const t = useTranslations("cast");
     const currentProject = useProjectStore((state) => state.currentProject);
+    
+    // Series-level asset fallback — Episode characters may lack image variants
+    const [seriesAssets, setSeriesAssets] = useState<{ characters: any[]; scenes: any[]; props: any[] } | null>(null);
+    useEffect(() => {
+        const sid = currentProject?.series_id;
+        if (sid) {
+            import("@/lib/api").then(({ default: api }) => {
+                api.getSeries(sid).then((s: any) => {
+                    setSeriesAssets({ characters: s.characters || [], scenes: s.scenes || [], props: s.props || [] });
+                }).catch(() => {});
+            });
+        }
+    }, [currentProject?.series_id]);
 
     // R2V v2 Phase 5 — add new asset modal (placeholder for full
     // generation flow which lands in a follow-up patch). For now this
@@ -121,9 +134,34 @@ export default function Cast() {
                 propCounts.set(pid, (propCounts.get(pid) ?? 0) + 1);
             }
         }
-        const characterPool: any[] = currentProject?.characters ?? [];
-        const scenePool: any[] = currentProject?.scenes ?? [];
-        const propPool: any[] = currentProject?.props ?? [];
+        // Merge Episode + Series pools, preferring Series items that have image variants
+        const epChars: any[] = currentProject?.characters ?? [];
+        const epScenes: any[] = currentProject?.scenes ?? [];
+        const epProps: any[] = currentProject?.props ?? [];
+        const seriesChars = seriesAssets?.characters ?? [];
+        const seriesScenes = seriesAssets?.scenes ?? [];
+        const seriesProps = seriesAssets?.props ?? [];
+        
+        // For characters: prefer Series version if it has image variants and Episode doesn't
+        const characterPool: any[] = epChars.map((ec: any) => {
+            const sc = seriesChars.find((s: any) => s.id === ec.id);
+            if (sc) {
+                const epHasImg = !!(ec?.full_body_asset?.variants?.length || ec?.full_body?.image_variants?.length);
+                const scHasImg = !!(sc?.full_body_asset?.variants?.length || sc?.full_body?.image_variants?.length);
+                if (!epHasImg && scHasImg) return { ...ec, full_body_asset: sc.full_body_asset, full_body: sc.full_body, image_url: sc.image_url };
+            }
+            return ec;
+        });
+        const scenePool: any[] = epScenes.map((es: any) => {
+            const ss = seriesScenes.find((s: any) => s.id === es.id);
+            if (ss && !es.image_url && ss.image_url) return { ...es, image_url: ss.image_url, image_asset: ss.image_asset };
+            return es;
+        });
+        const propPool: any[] = epProps.map((ep: any) => {
+            const sp = seriesProps.find((s: any) => s.id === ep.id);
+            if (sp && !ep.image_url && sp.image_url) return { ...ep, image_url: sp.image_url, image_asset: sp.image_asset };
+            return ep;
+        });
 
         const characters: CastItem[] = characterPool.map((c: any) => {
             const imageUrl = resolveCharacterImage(c);
@@ -163,7 +201,7 @@ export default function Cast() {
         }).sort((a, b) => b.appearances - a.appearances || a.name.localeCompare(b.name));
 
         return { characters, scenes, props };
-    }, [currentProject?.frames, currentProject?.characters, currentProject?.scenes, currentProject?.props]);
+    }, [currentProject?.frames, currentProject?.characters, currentProject?.scenes, currentProject?.props, seriesAssets]);
 
     const totalCast = characters.length + scenes.length + props.length;
 
