@@ -12,6 +12,7 @@ import {
   MessageSquareCode,
   Download,
   Palette,
+  Terminal,
 } from "lucide-react";
 import clsx from "clsx";
 import type { Series, Project } from "@/store/projectStore";

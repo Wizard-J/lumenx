@@ -1806,7 +1806,7 @@ def analyze_to_storyboard(script_id: str, request: AnalyzeToStoryboardRequest):
     """
     try:
         loop = asyncio.get_event_loop()
-        updated_script = await loop.run_in_executor(
+        updated_script = loop.run_in_executor(
             None,
             partial(pipeline.analyze_text_to_frames, script_id, request.text),
         )
@@ -1838,7 +1838,7 @@ def refine_storyboard_prompt(script_id: str, request: RefinePromptRequest):
     """
     try:
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
+        result = loop.run_in_executor(
             None,
             partial(
                 pipeline.refine_frame_prompt,

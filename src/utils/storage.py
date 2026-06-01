@@ -141,12 +141,12 @@ CREATE INDEX IF NOT EXISTS idx_operations_ts ON operations(ts DESC);
 _SCRIPT_JSON_FIELDS = (
     "characters_json", "scenes_json", "props_json", "frames_json",
     "video_tasks_json", "art_direction_json", "model_settings_json",
-    "prompt_config_json",
+    "prompt_config_json", "mix_settings_json",
 )
 _SERIES_JSON_FIELDS = (
     "episode_ids_json",
     "characters_json", "scenes_json", "props_json", "art_direction_json",
-    "prompt_config_json", "model_settings_json",
+    "prompt_config_json", "model_settings_json", "mix_settings_json",
 )
 
 
@@ -371,6 +371,7 @@ class SQLiteStorageBackend(StorageBackend):
             "art_direction_json": "art_direction",
             "model_settings_json": "model_settings",
             "prompt_config_json": "prompt_config",
+            "mix_settings_json": "mix_settings",
         }
         for old, new in mapping.items():
             if old in d:
@@ -388,6 +389,7 @@ class SQLiteStorageBackend(StorageBackend):
             "prompt_config_json": "prompt_config",
             "model_settings_json": "model_settings",
             "episode_ids_json": "episode_ids",
+            "mix_settings_json": "mix_settings",
         }
         for old, new in mapping.items():
             if old in d:
@@ -396,6 +398,8 @@ class SQLiteStorageBackend(StorageBackend):
 
     def _insert_script(self, data: Dict[str, Any]) -> None:
         d = dict(data)
+        if "mix_settings" in d:
+            d["mix_settings_json"] = json.dumps(d.pop("mix_settings"), ensure_ascii=False)
         d = _dump_json_columns(d, _SCRIPT_JSON_FIELDS)
         d.pop("episode_number", None)  # may be absent in legacy data
         columns = ", ".join(d.keys())
@@ -421,6 +425,7 @@ class SQLiteStorageBackend(StorageBackend):
         """Convert model dict → SQL row dict (JSON fields → JSON strings)."""
         d = dict(data)
         mapping = {
+            "mix_settings": "mix_settings_json",
             "characters": "characters_json",
             "scenes": "scenes_json",
             "props": "props_json",
@@ -438,6 +443,7 @@ class SQLiteStorageBackend(StorageBackend):
     def _series_to_row(self, data: Dict[str, Any]) -> Dict[str, Any]:
         d = dict(data)
         mapping = {
+            "mix_settings": "mix_settings_json",
             "characters": "characters_json",
             "scenes": "scenes_json",
             "props": "props_json",
