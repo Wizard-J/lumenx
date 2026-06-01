@@ -214,7 +214,7 @@ function LightboxPortal({
             <div
                 aria-hidden="true"
                 onClick={onClose}
-                className="fixed inset-0 z-[60] bg-black/85 backdrop-blur-sm motion-safe:animate-[lightboxFadeIn_200ms_ease-out_both]"
+                className="fixed inset-0 z-[110] bg-black/85 backdrop-blur-sm motion-safe:animate-[lightboxFadeIn_200ms_ease-out_both]"
             />
             <div
                 ref={dialogRef}
@@ -222,7 +222,7 @@ function LightboxPortal({
                 aria-modal="true"
                 aria-label={item.alt || "preview"}
                 tabIndex={-1}
-                className="fixed inset-0 z-[61] flex items-center justify-center p-8 outline-none motion-safe:animate-[lightboxScaleIn_220ms_cubic-bezier(0.22,1,0.36,1)_both]"
+                className="fixed inset-0 z-[111] flex items-center justify-center p-8 outline-none motion-safe:animate-[lightboxScaleIn_220ms_cubic-bezier(0.22,1,0.36,1)_both]"
             >
                 {/* Top-right toolbar */}
                 <div className="absolute right-4 top-4 z-[62] flex items-center gap-1">
