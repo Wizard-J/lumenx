@@ -48,18 +48,22 @@ function startSeriesAssetPoll(
                 clearInterval(interval);
                 activePolls.delete(entityId);
                 if (progressToastId) toast.dismiss(progressToastId);
+                // Remove generating state so button re-enables
+                useProjectStore.getState().removeGeneratingTask(entityId, "all");
                 onUpdated();
                 toast.success(`生成完成`);
             } else if (status?.status === "failed") {
                 clearInterval(interval);
                 activePolls.delete(entityId);
                 if (progressToastId) toast.dismiss(progressToastId);
+                useProjectStore.getState().removeGeneratingTask(entityId, "all");
                 toast.error("生成失败", { body: status?.error?.slice(0, 200) || "未知错误" });
             }
         } catch (err) {
             clearInterval(interval);
             activePolls.delete(entityId);
             if (progressToastId) toast.dismiss(progressToastId);
+            useProjectStore.getState().removeGeneratingTask(entityId, "all");
             toast.error("轮询异常", { body: "请刷新页面查看结果" });
         }
     }, 2500);
