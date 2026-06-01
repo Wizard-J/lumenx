@@ -141,6 +141,12 @@ R2V 模式天然支持 Series 维度的资产管理：
 **默认工作流**
 - 新建项目和系列的默认 workflow_mode 从 r2v 改为 i2v_legacy
 
+**LLM 适配器（DashScope + OpenAI）**
+- 新增 LLMAdapter 统一接口，支持 DashScope 和 OpenAI 兼容 API
+- 通过 LLM_PROVIDER 环境变量切换（默认 dashscope，可选 openai）
+- 支持配置 OPENAI_API_KEY、OPENAI_API_BASE、OPENAI_MODEL 接入任意第三方 LLM
+- DashScope 切换为 OpenAI 兼容端点 (compatible-mode/v1)，支持 qwen3.5-plus 等新模型
+
 **Request Log**
 - Series 详情页新增 Request Log 侧边栏，方便调试 API 调用
 
