@@ -322,7 +322,7 @@ export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose }: 
                 kind,
                 currentProject.style_preset || "realistic",
                 applyStyle ? stylePositive : "",
-                "all",
+                "full_body",
                 prompt.trim(),
                 applyStyle,
                 [applyStyle ? styleNegative : "", getTemplateNegative(kind, selectedTemplate)].filter(Boolean).join(", "),
