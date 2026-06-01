@@ -11,7 +11,7 @@ import {
   Settings,
   MessageSquareCode,
   Download,
-  Terminal,
+  Palette,
 } from "lucide-react";
 import clsx from "clsx";
 import type { Series, Project } from "@/store/projectStore";
@@ -21,6 +21,7 @@ import { useLogStore } from "@/store/logStore";
 // ── Types ──
 
 export type SidebarItem =
+  | { kind: "art_direction" }   // R2V v2 — series-level style baseline
   | { kind: "asset"; tab: "characters" | "scenes" | "props" }
   | { kind: "episode"; episodeId: string };
 
@@ -146,8 +147,63 @@ export default function SeriesSidebar({
         </div>
       </div>
 
+      {/* ── Art Direction (R2V v2 series-level style baseline) ── */}
+      <div className="p-3 pb-1 space-y-1">
+        <div className="px-3 py-1.5">
+          <span className="text-[10px] font-mono text-text-muted uppercase tracking-wider">
+            {t("styleSection")}
+          </span>
+        </div>
+        {(() => {
+          const isActive = activeItem.kind === "art_direction";
+          const hasStyle = !!series.art_direction?.style_config;
+          return (
+            <button
+              onClick={() => onItemChange({ kind: "art_direction" })}
+              className={clsx(
+                "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 group relative overflow-hidden",
+                isActive
+                  ? "bg-primary/10 text-foreground"
+                  : "text-text-secondary hover:text-foreground hover:bg-hover-bg"
+              )}
+            >
+              {isActive && (
+                <motion.div
+                  layoutId="series-active-pill"
+                  className="absolute left-0 w-1 h-full bg-primary"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                />
+              )}
+              <Palette
+                size={18}
+                className={clsx(
+                  "transition-colors",
+                  isActive ? "text-primary" : "group-hover:text-foreground"
+                )}
+              />
+              <span className="text-sm font-medium flex-1 text-left truncate">
+                {t("artDirectionNav")}
+              </span>
+              <span
+                className={clsx(
+                  "text-[10px] px-1.5 py-0.5 rounded-md font-mono uppercase tracking-wider",
+                  hasStyle
+                    ? isActive
+                      ? "bg-primary/20 text-primary"
+                      : "bg-glass text-text-secondary"
+                    : "bg-glass text-text-muted"
+                )}
+              >
+                {hasStyle ? t("styleSet") : t("styleEmpty")}
+              </span>
+            </button>
+          );
+        })()}
+      </div>
+
       {/* ── Asset navigation ── */}
-      <div className="p-3 space-y-1">
+      <div className="px-3 pt-2 pb-3 space-y-1 border-t border-glass-border">
         <div className="px-3 py-1.5">
           <span className="text-[10px] font-mono text-text-muted uppercase tracking-wider">
             {t("sharedAssets")}

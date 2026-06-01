@@ -101,6 +101,9 @@ def test_local_only_pipeline_flow_without_oss(monkeypatch):
         img_url: str,
         model_name: str = "wan2.6-i2v",
         resolution: str = "720P",
+        # ratio was added to _generate_wan_i2v_http after Phase 2 catalog
+        # changes; mocks must accept it or the call site fails.
+        ratio=None,
         duration: int = 5,
         prompt_extend: bool = True,
         negative_prompt: str = None,

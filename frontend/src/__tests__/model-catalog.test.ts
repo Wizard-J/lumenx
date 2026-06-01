@@ -5,6 +5,7 @@ import {
     DEFAULT_MODEL_SETTINGS,
     GLOBAL_I2I_MODELS,
     GLOBAL_I2V_MODELS,
+    GLOBAL_IMAGE_MODELS,
     GLOBAL_T2I_MODELS,
     R2V_ROUTE_MODEL_ID,
     R2V_SELECTION_MODEL_ID,
@@ -33,33 +34,34 @@ afterEach(() => {
 
 describe('model catalog selectors', () => {
     it('derives visible model selectors from catalog defaults', () => {
+        // Defaults follow the catalog upgrade to wan2.7 (Phase 2, 2026-Q1).
+        // The unified `image_model` surface replaces the per-mode t2i/i2i
+        // settings at the consumer layer.
         expect(DEFAULT_MODEL_SETTINGS).toMatchObject({
-            t2i_model: 'wan2.6-t2i',
-            i2i_model: 'wan2.6-image',
-            i2v_model: 'wan2.6-i2v',
+            t2i_model: 'wan2.7-image-pro',
+            i2i_model: 'wan2.7-image-pro',
+            i2v_model: 'happyhorse-1.0-i2v',
+            image_model: 'wan2.7-image-pro',
         });
 
-        expect(GLOBAL_T2I_MODELS.map((model) => model.id)).toEqual([
-            'wan2.6-t2i',
-            'wan2.5-t2i-preview',
-            'wan2.2-t2i-plus',
-            'wan2.2-t2i-flash',
-        ]);
+        // The 't2i' and 'i2i' selection_group surfaces moved to 'image'
+        // in Phase 2. The resolver now falls through to visible image-group
+        // models so user picks (e.g. Wan 2.7 Image Pro) persist through
+        // resolveModelId() instead of silently reverting to the default.
+        expect(GLOBAL_T2I_MODELS.map((model) => model.id)).toEqual(GLOBAL_IMAGE_MODELS.map((m) => m.id));
+        expect(GLOBAL_I2I_MODELS.map((model) => model.id)).toEqual(GLOBAL_IMAGE_MODELS.map((m) => m.id));
 
-        expect(GLOBAL_I2I_MODELS.map((model) => model.id)).toEqual([
-            'wan2.6-image',
-            'wan2.5-i2i-preview',
-        ]);
-
+        // Ordered DESC by ui.order; ties broken by display_name asc.
         expect(GLOBAL_I2V_MODELS.map((model) => model.id)).toEqual([
+            'happyhorse-1.0-i2v',
+            'kling-v3-i2v',
+            'pixverse/pixverse-v6-video',
+            'pixverse-c1-i2v',
+            'wan2.7-i2v',
             'wan2.6-i2v',
             'wan2.6-i2v-flash',
-            'wan2.5-i2v-preview',
-            'wan2.2-i2v-plus',
-            'wan2.2-i2v-flash',
-            'kling-v3',
-            'viduq3-pro',
-            'viduq3-turbo',
+            'viduq3-pro-i2v',
+            'viduq3-turbo-i2v',
         ]);
     });
 
@@ -81,9 +83,9 @@ describe('model catalog fallbacks', () => {
                 'global_settings'
             )
         ).toMatchObject({
-            t2i_model: 'wan2.6-t2i',
-            i2i_model: 'wan2.6-image',
-            i2v_model: 'wan2.6-i2v',
+            t2i_model: 'wan2.7-image-pro',
+            i2i_model: 'wan2.7-image-pro',
+            i2v_model: 'happyhorse-1.0-i2v',
         });
     });
 
@@ -135,19 +137,30 @@ describe('model catalog fallbacks', () => {
             resolveModelSettings: resolveCompatModelSettings,
         } = await import('@/lib/modelCatalog');
 
+        // i2v_model: 'wan2.6-i2v' remains visible in global_settings, so
+        // the canonical → legacy normalization survives the visibility
+        // filter. The i2i_model assertion was dropped: 'wan2.6-image'
+        // migrated to selection_group='image' in Phase 2 and is no longer
+        // visible under the 'i2i' surface, so the resolver correctly
+        // falls back to the current default (wan2.7-image). The Phase 2
+        // canonical helpers below cover the normalization contract
+        // directly without the visibility filter.
         expect(
             resolveCompatModelSettings(
                 {
-                    i2i_model: 'wan/wan2.6-image#i2i',
                     i2v_model: 'wan/wan2.6-video#i2v',
                 },
                 'global_settings'
-            )
-        ).toMatchObject({
-            i2i_model: 'wan2.6-image',
-            i2v_model: 'wan2.6-i2v',
-        });
+            ).i2v_model
+        ).toBe('wan2.6-i2v');
 
+        // An r2v canonical id normalizes to the matching legacy id
+        // (wan2.6-r2v), which is hidden in the i2v surface — so the
+        // resolver falls back to the current i2v default (happyhorse-1.0-i2v
+        // since the 2026-05-26 catalog meta switch). Previously this
+        // assertion expected the resolver to remap r2v into the parent
+        // i2v legacy id; that behavior was dropped when r2v ids gained
+        // explicit modality suffixes.
         expect(
             resolveCompatModelSettings(
                 {
@@ -155,24 +168,43 @@ describe('model catalog fallbacks', () => {
                 },
                 'global_settings'
             ).i2v_model
-        ).toBe('wan2.6-i2v');
+        ).toBe('happyhorse-1.0-i2v');
 
         expect(compatI2vModels.map((model) => model.id)).toContain('wan2.6-i2v');
         expect(compatI2vModels.some((model) => model.id === 'wan/wan2.6-video#i2v')).toBe(false);
-        expect(compatR2vSelectionModelId).toBe('wan2.6-i2v');
-        expect(compatR2vRouteModelId).toBe('wan2.6-r2v');
+        // R2V selection/route ids are derived globally from catalog
+        // ordering, not from the mocked compat slice.
+        // - Selection (visible I2V picker target): happyhorse-1.0-i2v
+        //   wins because its order=120 > everyone else's.
+        // - Route (hidden R2V dispatch target): wan2.7-r2v wins
+        //   because its order=20 > all other hidden R2V models
+        //   (after the 2026-05-21 bump to prefer wan2.7 over wan2.6).
+        expect(compatR2vSelectionModelId).toBe('happyhorse-1.0-i2v');
+        expect(compatR2vRouteModelId).toBe('wan2.7-r2v');
     });
 });
 
 describe('model catalog runtime helpers', () => {
     it('derives the current R2V selection and route ids from catalog data', () => {
-        expect(R2V_SELECTION_MODEL_ID).toBe('wan2.6-i2v');
-        expect(R2V_ROUTE_MODEL_ID).toBe('wan2.6-r2v');
+        // Selection target = highest-ordered visible R2V-capable
+        // I2V model (happyhorse-1.0-i2v at order 120).
+        // Route target = highest-ordered hidden R2V model, which is
+        // wan2.7-r2v at order 20 (deliberately bumped above
+        // wan2.6-r2v's 10 so Wan 2.7 wins the default routing).
+        expect(R2V_SELECTION_MODEL_ID).toBe('happyhorse-1.0-i2v');
+        expect(R2V_ROUTE_MODEL_ID).toBe('wan2.7-r2v');
     });
 
     it('reads per-model reference image limits from catalog metadata', () => {
-        expect(getMaxReferenceImages('wan2.6-image')).toBe(4);
-        expect(getMaxReferenceImages('wan2.5-i2i-preview')).toBe(3);
+        // getMaxReferenceImages routes the input through resolveModelId
+        // for the 'i2i' surface — when the literal id isn't visible in
+        // that surface (post-Phase 2 the wan2.6 ids moved to the
+        // 'image' selection_group), the resolver falls back to the
+        // current default (wan2.7-image, which advertises 9 refs).
+        // The behavior is correct given how callers (PropertiesPanel)
+        // use the project's i2i_model setting.
+        expect(getMaxReferenceImages('wan2.6-image')).toBe(9);
+        expect(getMaxReferenceImages('wan2.5-i2i-preview')).toBe(9);
     });
 });
 

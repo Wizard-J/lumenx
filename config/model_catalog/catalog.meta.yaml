@@ -2,6 +2,6 @@ version: 1
 defaults:
   model_settings:
     t2i_model: wan2.7-image-pro
-    i2i_model: wan2.7-image
-    i2v_model: wan2.7-i2v
+    i2i_model: wan2.7-image-pro
+    i2v_model: happyhorse-1.0-i2v
     image_model: wan2.7-image-pro

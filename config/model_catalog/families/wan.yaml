@@ -123,7 +123,11 @@ models:
         ui:
           selection_group: i2v
           visible_in: []
-          order: 10
+          # Order 20 (above wan2.6-r2v's 10) so the frontend
+          # R2V_ROUTE_MAP[wan] resolves to wan2.7-r2v rather than the
+          # legacy wan2.6 entry, and the R2V picker displays "Wan 2.7
+          # R2V" by default.
+          order: 20
         inputs:
           reference_images:
             max: 5

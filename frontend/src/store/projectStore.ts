@@ -76,6 +76,15 @@ export interface Character {
     full_body_updated_at?: number;
     three_view_updated_at?: number;
     headshot_updated_at?: number;
+    /** Backend-derived: where this asset actually lives.
+     *  "episode" — in the script's own characters[] (episode-local
+     *  override or standalone-project local)
+     *  "series" — in the parent Series.characters[] (shared across
+     *  all episodes in the series)
+     *  Drives UI badges + the "high-cost action" confirm modal
+     *  (A2 design decision). Not persisted; set fresh on every
+     *  GET /projects/{id} response. */
+    source?: "episode" | "series";
 }
 
 export interface Scene {
@@ -90,6 +99,7 @@ export interface Scene {
     locked?: boolean;
     time_of_day?: string;
     lighting_mood?: string;
+    source?: "episode" | "series";
 }
 
 export interface Prop {
@@ -102,6 +112,7 @@ export interface Prop {
     video_prompt?: string;
     status?: string;
     locked?: boolean;
+    source?: "episode" | "series";
 }
 
 export interface StoryboardFrame {
@@ -116,12 +127,27 @@ export interface StoryboardFrame {
     // ... other fields
 }
 
-export interface StylePreset {
+export interface StylePresetCategory {
     id: string;
     name: string;
-    color: string;
-    prompt: string;
-    negative_prompt?: string;
+    name_zh: string;
+    sort_order: number;
+}
+
+export interface StylePreset {
+    id: string;
+    category: string;
+    name: string;
+    name_zh: string;
+    subtitle_zh?: string;
+    description?: string;
+    best_for?: string[];
+    avoid_for?: string[];
+    positive_prompt: string;
+    negative_prompt: string;
+    sample_prompt?: string;
+    thumbnail: string | null;
+    object_position?: string;
 }
 
 export interface StyleConfig {
@@ -145,9 +171,11 @@ export interface ArtDirection {
 export type ModelSettings = FrontendModelSettings;
 
 export const ASPECT_RATIOS = [
-    { id: '9:16', name: '9:16', description: 'Portrait (576*1024)' },
-    { id: '16:9', name: '16:9', description: 'Landscape (1024*576)' },
-    { id: '1:1', name: '1:1', description: 'Square (1024*1024)' },
+    { id: '9:16', name: '9:16', description: 'Portrait (576×1024)' },
+    { id: '3:4', name: '3:4', description: 'Portrait mild (768×1024)' },
+    { id: '1:1', name: '1:1', description: 'Square (1024×1024)' },
+    { id: '4:3', name: '4:3', description: 'Landscape mild (1024×768)' },
+    { id: '16:9', name: '16:9', description: 'Landscape (1024×576)' },
 ];
 
 export interface VideoParams {
@@ -199,6 +227,9 @@ export interface Series {
     prompt_config?: PromptConfig;
     model_settings?: ModelSettings;
     workflow_mode?: "r2v" | "i2v_legacy";
+    /** PR-3e — Visual control preference. 'r2v' = 节奏优先 (new shots default
+     *  direct_r2v); 'i2v' = 画面优先 (new shots default t2i_i2v). */
+    default_generation_mode?: "r2v" | "i2v";
     episode_ids: string[];
     created_at: number;
     updated_at: number;
@@ -222,7 +253,13 @@ export interface Project {
     model_settings?: ModelSettings;
     prompt_config?: PromptConfig;
     workflow_mode?: "i2v_legacy" | "r2v";
+    /** PR-3e — Inherited from series; used by StoryboardR2V addShot to
+     *  pick default tabMode for new shots. */
+    default_generation_mode?: "r2v" | "i2v";
     merged_video_url?: string;
+    /** PR-3k · Assembly Mix phase fields */
+    bgm_url?: string | null;
+    mix_settings?: Record<string, number>;
     series_id?: string;
     episode_number?: number;
 }
@@ -234,7 +271,11 @@ interface ProjectStore {
     isAnalyzing: boolean;
     isAnalyzingArtStyle: boolean;
 
-
+    // Entity extraction confirmation (persists across step switches)
+    pendingExtraction: { characters: any[]; scenes: any[]; props: any[] } | null;
+    pendingExtractionScript: string | null;
+    confirmExtraction: () => Promise<void>;
+    discardExtraction: () => void;
 
     // Global Selection State
     selectedFrameId: string | null;
@@ -270,6 +311,10 @@ interface ProjectStore {
     isAnalyzingStoryboard: boolean;
     setIsAnalyzingStoryboard: (value: boolean) => void;
 
+    // Global async operation tracker — persists across step/tab switches
+    runningOps: Record<string, boolean>;
+    setRunningOp: (key: string, running: boolean) => void;
+
     // Series State
     seriesList: Series[];
     currentSeries: Series | null;
@@ -288,6 +333,34 @@ export const useProjectStore = create<ProjectStore>()(
             isLoading: false,
             isAnalyzing: false,
             selectedFrameId: null,
+
+            // Entity extraction confirmation
+            pendingExtraction: null,
+            pendingExtractionScript: null,
+            confirmExtraction: async () => {
+                const { currentProject, pendingExtractionScript } = get();
+                if (!currentProject?.id || !pendingExtractionScript) return;
+                set({ isAnalyzing: true });
+                try {
+                    const project = await api.reparseProject(currentProject.id, pendingExtractionScript);
+                    set((state) => ({
+                        projects: state.projects.map((p) =>
+                            p.id === project.id ? { ...project, updatedAt: new Date().toISOString() } : p
+                        ),
+                        currentProject: { ...project, updatedAt: new Date().toISOString() },
+                        pendingExtraction: null,
+                        pendingExtractionScript: null,
+                        isAnalyzing: false,
+                    }));
+                } catch (error) {
+                    console.error("Failed to apply extraction:", error);
+                    set({ isAnalyzing: false });
+                    throw error;
+                }
+            },
+            discardExtraction: () => {
+                set({ pendingExtraction: null, pendingExtractionScript: null });
+            },
 
             // Sync projects from backend
             setProjects: (projects: Project[]) => set({ projects }),
@@ -366,6 +439,18 @@ export const useProjectStore = create<ProjectStore>()(
                                 p.id === id ? latestProject : p
                             ),
                         }));
+
+                        // Auto-load parent series for style inheritance (always fetch fresh for up-to-date art_direction)
+                        const seriesId = latestProject.series_id;
+                        if (seriesId) {
+                            const cached = get().seriesList.find((s) => s.id === seriesId);
+                            if (cached) {
+                                set({ currentSeries: cached });
+                            }
+                            get().fetchSeries(seriesId);
+                        } else {
+                            set({ currentSeries: null });
+                        }
                     }
                 } catch (error) {
                     console.error('Failed to fetch latest project data:', error);
@@ -444,7 +529,7 @@ export const useProjectStore = create<ProjectStore>()(
 
                 } catch (error) {
                     console.error("Failed to analyze art style:", error);
-                    // We could add an error state here if needed
+                    throw error;
                 } finally {
                     set({ isAnalyzingArtStyle: false });
                 }
@@ -484,6 +569,15 @@ export const useProjectStore = create<ProjectStore>()(
             isAnalyzingStoryboard: false,
             setIsAnalyzingStoryboard: (value: boolean) => set({ isAnalyzingStoryboard: value }),
 
+            // Global async operation tracker
+            runningOps: {},
+            setRunningOp: (key: string, running: boolean) => set((state) => {
+                const next = { ...state.runningOps };
+                if (running) next[key] = true;
+                else delete next[key];
+                return { runningOps: next };
+            }),
+
             // Series State
             seriesList: [],
             currentSeries: null,
@@ -500,7 +594,12 @@ export const useProjectStore = create<ProjectStore>()(
             fetchSeries: async (id: string) => {
                 try {
                     const series = await api.getSeries(id);
-                    set({ currentSeries: series });
+                    set((state) => ({
+                        currentSeries: series,
+                        seriesList: state.seriesList.some((s) => s.id === id)
+                            ? state.seriesList.map((s) => s.id === id ? series : s)
+                            : state.seriesList,
+                    }));
                 } catch (error) {
                     console.error('Failed to fetch series:', error);
                 }
@@ -532,7 +631,12 @@ export const useProjectStore = create<ProjectStore>()(
                 }
             },
 
-            setCurrentSeries: (series: Series | null) => set({ currentSeries: series }),
+            setCurrentSeries: (series: Series | null) => set((state) => ({
+                currentSeries: series,
+                seriesList: series
+                    ? state.seriesList.map((s) => s.id === series.id ? series : s)
+                    : state.seriesList,
+            })),
         }),
         {
             name: 'project-storage',

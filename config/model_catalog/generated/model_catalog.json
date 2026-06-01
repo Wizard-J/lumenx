@@ -40,14 +40,14 @@
   },
   "defaults": {
     "canonical_model_settings": {
-      "i2i_model": "wan/wan2.7-image#image",
-      "i2v_model": "wan/wan2.7-video#i2v",
+      "i2i_model": "wan/wan2.7-image-pro#image",
+      "i2v_model": "happyhorse/happyhorse-1.0-video#i2v",
       "image_model": "wan/wan2.7-image-pro#image",
       "t2i_model": "wan/wan2.7-image-pro#image"
     },
     "model_settings": {
-      "i2i_model": "wan2.7-image",
-      "i2v_model": "wan2.7-i2v",
+      "i2i_model": "wan2.7-image-pro",
+      "i2v_model": "happyhorse-1.0-i2v",
       "image_model": "wan2.7-image-pro",
       "t2i_model": "wan2.7-image-pro"
     }
@@ -1965,7 +1965,8 @@
             "1080p"
           ]
         },
-        "seed": true
+        "seed": true,
+        "watermark": true
       },
       "provider": "aliyun",
       "release_stage": "stable",
@@ -4263,7 +4264,7 @@
       },
       "ui": {
         "badges": [],
-        "order": 10,
+        "order": 20,
         "recommended": false,
         "selection_group": "i2v",
         "visible_in": []
@@ -4499,7 +4500,8 @@
             "1080p"
           ]
         },
-        "seed": true
+        "seed": true,
+        "watermark": true
       },
       "provider": "aliyun",
       "release_stage": "stable",
@@ -6971,7 +6973,7 @@
       },
       "ui": {
         "badges": [],
-        "order": 10,
+        "order": 20,
         "recommended": false,
         "selection_group": "i2v",
         "visible_in": []

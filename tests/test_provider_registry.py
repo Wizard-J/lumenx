@@ -44,7 +44,10 @@ class TestProviderRegistryRouting:
 
         assert registry.resolve_backend("kling-v1", env=env) == "vendor"
         assert registry.resolve_backend("vidu2.0", env=env) == "vendor"
-        assert registry.resolve_backend("pixverse-v4-i2v", env=env) == "vendor"
+        # Pixverse currently has no vendor backend (catalog defines
+        # supported_backends: [dashscope] only and no backend_env_key).
+        # Stays on dashscope regardless of the env override.
+        assert registry.resolve_backend("pixverse-v4-i2v", env=env) == "dashscope"
 
     def test_invalid_provider_mode_falls_back_to_default_backend(self):
         registry = get_default_provider_registry()

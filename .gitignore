@@ -129,3 +129,6 @@ docs/plans/*
 !build.spec.template
 
 .omx/
+.gstack/
+docs/agents/
+frontend/docs/

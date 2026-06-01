@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Settings, X, Image, Video, Film, Check, Layout, User, Building, Box } from 'lucide-react';
 import { useProjectStore, IMAGE_MODELS, I2V_MODELS, ASPECT_RATIOS } from '@/store/projectStore';
-import { resolveModelSettings } from '@/lib/modelCatalog';
+import { resolveModelSettings, VIDEO_R2V_MODELS, DEFAULT_R2V_MODEL_ID } from '@/lib/modelCatalog';
 import { api } from '@/lib/api';
 import { useTranslations } from "next-intl";
 
@@ -23,6 +23,11 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
     const [t2iModel, setT2iModel] = useState(resolvedSettings.t2i_model);
     const [i2iModel, setI2iModel] = useState(resolvedSettings.i2i_model);
     const [i2vModel, setI2vModel] = useState(resolvedSettings.i2v_model);
+    // R2V default for the project. Storyboard's R2V tab seeds from
+    // here on first mount; per-storyboard localStorage override still
+    // wins. Falls back to catalog's DEFAULT_R2V_MODEL_ID when the
+    // project has no r2v_model set yet (older projects).
+    const [r2vModel, setR2vModel] = useState(resolvedSettings.r2v_model || DEFAULT_R2V_MODEL_ID);
     const [characterAspectRatio, setCharacterAspectRatio] = useState(resolvedSettings.character_aspect_ratio);
     const [sceneAspectRatio, setSceneAspectRatio] = useState(resolvedSettings.scene_aspect_ratio);
     const [propAspectRatio, setPropAspectRatio] = useState(resolvedSettings.prop_aspect_ratio);
@@ -35,6 +40,7 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
         setT2iModel(normalizedSettings.t2i_model);
         setI2iModel(normalizedSettings.i2i_model);
         setI2vModel(normalizedSettings.i2v_model);
+        setR2vModel(normalizedSettings.r2v_model || DEFAULT_R2V_MODEL_ID);
         setCharacterAspectRatio(normalizedSettings.character_aspect_ratio);
         setSceneAspectRatio(normalizedSettings.scene_aspect_ratio);
         setPropAspectRatio(normalizedSettings.prop_aspect_ratio);
@@ -53,7 +59,9 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                 characterAspectRatio,
                 sceneAspectRatio,
                 propAspectRatio,
-                storyboardAspectRatio
+                storyboardAspectRatio,
+                undefined, // imageModel — managed via t2i/i2i for now
+                r2vModel,
             );
             updateProject(currentProject.id, updated);
             onClose();
@@ -149,7 +157,7 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                             <button
                                                 key={ratio.id}
                                                 onClick={() => setCharacterAspectRatio(ratio.id)}
-                                                className={`w-full flex flex-col items-center py-2 px-2 rounded border transition-all ${characterAspectRatio === ratio.id
+                                                className={`w-full flex flex-col items-center py-1.5 px-2 rounded border transition-all ${characterAspectRatio === ratio.id
                                                         ? 'border-green-500/50 bg-green-500/10'
                                                         : 'border-glass-border hover:border-glass-border bg-glass'
                                                     }`}
@@ -171,7 +179,7 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                             <button
                                                 key={ratio.id}
                                                 onClick={() => setSceneAspectRatio(ratio.id)}
-                                                className={`w-full flex flex-col items-center py-2 px-2 rounded border transition-all ${sceneAspectRatio === ratio.id
+                                                className={`w-full flex flex-col items-center py-1.5 px-2 rounded border transition-all ${sceneAspectRatio === ratio.id
                                                         ? 'border-green-500/50 bg-green-500/10'
                                                         : 'border-glass-border hover:border-glass-border bg-glass'
                                                     }`}
@@ -193,7 +201,7 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                             <button
                                                 key={ratio.id}
                                                 onClick={() => setPropAspectRatio(ratio.id)}
-                                                className={`w-full flex flex-col items-center py-2 px-2 rounded border transition-all ${propAspectRatio === ratio.id
+                                                className={`w-full flex flex-col items-center py-1.5 px-2 rounded border transition-all ${propAspectRatio === ratio.id
                                                         ? 'border-green-500/50 bg-green-500/10'
                                                         : 'border-glass-border hover:border-glass-border bg-glass'
                                                     }`}
@@ -287,6 +295,45 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                             {i2vModel === model.id && (
                                                 <div className="absolute top-2 right-2">
                                                     <Check size={14} className="text-purple-400" />
+                                                </div>
+                                            )}
+                                            <span className="text-sm font-medium text-foreground">{model.name}</span>
+                                            <span className="text-xs text-text-muted">{model.description}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="border-t border-glass-border" />
+
+                        {/* R2V Section — Reference-to-Video. Project default;
+                            Storyboard R2V tab seeds from here on first mount,
+                            per-storyboard localStorage override still wins. */}
+                        <div className="space-y-4">
+                            <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+                                <Film size={16} className="text-pink-400" />
+                                <span>R2V · 参考生视频</span>
+                            </div>
+                            <p className="text-xs text-text-muted">
+                                项目级 R2V 模型默认值。Storyboard 的 R2V tab 进入时按此初始化；用户在 storyboard 内的临时切换会保存在本地、不影响这里。
+                            </p>
+
+                            <div className="space-y-2">
+                                <label className="text-xs text-text-secondary">{t("model")}</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {VIDEO_R2V_MODELS.map((model) => (
+                                        <button
+                                            key={model.id}
+                                            onClick={() => setR2vModel(model.id)}
+                                            className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${r2vModel === model.id
+                                                    ? 'border-pink-500/50 bg-pink-500/10'
+                                                    : 'border-glass-border hover:border-glass-border bg-glass'
+                                                }`}
+                                        >
+                                            {r2vModel === model.id && (
+                                                <div className="absolute top-2 right-2">
+                                                    <Check size={14} className="text-pink-400" />
                                                 </div>
                                             )}
                                             <span className="text-sm font-medium text-foreground">{model.name}</span>

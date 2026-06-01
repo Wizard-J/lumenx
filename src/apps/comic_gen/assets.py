@@ -40,8 +40,10 @@ def cleanup_old_variants(image_asset: ImageAsset) -> None:
 # Aspect ratio to image size mapping
 ASPECT_RATIO_TO_SIZE = {
     "9:16": "576*1024",   # Portrait
-    "16:9": "1024*576",   # Landscape
+    "3:4": "768*1024",    # Portrait (mild)
     "1:1": "1024*1024",   # Square
+    "4:3": "1024*768",    # Landscape (mild)
+    "16:9": "1024*576",   # Landscape
 }
 
 class AssetGenerator:

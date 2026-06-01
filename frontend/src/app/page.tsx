@@ -30,9 +30,12 @@ const AssetLibraryPage = dynamic(() => import("@/components/library/AssetLibrary
 function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [workflowMode, setWorkflowMode] = useState<"r2v" | "i2v_legacy">("i2v_legacy");
+  const [workflowMode, setWorkflowMode] = useState<"r2v" | "i2v_legacy">("r2v");
+  // R2V v2 Phase 6 — content_mode (scripted | freeform)
+  const [contentMode, setContentMode] = useState<"scripted" | "freeform">("scripted");
+  // PR-3e — default per-shot generation mode (r2v=节奏优先 / i2v=画面优先)
+  const [defaultGenerationMode, setDefaultGenerationMode] = useState<"r2v" | "i2v">("r2v");
   const [isCreating, setIsCreating] = useState(false);
-  const createSeries = useProjectStore((state) => state.createSeries);
   const t = useTranslations("workspace");
   const tc = useTranslations("common");
   const tp = useTranslations("project");
@@ -43,10 +46,19 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
     if (!title.trim()) return;
     setIsCreating(true);
     try {
-      const series = await createSeries(title.trim(), description.trim() || undefined, workflowMode);
+      // Use the v2 createSeriesV2 API directly so we can pass content_mode
+      const { api } = await import("@/lib/api");
+      const series = await api.createSeriesV2(title.trim(), {
+        description: description.trim() || undefined,
+        workflow_mode: workflowMode,
+        content_mode: contentMode,
+        default_generation_mode: defaultGenerationMode,
+      });
       setTitle("");
       setDescription("");
-      setWorkflowMode("i2v_legacy");
+      setWorkflowMode("r2v");
+      setContentMode("scripted");
+      setDefaultGenerationMode("r2v");
       onClose();
       window.location.hash = `#/series/${series.id}`;
     } catch (error) {
@@ -122,6 +134,90 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
                   <span className="font-semibold text-sm text-foreground">{tp("workflowI2V")}</span>
                 </div>
                 <p className="text-xs text-text-secondary leading-relaxed">{tp("workflowI2VDesc")}</p>
+              </button>
+            </div>
+          </div>
+
+          {/* R2V v2 Phase 6 — Content mode picker */}
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-2">{tp("contentMode")}</label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setContentMode("scripted")}
+                className={`relative p-4 rounded-xl border-2 text-left transition-all ${
+                  contentMode === "scripted"
+                    ? "border-primary bg-primary/10"
+                    : "border-border bg-surface hover:border-text-muted"
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="font-semibold text-sm text-foreground">{tp("contentScripted")}</span>
+                </div>
+                <p className="text-xs text-text-secondary leading-relaxed">{tp("contentScriptedDesc")}</p>
+                {contentMode === "scripted" && (
+                  <span className="absolute top-2 right-2 text-[10px] font-medium text-primary bg-primary/20 px-1.5 py-0.5 rounded">
+                    {tc("recommended")}
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setContentMode("freeform")}
+                className={`relative p-4 rounded-xl border-2 text-left transition-all ${
+                  contentMode === "freeform"
+                    ? "border-primary bg-primary/10"
+                    : "border-border bg-surface hover:border-text-muted"
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="font-semibold text-sm text-foreground">{tp("contentFreeform")}</span>
+                </div>
+                <p className="text-xs text-text-secondary leading-relaxed">{tp("contentFreeformDesc")}</p>
+              </button>
+            </div>
+          </div>
+
+          {/* PR-3e · Visual Control Preference picker — decides new-shot default
+              tabMode (r2v=direct_r2v / i2v=t2i_i2v). Series-level setting,
+              episodes inherit, shots can override individually. */}
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-2">{tp("visualControlPref")}</label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setDefaultGenerationMode("r2v")}
+                className={`relative p-4 rounded-xl border-2 text-left transition-all ${
+                  defaultGenerationMode === "r2v"
+                    ? "border-primary bg-primary/10"
+                    : "border-border bg-surface hover:border-text-muted"
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Zap size={16} className={defaultGenerationMode === "r2v" ? "text-primary" : "text-text-secondary"} />
+                  <span className="font-semibold text-sm text-foreground">{tp("visualControlR2V")}</span>
+                </div>
+                <p className="text-xs text-text-secondary leading-relaxed">{tp("visualControlR2VDesc")}</p>
+                {defaultGenerationMode === "r2v" && (
+                  <span className="absolute top-2 right-2 text-[10px] font-medium text-primary bg-primary/20 px-1.5 py-0.5 rounded">
+                    {tc("recommended")}
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDefaultGenerationMode("i2v")}
+                className={`relative p-4 rounded-xl border-2 text-left transition-all ${
+                  defaultGenerationMode === "i2v"
+                    ? "border-primary bg-primary/10"
+                    : "border-border bg-surface hover:border-text-muted"
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Film size={16} className={defaultGenerationMode === "i2v" ? "text-primary" : "text-text-secondary"} />
+                  <span className="font-semibold text-sm text-foreground">{tp("visualControlI2V")}</span>
+                </div>
+                <p className="text-xs text-text-secondary leading-relaxed">{tp("visualControlI2VDesc")}</p>
               </button>
             </div>
           </div>

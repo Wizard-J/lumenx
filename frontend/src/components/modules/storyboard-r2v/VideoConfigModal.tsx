@@ -6,13 +6,20 @@ import { X, Settings2, Check, Wand2, Timer, SlidersHorizontal } from "lucide-rea
 import { useTranslations } from "next-intl";
 import {
     DEFAULT_I2V_MODEL_ID,
+    DEFAULT_R2V_MODEL_ID,
     type DurationConfig,
     type ModelParamSupport,
     VIDEO_I2V_MODELS,
+    VIDEO_R2V_MODELS,
 } from "@/lib/modelCatalog";
 
 export interface VideoConfig {
+    /** Active I2V model id (used by t2i_i2v shots). */
     model: string;
+    /** Active R2V model id (used by direct_r2v shots). The catalog
+     *  hides individual R2V models from the I2V dropdown by design,
+     *  but R2V projects need a real R2V picker — see VIDEO_R2V_MODELS. */
+    r2vModel: string;
     duration: number;
     resolution: string;
     promptExtend: boolean;
@@ -24,17 +31,33 @@ export interface VideoConfig {
     // Vidu
     viduAudio?: boolean;
     movementAmplitude?: string;
+    // Watermark toggle (wan / kling / vidu / pixverse / happyhorse video).
+    // Lives in videoConfig so the user's choice survives shot switches +
+    // page reloads, same lifecycle as negativePrompt / promptExtend.
+    watermark?: boolean;
 }
+
+/** Which model dropdown the modal should drive: I2V models for the
+ *  t2i_i2v workflow, R2V models for direct_r2v. The host page picks
+ *  this based on the project's workflow_mode (or whatever shot is
+ *  currently active). */
+export type VideoConfigVariant = "i2v" | "r2v";
 
 interface VideoConfigModalProps {
     isOpen: boolean;
     onClose: () => void;
     config: VideoConfig;
     onConfigChange: (config: VideoConfig) => void;
+    /** Which model list to drive in the dropdown. Defaults to "i2v"
+     *  for back-compat. R2V projects pass "r2v" so the dropdown
+     *  surfaces actual R2V models (one per family) instead of the I2V
+     *  parents that the catalog otherwise exposes. */
+    variant?: VideoConfigVariant;
 }
 
 export const DEFAULT_VIDEO_CONFIG: VideoConfig = {
     model: DEFAULT_I2V_MODEL_ID,
+    r2vModel: DEFAULT_R2V_MODEL_ID,
     duration: 5,
     resolution: "720p",
     promptExtend: true,
@@ -70,22 +93,34 @@ function getProviderAccent(modelId: string): string {
     return "from-primary to-primary/60";
 }
 
-export default function VideoConfigModal({ isOpen, onClose, config, onConfigChange }: VideoConfigModalProps) {
+export default function VideoConfigModal({ isOpen, onClose, config, onConfigChange, variant = "i2v" }: VideoConfigModalProps) {
     const [draft, setDraft] = useState<VideoConfig>(config);
     const t = useTranslations("storyboardR2V");
     const tm = useTranslations("motion");
 
+    // Variant chooses which model list drives the dropdown. The "active
+    // model id" referenced by the rest of the modal is `draft.model` for
+    // i2v, `draft.r2vModel` for r2v — both VideoConfig fields live
+    // side-by-side so the user's I2V choice survives a trip through the
+    // R2V flow and vice versa.
+    const isR2V = variant === "r2v";
+    const modelList = isR2V ? VIDEO_R2V_MODELS : VIDEO_I2V_MODELS;
+    const fallbackId = isR2V ? DEFAULT_R2V_MODEL_ID : DEFAULT_I2V_MODEL_ID;
+    const activeModelId = isR2V ? draft.r2vModel : draft.model;
+    const modelKey = isR2V ? ("r2vModel" as const) : ("model" as const);
+
     const currentModelConfig =
-        VIDEO_I2V_MODELS.find((m) => m.id === draft.model) ??
-        VIDEO_I2V_MODELS.find((m) => m.id === DEFAULT_I2V_MODEL_ID) ??
-        VIDEO_I2V_MODELS[0];
+        modelList.find((m) => m.id === activeModelId) ??
+        modelList.find((m) => m.id === fallbackId) ??
+        modelList[0];
     const modelParams: ModelParamSupport = currentModelConfig?.params ?? {};
 
     const updateDraft = useCallback(
         (key: string, value: any) => {
             const newDraft = { ...draft, [key]: value };
-            if (key === "model") {
-                const newModelConfig = VIDEO_I2V_MODELS.find((m) => m.id === value);
+            if (key === "model" || key === "r2vModel") {
+                const list = key === "r2vModel" ? VIDEO_R2V_MODELS : VIDEO_I2V_MODELS;
+                const newModelConfig = list.find((m) => m.id === value);
                 if (newModelConfig?.duration) {
                     const dc = newModelConfig.duration;
                     if (dc.type === "fixed") {
@@ -132,7 +167,7 @@ export default function VideoConfigModal({ isOpen, onClose, config, onConfigChan
         modelParams.movementAmplitude ||
         modelParams.mode;
 
-    const activeAccent = getProviderAccent(draft.model);
+    const activeAccent = getProviderAccent(activeModelId);
 
     return (
         <AnimatePresence>
@@ -168,7 +203,7 @@ export default function VideoConfigModal({ isOpen, onClose, config, onConfigChan
                                         {t("videoSettings")}
                                     </h2>
                                     <p className="text-[11px] text-white/30 mt-0.5 tracking-wide font-medium">
-                                        {VIDEO_I2V_MODELS.find((m) => m.id === draft.model)?.name}
+                                        {currentModelConfig?.name}
                                     </p>
                                 </div>
                             </div>
@@ -200,8 +235,8 @@ export default function VideoConfigModal({ isOpen, onClose, config, onConfigChan
                                     </h3>
                                 </div>
                                 <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1 custom-scrollbar">
-                                    {VIDEO_I2V_MODELS.map((model, idx) => {
-                                        const isSelected = draft.model === model.id;
+                                    {modelList.map((model, idx) => {
+                                        const isSelected = activeModelId === model.id;
                                         const accent = getProviderAccent(model.id);
                                         return (
                                             <motion.button
@@ -211,7 +246,7 @@ export default function VideoConfigModal({ isOpen, onClose, config, onConfigChan
                                                 transition={{ delay: idx * 0.03, stiffness: 200, damping: 20 }}
                                                 whileHover={{ x: 4 }}
                                                 whileTap={{ scale: 0.99 }}
-                                                onClick={() => updateDraft("model", model.id)}
+                                                onClick={() => updateDraft(modelKey, model.id)}
                                                 className={`relative w-full flex items-center gap-3.5 pl-3 pr-4 py-3.5 rounded-xl text-left transition-all duration-300 overflow-hidden group ${
                                                     isSelected
                                                         ? "bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"

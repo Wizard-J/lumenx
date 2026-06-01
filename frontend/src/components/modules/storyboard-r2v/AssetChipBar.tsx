@@ -17,12 +17,12 @@ export default function AssetChipBar({ characters, scenes, props, onInsertAsset 
     }
 
     return (
-        <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide py-1">
-            {characters.map((c: any, i: number) => (
+        <div className="flex flex-wrap items-center gap-1.5 py-1">
+            {characters.map((c: any) => (
                 <button
                     key={c.id}
-                    onClick={() => onInsertAsset(`character${i + 1}`, c.name)}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-blue-400/30 bg-blue-400/10 text-[11px] text-foreground hover:bg-blue-400/20 transition-colors shrink-0"
+                    onClick={() => onInsertAsset("character", c.name)}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-blue-400/30 bg-blue-400/10 text-[11px] text-foreground hover:bg-blue-400/20 transition-colors"
                 >
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
                     {c.name}
@@ -32,7 +32,7 @@ export default function AssetChipBar({ characters, scenes, props, onInsertAsset 
                 <button
                     key={s.id}
                     onClick={() => onInsertAsset("scene", s.name)}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-green-400/30 bg-green-400/10 text-[11px] text-foreground hover:bg-green-400/20 transition-colors shrink-0"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-green-400/30 bg-green-400/10 text-[11px] text-foreground hover:bg-green-400/20 transition-colors"
                 >
                     <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
                     {s.name}
@@ -42,7 +42,7 @@ export default function AssetChipBar({ characters, scenes, props, onInsertAsset 
                 <button
                     key={p.id}
                     onClick={() => onInsertAsset("prop", p.name)}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-orange-400/30 bg-orange-400/10 text-[11px] text-foreground hover:bg-orange-400/20 transition-colors shrink-0"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-orange-400/30 bg-orange-400/10 text-[11px] text-foreground hover:bg-orange-400/20 transition-colors"
                 >
                     <span className="w-1.5 h-1.5 rounded-full bg-orange-400" />
                     {p.name}

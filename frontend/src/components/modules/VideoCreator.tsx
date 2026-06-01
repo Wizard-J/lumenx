@@ -634,7 +634,7 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                     });
                                 }}
                                 className={`px-5 py-2.5 text-sm rounded-lg flex items-center gap-2 transition-all font-medium ${generationMode === "r2v"
-                                    ? "bg-purple-600 text-foreground shadow-lg"
+                                    ? "bg-primary text-foreground shadow-lg"
                                     : "text-text-secondary hover:text-foreground hover:bg-glass"
                                     }`}
                             >
@@ -722,8 +722,8 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                                                 disabled={isExtracting}
                                                                 className={`absolute bottom-1 right-1 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium backdrop-blur-sm transition-colors ${
                                                                     hasExtracted
-                                                                        ? "bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-purple-500/20 hover:text-purple-300 hover:border-purple-500/30"
-                                                                        : "bg-purple-500/20 text-purple-300 border border-purple-500/30 hover:bg-purple-500/40"
+                                                                        ? "bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-primary/20 hover:text-primary hover:border-primary/30"
+                                                                        : "bg-primary/20 text-primary border border-primary/30 hover:bg-primary/40"
                                                                 } disabled:opacity-50`}
                                                                 title={hasExtracted ? "Re-extract previous video's last frame" : "Use previous video's last frame as input"}
                                                             >
@@ -856,7 +856,7 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                                 key={frame.id}
                                                 onClick={() => handleR2VFrameSelect(frame)}
                                                 className={`p-3 rounded-lg border cursor-pointer transition-all ${selectedFrameId === frame.id
-                                                    ? "border-purple-500 bg-purple-500/10 ring-2 ring-purple-500/30"
+                                                    ? "border-primary bg-primary/10 ring-2 ring-primary/30"
                                                     : "border-glass-border bg-surface hover:border-glass-border"
                                                     }`}
                                             >
@@ -882,14 +882,14 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                                             {frame.action_description || frame.image_prompt || 'No description'}
                                                         </p>
                                                         {frame.dialogue && (
-                                                            <p className="text-[10px] text-purple-400 mt-1 italic line-clamp-1">
+                                                            <p className="text-[10px] text-primary mt-1 italic line-clamp-1">
                                                                 “{frame.dialogue}”
                                                             </p>
                                                         )}
                                                     </div>
                                                     {/* Selected indicator */}
                                                     {selectedFrameId === frame.id && (
-                                                        <div className="w-5 h-5 rounded-full bg-purple-500 flex items-center justify-center flex-shrink-0">
+                                                        <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center flex-shrink-0">
                                                             <Check size={12} className="text-white" />
                                                         </div>
                                                     )}
@@ -922,13 +922,13 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                                     <div
                                                         key={slotIndex}
                                                         className={`relative rounded-xl border-2 border-dashed transition-all ${slot?.url
-                                                            ? "border-purple-500 bg-purple-500/10"
+                                                            ? "border-primary bg-primary/10"
                                                             : "border-glass-border bg-surface hover:border-glass-border"
                                                             }`}
                                                     >
                                                         {/* Slot Header */}
                                                         <div className="absolute top-2 left-2 z-10">
-                                                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-600 text-white font-bold">
+                                                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary text-white font-bold">
                                                                 character{slotIndex + 1}
                                                             </span>
                                                         </div>
@@ -956,7 +956,7 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                                             <div className="aspect-square flex flex-col items-center justify-center p-3">
                                                                 <ImageIcon size={16} className="text-text-muted mb-1" />
                                                                 <select
-                                                                    className="w-full text-xs bg-input-bg border border-glass-border rounded-lg px-2 py-1.5 text-text-secondary focus:border-purple-500 focus:outline-none"
+                                                                    className="w-full text-xs bg-input-bg border border-glass-border rounded-lg px-2 py-1.5 text-text-secondary focus:border-primary focus:outline-none"
                                                                     value=""
                                                                     onChange={(e) => {
                                                                         const selectedImg = availableReferenceImages.find(img => img.url === e.target.value);
@@ -999,13 +999,13 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                                     <div
                                                         key={slotIndex}
                                                         className={`relative rounded-xl border-2 border-dashed transition-all ${slot?.url
-                                                            ? "border-purple-500 bg-purple-500/10"
+                                                            ? "border-primary bg-primary/10"
                                                             : "border-glass-border bg-surface hover:border-glass-border"
                                                             }`}
                                                     >
                                                         {/* Slot Header */}
                                                         <div className="absolute top-2 left-2 z-10">
-                                                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-600 text-white font-bold">
+                                                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary text-white font-bold">
                                                                 Character {slotIndex + 1}
                                                             </span>
                                                         </div>
@@ -1033,7 +1033,7 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                                             <div className="aspect-video flex flex-col items-center justify-center p-4">
                                                                 <p className="text-xs text-text-secondary mb-2">{slotTitle}</p>
                                                                 <select
-                                                                    className="w-full text-xs bg-input-bg border border-glass-border rounded-lg px-2 py-1.5 text-text-secondary focus:border-purple-500 focus:outline-none"
+                                                                    className="w-full text-xs bg-input-bg border border-glass-border rounded-lg px-2 py-1.5 text-text-secondary focus:border-primary focus:outline-none"
                                                                     value=""
                                                                     onChange={(e) => {
                                                                         const selectedVideo = availableReferenceVideos.find(v => v.url === e.target.value);
@@ -1114,14 +1114,14 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                             onClick={() => insertCharacter(idx)}
                                             disabled={!isActive}
                                             className={`text-xs px-2 py-1 rounded-lg border transition-all flex items-center gap-1.5 ${isActive
-                                                ? "border-purple-500/50 bg-purple-500/10 text-purple-400 hover:bg-purple-500/20"
+                                                ? "border-primary/50 bg-primary/10 text-primary hover:bg-primary/20"
                                                 : "border-glass-border bg-glass text-text-muted cursor-not-allowed"
                                                 }`}
                                         >
                                             {video?.thumbnail ? (
                                                 <img src={getAssetUrl(video.thumbnail)} alt="" className="w-4 h-4 rounded-full object-cover" />
                                             ) : (
-                                                <span className="w-4 h-4 rounded-full bg-purple-500/30 flex items-center justify-center text-[10px]">+</span>
+                                                <span className="w-4 h-4 rounded-full bg-primary/30 flex items-center justify-center text-[10px]">+</span>
                                             )}
                                             <span>Insert {slot?.name || `Char ${idx + 1}`}</span>
                                         </button>
@@ -1149,10 +1149,10 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                     initial={{ opacity: 0, y: -10 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     exit={{ opacity: 0, y: -10 }}
-                                    className="bg-purple-900/20 border border-purple-500/30 rounded-lg p-3 mt-2 space-y-3"
+                                    className="bg-primary/10 border border-primary/30 rounded-lg p-3 mt-2 space-y-3"
                                 >
                                     <div className="flex justify-between items-start">
-                                        <span className="text-xs font-bold text-purple-400 flex items-center gap-1">
+                                        <span className="text-xs font-bold text-primary flex items-center gap-1">
                                             <Wand2 size={12} /> {tc("aiPolish")}
                                         </span>
                                         <button
@@ -1201,7 +1201,7 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                                         setSegments([{ type: "text", value: polishedPrompt.en, id: `polished-${Date.now()}` }]);
                                                         setPolishedPrompt(null);
                                                     }}
-                                                    className="text-[10px] text-foreground bg-purple-600 hover:bg-purple-500 px-2 py-0.5 rounded font-bold"
+                                                    className="text-[10px] text-foreground bg-primary hover:bg-primary/90 px-2 py-0.5 rounded font-bold"
                                                 >
                                                     应用
                                                 </button>
@@ -1213,7 +1213,7 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                     </div>
 
                                     {/* Feedback for iterative refinement */}
-                                    <div className="space-y-2 pt-2 border-t border-purple-500/20">
+                                    <div className="space-y-2 pt-2 border-t border-primary/20">
                                         <div className="flex gap-2">
                                             <input
                                                 type="text"
@@ -1225,12 +1225,12 @@ export default function VideoCreator({ onTaskCreated, remixData, onRemixClear, p
                                                     }
                                                 }}
                                                 placeholder="Feedback for refinement..."
-                                                className="flex-1 text-xs bg-input-bg border border-purple-500/20 rounded px-2 py-1.5 text-foreground placeholder-text-muted focus:outline-none focus:border-purple-500/50"
+                                                className="flex-1 text-xs bg-input-bg border border-primary/20 rounded px-2 py-1.5 text-foreground placeholder-text-muted focus:outline-none focus:border-primary/50"
                                             />
                                             <button
                                                 onClick={() => handlePolish(feedbackText.trim())}
                                                 disabled={isPolishing || !feedbackText.trim()}
-                                                className="text-xs text-foreground bg-purple-600 hover:bg-purple-500 px-3 py-1.5 rounded font-medium flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                                                className="text-xs text-foreground bg-primary hover:bg-primary/90 px-3 py-1.5 rounded font-medium flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
                                             >
                                                 {isPolishing ? <Loader2 size={10} className="animate-spin" /> : <Wand2 size={10} />}
                                                 再润色

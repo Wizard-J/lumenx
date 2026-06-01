@@ -40,7 +40,7 @@ const SECTIONS = [
 export default function SeriesPromptConfigModal({ isOpen, onClose, seriesId, onSaved }: SeriesPromptConfigModalProps) {
     const t = useTranslations("series");
     const tc = useTranslations("common");
-    const [config, setConfig] = useState({ storyboard_polish: '', video_polish: '', r2v_polish: '' });
+    const [config, setConfig] = useState({ storyboard_polish: '', video_polish: '', r2v_polish: '', polish_model: '' });
     const [defaults, setDefaults] = useState<PromptDefaults | null>(null);
     const [expandedDefault, setExpandedDefault] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
@@ -132,6 +132,29 @@ export default function SeriesPromptConfigModal({ isOpen, onClose, seriesId, onS
                             <>
                                 <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3 text-xs text-blue-300">
                                     {t("seriesPromptEmptyHint")}
+                                </div>
+
+                                {/* Issue 13: polish 用的 LLM 模型。系列级覆盖 → 项目级覆盖
+                                    → 系统默认。三个推荐选项都是 vision-capable，能让带
+                                    首帧/参考图的润色更准确。 */}
+                                <div className="space-y-2">
+                                    <div>
+                                        <h3 className="text-sm font-bold text-foreground">Polish 模型</h3>
+                                        <p className="text-[10px] text-text-secondary mt-0.5">
+                                            选择 AI 润色调用的 LLM 模型。三个选项都支持视觉理解，能在润色时参考首帧/参考图。
+                                        </p>
+                                    </div>
+                                    <select
+                                        // 空字符串（旧数据）回落到 qwen3.6-plus，与原"系统默认"等价。
+                                        value={config.polish_model || "qwen3.6-plus"}
+                                        onChange={(e) => setConfig(prev => ({ ...prev, polish_model: e.target.value }))}
+                                        className="w-full bg-input-bg border border-glass-border rounded-lg px-3 py-2 text-sm text-text-secondary focus:outline-none focus:border-purple-500/50"
+                                    >
+                                        <option value="qwen3.6-plus">qwen3.6-plus · 通义千问 3.6 Plus（视觉）</option>
+                                        <option value="qwen3.6-flash">qwen3.6-flash · 通义千问 3.6 Flash（视觉，更快）</option>
+                                        <option value="kimi-k2.6">kimi-k2.6 · Moonshot Kimi K2.6（视觉）</option>
+                                    </select>
+                                    <div className="border-b border-border-subtle pt-1" />
                                 </div>
 
                                 {SECTIONS.map((section) => (

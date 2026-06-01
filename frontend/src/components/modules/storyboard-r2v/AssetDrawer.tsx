@@ -3,6 +3,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { X, User, MapPin, Package } from "lucide-react";
 import { useTranslations } from "next-intl";
+import PreviewImage from "@/components/shared/preview/PreviewImage";
 
 interface AssetDrawerProps {
     isOpen: boolean;
@@ -99,7 +100,7 @@ export default function AssetDrawer({ isOpen, onClose, characters, scenes, props
                                                         >
                                                             <div className="w-12 h-12 rounded-lg bg-white/[0.03] overflow-hidden flex items-center justify-center">
                                                                 {thumb ? (
-                                                                    <img src={thumb} alt={c.name} className="w-full h-full object-cover" />
+                                                                    <PreviewImage src={thumb} alt={c.name} className="w-full h-full" noLightbox />
                                                                 ) : (
                                                                     <User size={16} className="text-text-secondary/40" />
                                                                 )}
@@ -133,7 +134,7 @@ export default function AssetDrawer({ isOpen, onClose, characters, scenes, props
                                                         >
                                                             <div className="w-12 h-12 rounded-lg bg-white/[0.03] overflow-hidden flex items-center justify-center">
                                                                 {thumb ? (
-                                                                    <img src={thumb} alt={s.name} className="w-full h-full object-cover" />
+                                                                    <PreviewImage src={thumb} alt={s.name} className="w-full h-full" noLightbox />
                                                                 ) : (
                                                                     <MapPin size={16} className="text-text-secondary/40" />
                                                                 )}
@@ -167,7 +168,7 @@ export default function AssetDrawer({ isOpen, onClose, characters, scenes, props
                                                         >
                                                             <div className="w-12 h-12 rounded-lg bg-white/[0.03] overflow-hidden flex items-center justify-center">
                                                                 {thumb ? (
-                                                                    <img src={thumb} alt={p.name} className="w-full h-full object-cover" />
+                                                                    <PreviewImage src={thumb} alt={p.name} className="w-full h-full" noLightbox />
                                                                 ) : (
                                                                     <Package size={16} className="text-text-secondary/40" />
                                                                 )}

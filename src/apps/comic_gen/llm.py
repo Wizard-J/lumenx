@@ -5,7 +5,8 @@ import uuid
 import logging
 import traceback
 import re
-from typing import List, Dict, Any
+from difflib import SequenceMatcher
+from typing import List, Dict, Any, Optional
 
 from .models import Script, Character, Scene, Prop, StoryboardFrame, GenerationStatus
 
@@ -17,6 +18,95 @@ def _strip_markdown_json(content: str) -> str:
     elif "```" in content:
         content = content.split("```")[1].split("```")[0]
     return content.strip()
+
+
+class PolishError(Exception):
+    """提示词润色失败的结构化异常。
+    旧实现遇到任何问题都静默返回原文（fallback），导致前端无法判断
+    "模型真润色完了" 还是 "出错了只是把原文吐回来"。这个异常把失败
+    原因显式抛给上游，让 API 层翻译成 HTTP 502 + 结构化 JSON，
+    前端按 reason 渲染对应错误/警告 UI。
+
+    Reasons:
+      - is_configured_false: LLM 未配置（缺 API key）
+      - api_error: 上游 API 调用本身失败（网络/鉴权/限流/模型不可用）
+      - json_parse_error: 模型返回内容不是合法 JSON
+      - missing_keys: JSON 缺 prompt_cn 或 prompt_en
+      - model_echo: 模型几乎原文返回（warning 级别，不是 hard error，
+        前端展示为黄色警告 + 保留原文双语，让用户追加 feedback 重试）
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        message_zh: str,
+        message_en: str,
+        prompt_cn: str = "",
+        prompt_en: str = "",
+    ):
+        self.reason = reason
+        self.message_zh = message_zh
+        self.message_en = message_en
+        self.prompt_cn = prompt_cn
+        self.prompt_en = prompt_en
+        super().__init__(f"[{reason}] {message_en}")
+
+
+def _is_echo(result_en: str, draft_en: str, threshold: float = 0.95) -> bool:
+    """判断 LLM 输出是否与原文几乎相同（模型未做修改）。
+    threshold 0.95 经验值：低于会误伤"做了轻微改动"的合理结果；
+    高于则放过明显的"换几个标点就交差"。"""
+    a = (result_en or "").strip().lower()
+    b = (draft_en or "").strip().lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return SequenceMatcher(None, a, b).ratio() >= threshold
+
+
+def _resolve_image_for_vision(url: str) -> Optional[str]:
+    """把任意形式的图像 URL 规整成 vision API 能直接消费的形式。
+      - 已是 http(s):// 或 data:image/ → 原样返回（DashScope 能 fetch / 已内联）
+      - 看起来是相对路径（output/* 或 /files/* 或裸文件名）→ 读本地文件做 base64 data URI
+      - 找不到本地文件 → 返回 None，调用方应跳过这一张
+    DashScope 无法访问 localhost 或私有 OSS 路径，所以本地路径必须 inline。"""
+    import base64
+    if not url or not isinstance(url, str):
+        return None
+    s = url.strip()
+    if not s:
+        return None
+    if s.startswith("http://") or s.startswith("https://") or s.startswith("data:image/"):
+        return s
+    # 规整：'/files/foo/bar.png' → 'foo/bar.png'；'output/foo.png' 原样
+    cleaned = s
+    for prefix in ("/files/outputs/", "/files/output/", "/files/", "files/", "output/"):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):]
+            break
+    candidates = [
+        os.path.join("output", cleaned),
+        cleaned,
+    ]
+    abs_path = next((p for p in candidates if os.path.exists(p) and os.path.isfile(p)), None)
+    if not abs_path:
+        return None
+    ext = os.path.splitext(abs_path)[1].lower()
+    mime = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(ext, "image/png")
+    try:
+        with open(abs_path, "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode("ascii")
+        return f"data:{mime};base64,{b64}"
+    except OSError:
+        return None
+
 
 from ...utils import get_logger
 
@@ -718,80 +808,78 @@ CRITICAL STYLE GUIDELINES:
         characters_list = entities_json.get("characters", [])
         scenes_list = entities_json.get("scenes", [])
         props_list = entities_json.get("props", [])
-        
-        entities_str = f"""
-Characters:
-{json.dumps(characters_list, ensure_ascii=False, indent=2)}
 
-Scenes:
-{json.dumps(scenes_list, ensure_ascii=False, indent=2)}
+        entities_str = json.dumps({
+            "characters": characters_list,
+            "scenes": scenes_list,
+            "props": props_list,
+        }, ensure_ascii=False, indent=2)
 
-Props:
-{json.dumps(props_list, ensure_ascii=False, indent=2)}
-"""
-        
-        system_prompt = f"""
-# 角色
-你是一名电影级的分镜师（Storyboard Artist）和导演。你的任务是将剧本文本拆解为可供 AI 视频模型生成的一系列精细分镜帧。
+        system_prompt = f"""# 角色
+你是一名电影级的分镜师。你的任务是将剧本文本拆解为一系列连续的分镜帧。
 
-# 任务目标
-不仅仅是提取文本，而是要进行**视觉化拆解**。你需要将剧本中的文字转化为一系列连续的、单一动作的视觉画面。
+# 核心规则
+1. **视觉节拍拆解**: 一行包含多个动作时，拆为多帧。每帧仅含一个主要动作。
+2. **角色可见性**: character_ref_names 只列画面中可见的角色。
+3. **实体约束**: 场景名、角色名、道具名严格匹配已提取实体。
+4. **语言**: 简体中文。
+5. **景别枚举**: 必须从以下选项中选择: 大特写 | 特写 | 近景 | 中景 | 全景 | 远景 | 大远景
+6. **角度枚举**: 必须从以下选项中选择: 平视 | 俯视 | 仰视 | 鸟瞰 | 蚁视 | 过肩 | 荷兰角 | 主观视角
+7. **时长**: 基于动作复杂度估算整数秒（范围 3-10 秒）。简单静态 3-4s，标准动作 5-6s，复杂/情绪镜头 7-10s。
+8. **对白**: 如果帧中有角色说话，dialogue 和 speaker 必须填写。一帧只能有一个说话人——多人对话必须拆为多帧。
 
 # 剧本格式说明
-剧本遵循以下格式：
-- **场景标题行**: `1-1 地点名称 [时间] [内/外]` 
-- **人物行**: `人物： 角色名1，角色名2`
-- **动作描述**: 以 `△` 开头，描述画面中发生的动作
-- **对话**: `角色名（情绪）： 对话内容`，或 `角色名 (V.O.)：` 表示画外音
+- **场景标题行**: `1-1 地点名称 [时间] [内/外]`
+- **人物行**: `人物：角色名1，角色名2`
+- **动作描述**: 以 `△` 开头
+- **对话**: `角色名（情绪）：对话内容`，或 `角色名 (V.O.)：` 表示画外音
 
-# 已提取的实体上下文
+# 已提取的实体
 {entities_str}
 
-# 核心规则 (CRITICAL)
-1. **视觉节拍拆解 (VISUAL ATOMIZATION)**:
-   - 如果一行动作描述包含多个连续动作，**必须**将其拆分为多个分镜帧。
-   - 每个分镜只应包含一个清晰的主要动作，时长控制在 3-5 秒。
-2. **合并动作描述 (MERGE ACTION)**:
-   - **`action_description` 字段必须包含画面中发生的所有动态要素**。
-   - 包括：人物的神态/微表情 + 肢体动作 + 道具的物理运动（如手机震动、烟雾缭绕）。
-   - 不要遗漏非人物主体的动作（如“车门打开”、“杯子摔碎”）。
-
-3. **角色可见性**:
-   - `character_ref_names` 只列出**当前分镜画面中可见**的角色。
-
-4. **实体约束**: 
-   - 场景名、角色名、道具名必须严格匹配"已提取的实体"。
-
-5. **语言**: 所有输出必须使用简体中文。
-
 # 输出格式
-返回一个包含 `frames` 数组的 JSON 对象。不要包含 Markdown 格式标记（如 ```json）。
+返回 JSON 对象 {{"frames": [...]}}。不要包含 Markdown 标记。
 
+每帧字段:
+{{
+    "scene_ref_name": "场景名",
+    "character_ref_names": ["角色名"],
+    "prop_ref_names": ["道具名"],
+    "action_summary": "一句话概括这帧发生什么（含角色动作 + 物理事件 + 神态表情）",
+    "shot_size": "中景",
+    "camera_angle": "平视",
+    "camera_movement": "静止",
+    "dialogue": "台词内容（无对白则为 null）",
+    "speaker": "说话人（无对白则为 null）",
+    "duration": 5
+}}
+
+# 示例
 {{
     "frames": [
         {{
             "scene_ref_name": "卧室",
             "character_ref_names": ["叶墨"],
             "prop_ref_names": ["手机"],
-            "visual_atmosphere": "昏暗的卧室，窗外透进冷色调月光",
-            "action_description": "手机在床头柜上疯狂震动。叶墨眉头紧锁，烦躁地翻身，肩膀挤压枕头产生形变",
+            "action_summary": "手机在床头柜上震动，叶墨烦躁翻身，眉头紧锁，被子滑落",
             "shot_size": "中景",
             "camera_angle": "俯视",
             "camera_movement": "静止",
             "dialogue": "妈，这才几点啊！",
-            "speaker": "叶墨"
+            "speaker": "叶墨",
+            "duration": 4
         }},
         {{
             "scene_ref_name": "卧室",
             "character_ref_names": ["叶墨"],
-            "prop_ref_names": [],
-            "visual_atmosphere": "昏暗的卧室",
-            "action_description": "被子滑落，叶墨猛地坐起，一脸惊恐",
+            "prop_ref_names": ["手机"],
+            "action_summary": "叶墨看到来电显示，猛地坐起，表情惊恐",
             "shot_size": "特写",
             "camera_angle": "平视",
-            "camera_movement": "快速推镜头",
+            "camera_movement": "快速推镜",
             "dialogue": "已经来了？",
-            "speaker": "叶墨"
+            "speaker": "叶墨",
+            "duration": 3
         }}
     ]
 }}
@@ -871,6 +959,117 @@ Props:
             }
         ]
 
+    def refine_frame_to_rich(
+        self,
+        coarse_frame: Dict[str, Any],
+        character_assets: List[Dict[str, Any]],
+        scene_assets: List[Dict[str, Any]],
+        prev_frame_context: Optional[str] = None,
+        next_frame_context: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Phase 2: Refine a coarse frame into a rich frame with full structured fields."""
+        if not self.is_configured:
+            logger.warning("LLM not configured, cannot refine frame")
+            return None
+
+        system_prompt = f"""# Role
+You are a film storyboard refinement specialist. Enrich one coarse frame into full structured data + visual description.
+
+# Input Context
+- Coarse frame info (scene, characters, action, shot_size, angle, duration)
+- Character assets (appearance, clothing)
+- Scene assets (environment, atmosphere)
+- Adjacent frames for continuity
+
+# Output
+Return a JSON object with ALL fields below. null is acceptable for optional fields.
+
+{{
+    "visual_description": "Complete visual description (100-200 chars). Describe environment, character acting, physical action, lighting.",
+    "shot_size": "One of: 大特写|特写|近景|中景|全景|远景|大远景",
+    "camera_angle": "One of: 平视|俯视|仰视|鸟瞰|蚁视|过肩|荷兰角|主观视角",
+    "camera_movement": {{
+        "primary": "static|push_in|pull_out|pan_left|pan_right|tilt_up|tilt_down|orbit|follow|crane_up|crane_down|handheld|zoom_in|zoom_out",
+        "secondary": null,
+        "speed": "slow|normal|fast",
+        "description": "Natural language description of camera motion"
+    }},
+    "blocking": {{
+        "description": "Spatial layout description: left->right: CharA(depth) | CharB(depth)",
+        "stage": [
+            {{
+                "ref": "character/prop name",
+                "zone": "left|center|right (combinable: left-top, center-bottom)",
+                "depth": "fore|mid|back",
+                "height": "ground|low|surface|eye|high|overhead",
+                "facing": "toward-camera|away|left|right|profile-left|profile-right",
+                "posture": "standing|sitting|lying|crouching|dynamic"
+            }}
+        ],
+        "camera_relation": "eye-level|elevated|low-angle|behind-subject|over-shoulder"
+    }},
+    "dialogue_structured": {{
+        "speaker": "speaker name",
+        "line": "dialogue text",
+        "emotion": "emotion tag",
+        "delivery": "delivery style (volume, speed, tone)"
+    }},
+    "audio_note": {{
+        "sfx": "sound effect description",
+        "ambience": "ambient sound",
+        "bgm_note": "BGM change note or null"
+    }},
+    "lighting": {{
+        "direction": "light source direction (left-above/right/top/back/front)",
+        "quality": "soft|hard",
+        "color_temp": "warm|neutral|cool",
+        "description": "Natural language lighting description"
+    }},
+    "transition_hint": "Cut type to next frame (硬切|叠化|黑场|匹配剪辑) or null",
+    "duration": 5
+}}
+
+# Rules
+1. visual_description must be fluent Chinese, covering environment + performance + action + lighting feel.
+2. dialogue_structured is null if this frame has no dialogue.
+3. audio_note can be null.
+4. blocking.stage should cover all visible characters and key props.
+5. Maintain continuity with adjacent frames.
+6. camera_movement has at most primary + secondary.
+
+# Coarse Frame
+{json.dumps(coarse_frame, ensure_ascii=False, indent=2)}
+
+# Character Assets
+{json.dumps(character_assets, ensure_ascii=False, indent=2)}
+
+# Scene Assets
+{json.dumps(scene_assets, ensure_ascii=False, indent=2)}
+
+# Previous Frame Context
+{prev_frame_context or "None (this is the first frame)"}
+
+# Next Frame Context
+{next_frame_context or "None (this is the last frame)"}
+"""
+        try:
+            content = self.llm.chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": "Please refine this frame. Output valid JSON only, no markdown fences."}
+                ],
+                response_format={'type': 'json_object'},
+            ).strip()
+            content = _strip_markdown_json(content)
+            result = json.loads(content)
+            return result
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse frame refine JSON: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Frame refine LLM call failed: {e}")
+            return None
+
     def polish_storyboard_prompt(self, draft_prompt: str, assets: List[Dict[str, Any]], feedback: str = "", custom_system_prompt: str = "") -> Dict[str, str]:
         """
         Polishes the storyboard prompt using Qwen-Plus, incorporating asset references.
@@ -934,67 +1133,183 @@ Props:
         except Exception as e:
             logger.error(f"Error polishing prompt: {e}", exc_info=True)
             return fallback_result
-    def polish_video_prompt(self, draft_prompt: str, feedback: str = "", custom_system_prompt: str = "") -> Dict[str, str]:
+    def polish_video_prompt(
+        self,
+        draft_prompt: str,
+        feedback: str = "",
+        custom_system_prompt: str = "",
+        prev_cn: str = "",
+        image_urls: Optional[List[str]] = None,
+        polish_model: str = "",
+    ) -> Dict[str, str]:
         """
-        Polishes a video generation prompt using Qwen-Plus.
+        Polishes a video generation prompt using Qwen.
         Returns bilingual prompts {prompt_cn, prompt_en}.
+
+        迭代时（feedback 非空）支持传入 prev_cn 实现双语锚点：
+          - 首次 polish: draft_prompt = 用户原文，prev_cn 留空
+          - 迭代 polish: draft_prompt = 上次的 EN，prev_cn = 上次的 CN，
+            feedback = 用户中文反馈。模型同时看到双语版，用 CN 锚点
+            定位反馈意图，再同步修改双语，降低 drift。
+
+        image_urls: I2V 模式下传入 active first frame URL（让 vision-capable
+        模型真正"看见"图像，比纯文本润色质量大幅提升）。空列表/None = 走
+        纯文本路径（兼容老的 t2i polish 或无 frame 的 shot）。
+
+        polish_model: 显式覆盖 LLMAdapter 默认模型；空 = 用 system default。
+
+        Raises:
+            PolishError: 4 种失败原因，由 API 层翻译成 HTTP 502。
         """
-        fallback = {"prompt_cn": draft_prompt, "prompt_en": draft_prompt}
-
         if not self.is_configured:
-            return fallback
+            raise PolishError(
+                reason="is_configured_false",
+                message_zh="LLM 未配置（缺少 DASHSCOPE_API_KEY），请到设置中检查。",
+                message_en="LLM not configured (missing DASHSCOPE_API_KEY). Please check settings.",
+            )
 
-        system_prompt = custom_system_prompt.strip() if custom_system_prompt and custom_system_prompt.strip() else DEFAULT_VIDEO_POLISH_PROMPT
+        has_images = bool(image_urls)
+        system_prompt = (
+            custom_system_prompt.strip()
+            if custom_system_prompt and custom_system_prompt.strip()
+            else DEFAULT_VIDEO_POLISH_PROMPT
+        )
+        # 让模型知道有图可看（仅在多模态分支才追加，避免无图时误导）。
+        if has_images:
+            system_prompt = (
+                system_prompt
+                + "\n\nIMPORTANT: The user has attached the first frame image(s) of the clip. "
+                "Look at the image(s) to ground your polish — describe what is actually visible "
+                "(subjects, composition, lighting, color palette) and use that to enrich the "
+                "motion/camera description. Do NOT invent elements absent from the image."
+            )
 
-        try:
-            # Build user message with optional feedback
-            user_message = draft_prompt
-            if feedback and feedback.strip():
-                user_message = f"""[当前提示词]
+        # Build user TEXT message — 首次 vs 迭代不同形态
+        if feedback and feedback.strip():
+            if prev_cn and prev_cn.strip():
+                user_text = f"""[当前提示词-CN]
+{prev_cn.strip()}
+
+[当前提示词-EN]
+{draft_prompt}
+
+[用户反馈]
+{feedback.strip()}
+
+请根据用户反馈同步修改双语版本，只修改用户指出的问题，保持其他部分不变。"""
+            else:
+                # 向后兼容：旧调用方未带 prev_cn 时仍可工作
+                user_text = f"""[当前提示词]
 {draft_prompt}
 
 [用户反馈]
 {feedback.strip()}
 
 请根据用户反馈修改提示词，只修改用户指出的问题，保持其他部分不变。"""
+        else:
+            user_text = draft_prompt
 
+        user_content: Any = user_text
+        if has_images:
+            # Multimodal user message — Qwen-VL & Kimi-K2 vision API
+            # follow OpenAI's chat-completions multimodal schema. We
+            # always put images FIRST so the model attends to them
+            # before reading the text-side instructions.
+            parts: List[Dict[str, Any]] = []
+            for url in image_urls:
+                resolved = _resolve_image_for_vision(url)
+                if resolved:
+                    parts.append({"type": "image_url", "image_url": {"url": resolved}})
+            if not parts:
+                # All image URLs failed to resolve → fall back to text-only
+                # rather than crashing. log so users can diagnose later.
+                logger.warning("polish: image_urls provided but none resolved; falling back to text-only")
+                has_images = False
+            else:
+                parts.append({"type": "text", "text": user_text})
+                user_content = parts
+
+        try:
             content = self.llm.chat(
                 messages=[
                     {'role': 'system', 'content': system_prompt},
-                    {'role': 'user', 'content': user_message}
+                    {'role': 'user', 'content': user_content},
                 ],
+                model=polish_model or None,
                 response_format={'type': 'json_object'},
             ).strip()
-            logger.debug(f"Video Prompt Polish Raw: {content[:200]}...")
+        except Exception as e:
+            logger.exception("Video polish: LLM API error")
+            raise PolishError(
+                reason="api_error",
+                message_zh=f"模型调用失败：{e}",
+                message_en=f"Model call failed: {e}",
+            ) from e
+        logger.debug(f"Video Prompt Polish Raw: {content[:200]}...")
 
-            # Parse JSON
-            content = _strip_markdown_json(content)
+        content = _strip_markdown_json(content)
+        try:
+            result = json.loads(content.strip())
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse video polish JSON: {e}")
+            raise PolishError(
+                reason="json_parse_error",
+                message_zh="模型返回了无效响应，建议重试或简化提示词。",
+                message_en="Model returned invalid response. Try again or simplify the prompt.",
+            ) from e
 
-            try:
-                result = json.loads(content.strip())
-                if "prompt_cn" in result and "prompt_en" in result:
-                    return result
-                else:
-                    logger.warning("Video polish missing bilingual keys")
-                    return fallback
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse video polish JSON: {e}")
-                return fallback
+        if "prompt_cn" not in result or "prompt_en" not in result:
+            logger.warning("Video polish missing bilingual keys")
+            raise PolishError(
+                reason="missing_keys",
+                message_zh="模型返回了不完整的双语结果，建议重试。",
+                message_en="Model returned incomplete bilingual result. Please retry.",
+            )
 
-        except Exception:
-            logger.exception("Failed to polish video prompt")
-            return fallback
+        # Echo 检测：模型几乎原文返回。本质是 warning（带原文给前端），
+        # 不是 hard error；前端按黄色警告渲染，让用户补 feedback。
+        if _is_echo(result["prompt_en"], draft_prompt):
+            raise PolishError(
+                reason="model_echo",
+                message_zh="模型未做明显修改。建议在下方反馈框补充具体要求（如运镜、光影、情绪）后重试。",
+                message_en="Model made no notable changes. Add more specific feedback (camera, lighting, mood) and retry.",
+                prompt_cn=result["prompt_cn"],
+                prompt_en=result["prompt_en"],
+            )
 
-    def polish_r2v_prompt(self, draft_prompt: str, slots: List[Dict[str, str]], feedback: str = "", custom_system_prompt: str = "") -> Dict[str, str]:
+        return result
+
+    def polish_r2v_prompt(
+        self,
+        draft_prompt: str,
+        slots: List[Dict[str, str]],
+        feedback: str = "",
+        custom_system_prompt: str = "",
+        prev_cn: str = "",
+        image_urls: Optional[List[str]] = None,
+        polish_model: str = "",
+    ) -> Dict[str, str]:
         """
-        Polishes a R2V (Reference-to-Video) prompt using Qwen-Plus.
+        Polishes a R2V (Reference-to-Video) prompt using Qwen.
         R2V requires explicit character references using character1, character2, character3 tags.
         Returns bilingual prompts {prompt_cn, prompt_en}.
-        """
-        fallback = {"prompt_cn": draft_prompt, "prompt_en": draft_prompt}
 
+        prev_cn: 双语锚点迭代用。详见 polish_video_prompt 文档。
+        image_urls: R2V 模式下传入用户挂载的 reference image URLs，让 vision
+        模型看见 character1/2/3 实际长什么样，再写出符合形象的运镜描述。
+        polish_model: 显式覆盖 LLMAdapter 默认模型；空 = 用 system default。
+
+        Raises:
+            PolishError: 4 种失败原因，由 API 层翻译成 HTTP 502。
+        """
         if not self.is_configured:
-            return fallback
+            raise PolishError(
+                reason="is_configured_false",
+                message_zh="LLM 未配置（缺少 DASHSCOPE_API_KEY），请到设置中检查。",
+                message_en="LLM not configured (missing DASHSCOPE_API_KEY). Please check settings.",
+            )
+
+        has_images = bool(image_urls)
 
         # Build slot context - using character1/2/3 format
         slot_context = []
@@ -1004,44 +1319,104 @@ Props:
         slot_context_str = "\n".join(slot_context) if slot_context else "No reference videos provided."
 
         # Use custom prompt or default, substituting {SLOTS} placeholder
-        template = custom_system_prompt.strip() if custom_system_prompt and custom_system_prompt.strip() else DEFAULT_R2V_POLISH_PROMPT
+        template = (
+            custom_system_prompt.strip()
+            if custom_system_prompt and custom_system_prompt.strip()
+            else DEFAULT_R2V_POLISH_PROMPT
+        )
         system_prompt = template.replace("{SLOTS}", slot_context_str)
+        if has_images:
+            system_prompt = (
+                system_prompt
+                + "\n\nIMPORTANT: The user has attached the reference image(s) for character1/2/3 above. "
+                "Look at the images to understand each character's actual appearance, costume, and pose. "
+                "Use that grounding when writing the action / camera description so the polished prompt "
+                "is faithful to what the references show. Do NOT contradict visible details."
+            )
 
-        try:
-            # Build user message with optional feedback
-            user_message = draft_prompt
-            if feedback and feedback.strip():
-                user_message = f"""[当前提示词]
+        if feedback and feedback.strip():
+            if prev_cn and prev_cn.strip():
+                user_text = f"""[当前提示词-CN]
+{prev_cn.strip()}
+
+[当前提示词-EN]
+{draft_prompt}
+
+[用户反馈]
+{feedback.strip()}
+
+请根据用户反馈同步修改双语版本，只修改用户指出的问题，保持其他部分不变。"""
+            else:
+                user_text = f"""[当前提示词]
 {draft_prompt}
 
 [用户反馈]
 {feedback.strip()}
 
 请根据用户反馈修改提示词，只修改用户指出的问题，保持其他部分不变。"""
+        else:
+            user_text = draft_prompt
 
+        user_content: Any = user_text
+        if has_images:
+            parts: List[Dict[str, Any]] = []
+            for url in image_urls:
+                resolved = _resolve_image_for_vision(url)
+                if resolved:
+                    parts.append({"type": "image_url", "image_url": {"url": resolved}})
+            if not parts:
+                # All image URLs failed to resolve → fall back to text-only
+                # rather than crashing. log so users can diagnose later.
+                logger.warning("polish: image_urls provided but none resolved; falling back to text-only")
+                has_images = False
+            else:
+                parts.append({"type": "text", "text": user_text})
+                user_content = parts
+
+        try:
             content = self.llm.chat(
                 messages=[
                     {'role': 'system', 'content': system_prompt},
-                    {'role': 'user', 'content': user_message}
+                    {'role': 'user', 'content': user_content},
                 ],
+                model=polish_model or None,
                 response_format={'type': 'json_object'},
             ).strip()
-            logger.debug(f"R2V Polished Raw: {content[:200]}...")
+        except Exception as e:
+            logger.exception("R2V polish: LLM API error")
+            raise PolishError(
+                reason="api_error",
+                message_zh=f"模型调用失败：{e}",
+                message_en=f"Model call failed: {e}",
+            ) from e
+        logger.debug(f"R2V Polished Raw: {content[:200]}...")
 
-            # Parse JSON
-            content = _strip_markdown_json(content)
+        content = _strip_markdown_json(content)
+        try:
+            result = json.loads(content.strip())
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse R2V polish JSON: {e}")
+            raise PolishError(
+                reason="json_parse_error",
+                message_zh="模型返回了无效响应，建议重试或简化提示词。",
+                message_en="Model returned invalid response. Try again or simplify the prompt.",
+            ) from e
 
-            try:
-                result = json.loads(content.strip())
-                if "prompt_cn" in result and "prompt_en" in result:
-                    return result
-                else:
-                    logger.warning("R2V polish missing bilingual keys")
-                    return fallback
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse R2V polish JSON: {e}")
-                return fallback
+        if "prompt_cn" not in result or "prompt_en" not in result:
+            logger.warning("R2V polish missing bilingual keys")
+            raise PolishError(
+                reason="missing_keys",
+                message_zh="模型返回了不完整的双语结果，建议重试。",
+                message_en="Model returned incomplete bilingual result. Please retry.",
+            )
 
-        except Exception:
-            logger.exception("Failed to polish R2V prompt")
-            return fallback
+        if _is_echo(result["prompt_en"], draft_prompt):
+            raise PolishError(
+                reason="model_echo",
+                message_zh="模型未做明显修改。建议在下方反馈框补充具体要求（如运镜、光影、情绪）后重试。",
+                message_en="Model made no notable changes. Add more specific feedback (camera, lighting, mood) and retry.",
+                prompt_cn=result["prompt_cn"],
+                prompt_en=result["prompt_en"],
+            )
+
+        return result

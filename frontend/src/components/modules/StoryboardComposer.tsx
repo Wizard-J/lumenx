@@ -12,11 +12,14 @@ import {
 import { useProjectStore } from "@/store/projectStore";
 import { api, API_URL, crudApi } from "@/lib/api";
 import { getAssetUrl, getAssetUrlWithTimestamp, extractErrorDetail } from "@/lib/utils";
+import StepHeader from "@/components/shared/StepHeader";
+import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
 
 import StoryboardFrameEditor from "./StoryboardFrameEditor";
 
 export default function StoryboardComposer() {
     const t = useTranslations("storyboard");
+    const tStep = useTranslations("stepHeader");
     const currentProject = useProjectStore((state) => state.currentProject);
     const selectedFrameId = useProjectStore((state) => state.selectedFrameId);
     const setSelectedFrameId = useProjectStore((state) => state.setSelectedFrameId);
@@ -324,36 +327,42 @@ export default function StoryboardComposer() {
 
     return (
         <div className="flex flex-col h-full text-foreground overflow-hidden">
-            {/* Top Toolbar */}
-            <div className="flex-shrink-0 p-4 border-b border-glass-border flex items-center justify-between bg-surface">
-                <h3 className="font-bold text-sm flex items-center gap-2">
-                    <Layout size={16} className="text-primary" /> {t("storyboardFrames")}
-                </h3>
-                <div className="flex items-center gap-3">
-                    <button
-                        onClick={() => setShowScriptOverlay(true)}
-                        className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-foreground px-2.5 py-1.5 rounded-lg hover:bg-glass transition-colors"
-                        title={t("viewOriginalScript")}
-                    >
-                        <FileText size={14} />
-                        {t("viewScript")}
-                    </button>
-                    <div className="w-px h-4 bg-glass" />
-                    <button
-                        onClick={handleAnalyzeToStoryboard}
-                        disabled={isAnalyzing}
-                        className="flex items-center gap-1.5 text-xs bg-primary/80 hover:bg-primary px-3 py-1.5 rounded-lg text-foreground transition-colors disabled:opacity-50"
-                        title={t("generateFromScript")}
-                    >
-                        {isAnalyzing ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
-                        {isAnalyzing ? t("generatingFrames") : t("generateStoryboard")}
-                    </button>
-                    <div className="w-px h-4 bg-glass" />
-                    <span className="text-xs text-text-muted font-mono">
-                        {currentProject?.frames?.length || 0} Frames
-                    </span>
-                </div>
-            </div>
+            <StepHeader
+                stepNumber={4}
+                totalSteps={6}
+                icon={<Layout />}
+                englishName="Storyboard Composer"
+                title={tStep("storyboardComposerTitle")}
+                subtitle={tStep("storyboardComposerSubtitle")}
+                trailing={(
+                    <div className="flex items-center gap-2">
+                        <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                            <span className="text-foreground font-medium">{currentProject?.frames?.length || 0}</span>
+                            <span className="ml-1.5">frames</span>
+                        </span>
+                        <WorkflowActionButton
+                            variant="ghost"
+                            size="sm"
+                            leftIcon={<FileText />}
+                            onClick={() => setShowScriptOverlay(true)}
+                            title={t("viewOriginalScript")}
+                        >
+                            {t("viewScript")}
+                        </WorkflowActionButton>
+                        <WorkflowActionButton
+                            variant="primary"
+                            size="sm"
+                            leftIcon={isAnalyzing ? undefined : <Zap />}
+                            loading={isAnalyzing}
+                            onClick={handleAnalyzeToStoryboard}
+                            disabled={isAnalyzing}
+                            title={t("generateFromScript")}
+                        >
+                            {isAnalyzing ? t("generatingFrames") : t("generateStoryboard")}
+                        </WorkflowActionButton>
+                    </div>
+                )}
+            />
 
             {/* Frame List — full width */}
             <div className="flex-1 overflow-y-auto p-8">
@@ -460,9 +469,9 @@ export default function StoryboardComposer() {
                                         <div className="flex items-start justify-between">
                                             <div className="space-y-1">
                                                 <div className="flex items-center gap-2">
-                                                    <span className="text-xs font-bold text-text-muted uppercase tracking-wider">{t("actionLabel")}</span>
+                                                    <span className="font-mono text-[10px] font-semibold text-text-secondary uppercase tracking-[0.18em]">{t("actionLabel")}</span>
                                                     {frame.camera_movement && (
-                                                        <span className="text-[10px] px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded border border-blue-500/30">
+                                                        <span className="font-mono text-[9.5px] uppercase tracking-[0.12em] px-1.5 py-0.5 bg-primary/15 text-primary rounded border border-primary/40">
                                                             {frame.camera_movement}
                                                         </span>
                                                     )}
@@ -475,7 +484,7 @@ export default function StoryboardComposer() {
 
                                         {frame.dialogue && (
                                             <div className="mt-auto pt-3 border-t border-border-subtle">
-                                                <span className="text-xs font-bold text-text-muted uppercase tracking-wider block mb-1">{t("dialogueLabel")}</span>
+                                                <span className="font-mono text-[10px] font-semibold text-text-secondary uppercase tracking-[0.18em] block mb-1">{t("dialogueLabel")}</span>
                                                 <p className="text-sm text-text-secondary italic">"{frame.dialogue}"</p>
                                             </div>
                                         )}
@@ -510,7 +519,7 @@ export default function StoryboardComposer() {
                                             </button>
                                             <button
                                                 onClick={(e) => handleUploadFrameImage(frame.id, e)}
-                                                className="btn-tip p-2 hover:bg-blue-500/20 text-text-secondary hover:text-blue-400 rounded-lg transition-colors"
+                                                className="btn-tip p-2 hover:bg-primary/15 text-text-secondary hover:text-primary rounded-lg transition-colors"
                                                 data-tip={t("uploadImage")}
                                             >
                                                 <Upload size={14} />
@@ -524,7 +533,7 @@ export default function StoryboardComposer() {
                                                     <button
                                                         onClick={(e) => handleExtractLastFrame(frame.id, e)}
                                                         disabled={extractingFrameId === frame.id}
-                                                        className="btn-tip p-2 hover:bg-purple-500/20 text-text-secondary hover:text-purple-400 rounded-lg transition-colors disabled:opacity-50"
+                                                        className="btn-tip p-2 hover:bg-primary/15 text-text-secondary hover:text-primary rounded-lg transition-colors disabled:opacity-50"
                                                         data-tip={t("usePrevEndFrame")}
                                                     >
                                                         {extractingFrameId === frame.id ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}

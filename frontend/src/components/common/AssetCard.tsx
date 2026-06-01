@@ -1,6 +1,7 @@
 "use client";
 
-import { Image as ImageIcon } from "lucide-react";
+import { Image as ImageIcon, Share2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { Character, Scene, Prop } from "@/store/projectStore";
 import { getAssetUrl } from "@/lib/utils";
 
@@ -44,9 +45,23 @@ function getImageUrl(asset: Character | Scene | Prop, type: AssetTab): string | 
 
 export default function AssetCard({ asset, type }: AssetCardProps) {
   const imageUrl = getImageUrl(asset, type);
+  const t = useTranslations("assetCard");
+  // Series-shared assets get a subtle top-right badge so the user
+  // knows mutations here will propagate across episodes (A1 design
+  // decision). Episode-local stays unbadged — the more common case.
+  const isShared = (asset as Character | Scene | Prop).source === "series";
 
   return (
-    <div className="glass-panel rounded-xl overflow-hidden">
+    <div className="glass-panel rounded-xl overflow-hidden relative">
+      {isShared ? (
+        <span
+          className="absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-full border border-status-starred-border bg-status-starred-bg px-2 py-[2px] font-mono text-[10px] font-medium uppercase tracking-[0.18em] text-status-starred-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-[2px]"
+          title={t("seriesSharedTooltip")}
+        >
+          <Share2 size={10} aria-hidden="true" />
+          {t("seriesSharedBadge")}
+        </span>
+      ) : null}
       <div className="aspect-square bg-elevated/50 flex items-center justify-center overflow-hidden">
         {imageUrl ? (
           <img src={getAssetUrl(imageUrl || "")} alt={asset.name} className="w-full h-full object-cover object-top" />

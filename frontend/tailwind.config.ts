@@ -26,11 +26,65 @@ const config: Config = {
         primary: "#646cff",
         secondary: "#535bf2",
         accent: "#ff0080",
+        // Storyboard R2V workbench status semantic tokens. Replaces
+        // 30+ scattered amber/emerald/red/blue arbitrary tints. Each
+        // status carries -fg / -border / -bg variants; starred also
+        // has -solid for chip backgrounds. Defined in globals.css per
+        // theme.
+        "status-pending-fg": "var(--color-status-pending-fg)",
+        "status-pending-border": "var(--color-status-pending-border)",
+        "status-pending-bg": "var(--color-status-pending-bg)",
+        "status-processing-fg": "var(--color-status-processing-fg)",
+        "status-processing-border": "var(--color-status-processing-border)",
+        "status-processing-bg": "var(--color-status-processing-bg)",
+        "status-completed-fg": "var(--color-status-completed-fg)",
+        "status-completed-border": "var(--color-status-completed-border)",
+        "status-completed-bg": "var(--color-status-completed-bg)",
+        "status-failed-fg": "var(--color-status-failed-fg)",
+        "status-failed-border": "var(--color-status-failed-border)",
+        "status-failed-bg": "var(--color-status-failed-bg)",
+        "status-starred-fg": "var(--color-status-starred-fg)",
+        "status-starred-border": "var(--color-status-starred-border)",
+        "status-starred-bg": "var(--color-status-starred-bg)",
+        "status-starred-solid": "var(--color-status-starred-solid)",
+        "on-warm": "var(--color-on-warm)",
       },
       fontFamily: {
         sans: ["var(--font-inter)", "sans-serif"],
         mono: ["var(--font-jetbrains-mono)", "monospace"],
         display: ["var(--font-space-grotesk)", "sans-serif"],
+      },
+      fontSize: {
+        // 3-tier type scale for the Storyboard R2V workbench (and
+        // anything else that needs a coherent product hierarchy).
+        // - chrome: terminal-aesthetic JetBrains Mono uppercase
+        //   tracking, used by section headers, status badges, metadata.
+        //   Two sizes (sm/base) so dense rows can compress without
+        //   inventing more arbitrary [9px]/[9.5px] values.
+        // - body: Inter regular for input values, current selections,
+        //   inline meta. The "you can read this" tier.
+        // - display: Space Grotesk semibold for primary CTAs and
+        //   focal headings. Reserved.
+        "chrome-sm":  ["10px", { lineHeight: "1.4", letterSpacing: "0.18em" }],
+        "chrome":     ["11px", { lineHeight: "1.4", letterSpacing: "0.18em" }],
+        "body-sm":    ["12px", { lineHeight: "1.45" }],
+        "body":       ["13px", { lineHeight: "1.5" }],
+        "display-sm": ["14px", { lineHeight: "1.3", letterSpacing: "-0.005em" }],
+        "display":    ["16px", { lineHeight: "1.25", letterSpacing: "-0.01em" }],
+      },
+      transitionTimingFunction: {
+        // Ease-out-quart everywhere per impeccable shared laws:
+        // exponential ease-out, no bounce, no elastic.
+        "out-quart": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "out-expo":  "cubic-bezier(0.16, 1, 0.3, 1)",
+      },
+      transitionDuration: {
+        // 3 motion tokens. fast = state feedback (hover, focus,
+        // toggle), base = enter/exit (panel mount, modal open),
+        // slow = orchestrated reveals.
+        "fast": "150ms",
+        "base": "250ms",
+        "slow": "400ms",
       },
       backgroundImage: {
         "gradient-radial": "radial-gradient(var(--tw-gradient-stops))",

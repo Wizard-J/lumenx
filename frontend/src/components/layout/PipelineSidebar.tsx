@@ -25,9 +25,14 @@ interface PipelineSidebarProps {
     steps: Step[];
     breadcrumbSegments?: BreadcrumbSegment[];
     headerActions?: React.ReactNode;
+    /** Optional content rendered between the header and the steps
+     *  nav. Used for the EpisodeMiniList when the current project
+     *  belongs to a series, so users can switch episodes without
+     *  leaving the pipeline shell. */
+    topSlot?: React.ReactNode;
 }
 
-export default function PipelineSidebar({ activeStep, onStepChange, steps, breadcrumbSegments, headerActions }: PipelineSidebarProps) {
+export default function PipelineSidebar({ activeStep, onStepChange, steps, breadcrumbSegments, headerActions, topSlot }: PipelineSidebarProps) {
     const tc = useTranslations("common");
     const tp = useTranslations("pipeline");
     const handleBack = () => {
@@ -98,6 +103,7 @@ export default function PipelineSidebar({ activeStep, onStepChange, steps, bread
                 )}
             </div>
 
+            {topSlot}
             <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
                 {steps.map((step, index) => {
                     const isActive = activeStep === step.id;

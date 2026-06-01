@@ -148,8 +148,8 @@ function AssetsInspector({ project }: { project: any }) {
                 {/* Character Aspect Ratio */}
                 <div className="space-y-2">
                     <label className="text-[10px] font-bold text-text-muted uppercase">Character</label>
-                    <div className="grid grid-cols-3 gap-1.5">
-                        {['9:16', '16:9', '1:1'].map((ratio) => (
+                    <div className="grid grid-cols-5 gap-1">
+                        {['9:16', '3:4', '1:1', '4:3', '16:9'].map((ratio) => (
                             <button
                                 key={ratio}
                                 onClick={() => handleUpdateAspectRatio('character', ratio)}
@@ -167,8 +167,8 @@ function AssetsInspector({ project }: { project: any }) {
                 {/* Scene Aspect Ratio */}
                 <div className="space-y-2">
                     <label className="text-[10px] font-bold text-text-muted uppercase">Scene</label>
-                    <div className="grid grid-cols-3 gap-1.5">
-                        {['9:16', '16:9', '1:1'].map((ratio) => (
+                    <div className="grid grid-cols-5 gap-1">
+                        {['9:16', '3:4', '1:1', '4:3', '16:9'].map((ratio) => (
                             <button
                                 key={ratio}
                                 onClick={() => handleUpdateAspectRatio('scene', ratio)}
@@ -186,8 +186,8 @@ function AssetsInspector({ project }: { project: any }) {
                 {/* Prop Aspect Ratio */}
                 <div className="space-y-2">
                     <label className="text-[10px] font-bold text-text-muted uppercase">Prop</label>
-                    <div className="grid grid-cols-3 gap-1.5">
-                        {['9:16', '16:9', '1:1'].map((ratio) => (
+                    <div className="grid grid-cols-5 gap-1">
+                        {['9:16', '3:4', '1:1', '4:3', '16:9'].map((ratio) => (
                             <button
                                 key={ratio}
                                 onClick={() => handleUpdateAspectRatio('prop', ratio)}

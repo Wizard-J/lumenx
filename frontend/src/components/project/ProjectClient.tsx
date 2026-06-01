@@ -1,31 +1,39 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { Palette, Layout, Film, Share2, Mic, Music, BookOpen, Users, Video, Settings, Key, MessageSquareCode, Clapperboard, Terminal } from "lucide-react";
+import { Palette, Layout, Film, BookOpen, Users, Video, Settings, Key, MessageSquareCode, Clapperboard, Terminal } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useProjectStore } from "@/store/projectStore";
 import { useLogStore } from "@/store/logStore";
 import PipelineSidebar from "@/components/layout/PipelineSidebar";
+import EpisodeMiniList from "@/components/layout/EpisodeMiniList";
 import type { BreadcrumbSegment } from "@/components/layout/BreadcrumbBar";
-import PropertiesPanel from "@/components/modules/PropertiesPanel";
+// PropertiesPanel removed in R2V v2 — chrome is owned per-step now.
+// ScriptProcessor right rail will become "Previously on..."; other steps
+// have their own SidePanelHeader-driven side columns.
 import ScriptProcessor from "@/components/modules/ScriptProcessor";
+import Cast from "@/components/modules/Cast";
 import VideoGenerator from "@/components/modules/VideoGenerator";
 import VideoAssembly from "@/components/modules/VideoAssembly";
 import ConsistencyVault from "@/components/modules/ConsistencyVault";
 import ArtDirection from "@/components/modules/ArtDirection";
 import StoryboardComposer from "@/components/modules/StoryboardComposer";
-import VoiceActingStudio from "@/components/modules/VoiceActingStudio";
-import FinalMixStudio from "@/components/modules/FinalMixStudio";
-import ExportStudio from "@/components/modules/ExportStudio";
 import ModelSettingsModal from "@/components/common/ModelSettingsModal";
 import EnvConfigDialog from "@/components/project/EnvConfigDialog";
 import PromptConfigModal from "@/components/project/PromptConfigModal";
 import StoryboardR2V from "@/components/modules/StoryboardR2V";
 import GlobalLogSidebar from "@/components/layout/GlobalLogPanel";
+import EntityConfirmModal from "@/components/modules/EntityConfirmModal";
 import dynamic from "next/dynamic";
 
 const CreativeCanvas = dynamic(() => import("@/components/canvas/CreativeCanvas"), { ssr: false });
 
+// PR-3m · Steps 7-9 (Voice / Final Mix / Export) deprecated. Their
+// functionality moved into:
+//   - Voice  → Cast voice binding + Storyboard DialogueAudioRow (PR-3g-3j)
+//   - Mix    → Assembly Mix phase tab (PR-3k)
+//   - Export → Assembly Export phase tab (PR-3k)
+// Both legacy and unified projects now share the 6-step shape.
 const LEGACY_STEPS = [
     { id: "script", label: "1. Script", icon: BookOpen },
     { id: "art_direction", label: "2. Art Direction", icon: Palette },
@@ -33,15 +41,18 @@ const LEGACY_STEPS = [
     { id: "storyboard", label: "4. Storyboard", icon: Layout },
     { id: "motion", label: "5. Motion", icon: Video },
     { id: "assembly", label: "6. Assembly", icon: Film },
-    { id: "audio", label: "7. Voice", icon: Mic, comingSoon: true },
-    { id: "mix", label: "8. Final Mix", icon: Music, comingSoon: true },
-    { id: "export", label: "9. Export", icon: Share2, comingSoon: true },
 ];
 
-const R2V_STEPS = [
+// PR-3f (r2v-workflow-v3) — Unified workflow: 5 steps including Cast.
+// Per-shot tabMode toggle (t2i_i2v vs direct_r2v) inside Storyboard
+// replaces the project-level i2v_legacy / r2v split. Backend enum
+// value remains "r2v" for backward compat — UI normalizes to "Unified".
+// Legacy `assets` step is dropped — Cast supersedes ConsistencyVault
+// for unified projects (ConsistencyVault stays only for legacy workflow).
+const UNIFIED_STEPS = [
     { id: "script", label: "1. Script", icon: BookOpen },
     { id: "art_direction", label: "2. Art Direction", icon: Palette },
-    { id: "assets", label: "3. Assets", icon: Users },
+    { id: "cast", label: "3. Cast", icon: Users },
     { id: "storyboard_r2v", label: "4. Storyboard", icon: Clapperboard },
     { id: "assembly", label: "5. Assembly", icon: Film },
 ];
@@ -57,23 +68,62 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
     const selectProject = useProjectStore((state) => state.selectProject);
     const currentProject = useProjectStore((state) => state.currentProject);
 
+    // R2V v2 Phase 6 — content_mode lives on the parent series; fetch on
+    // mount when project has series_id, default to "scripted" otherwise.
+    const [seriesContentMode, setSeriesContentMode] = useState<"scripted" | "freeform">("scripted");
+    useEffect(() => {
+        const sid = currentProject?.series_id;
+        if (!sid) {
+            setSeriesContentMode("scripted");
+            return;
+        }
+        let cancelled = false;
+        import("@/lib/api").then(({ api }) => api.getSeries(sid))
+            .then((s: any) => { if (!cancelled) setSeriesContentMode(s?.content_mode === "freeform" ? "freeform" : "scripted"); })
+            .catch(() => { if (!cancelled) setSeriesContentMode("scripted"); });
+        return () => { cancelled = true; };
+    }, [currentProject?.series_id]);
+
     const steps = useMemo(() => {
-        // Only use R2V steps when explicitly set to "r2v"
-        // Old projects without workflow_mode default to i2v_legacy
+        // PR-3f routing: backend enum "r2v" → unified workbench (5 steps).
+        // Anything else (i2v_legacy, missing) → legacy 9-step path. Old
+        // projects without workflow_mode default to legacy for backward
+        // compat (spec §3.2).
         if (currentProject?.workflow_mode !== "r2v") {
             return LEGACY_STEPS;
         }
-        // R2V episodes in a series skip individual Assets step (shared at series level)
-        if (currentProject?.series_id) {
-            const filtered = R2V_STEPS.filter(s => s.id !== "assets");
-            return filtered.map((s, i) => ({ ...s, label: `${i + 1}. ${s.label.replace(/^\d+\.\s*/, "")}` }));
+        // Phase 6 — freeform mode: skip Script step, episodes start at
+        // Style. Re-number labels accordingly.
+        if (seriesContentMode === "freeform") {
+            return UNIFIED_STEPS
+                .filter(s => s.id !== "script")
+                .map((s, i) => ({ ...s, label: s.label.replace(/^\d+\./, `${i + 1}.`) }));
         }
-        return R2V_STEPS;
-    }, [currentProject?.workflow_mode, currentProject?.series_id]);
+        // Scripted unified flow: Cast is always present (per-episode view
+        // of frame-referenced assets). Series-level shared assets are
+        // managed in SeriesDetailPage.
+        return UNIFIED_STEPS;
+    }, [currentProject?.workflow_mode, currentProject?.series_id, seriesContentMode]);
 
     const handleBackToHome = () => {
         window.location.hash = '';
     };
+
+    // Cross-module step navigation event (used by intra-module
+    // affordances like Storyboard's "画风" pill that wants to jump
+    // to Art Direction without prop-drilling setActiveStep into
+    // every leaf component).
+    useEffect(() => {
+        const handler = (e: Event) => {
+            const detail = (e as CustomEvent<string>).detail;
+            if (typeof detail !== "string") return;
+            if (steps.some((s) => s.id === detail)) {
+                setActiveStep(detail);
+            }
+        };
+        document.addEventListener("lumenx:navigateStep", handler);
+        return () => document.removeEventListener("lumenx:navigateStep", handler);
+    }, [steps]);
 
     useEffect(() => {
         selectProject(id);
@@ -138,6 +188,15 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
                     steps={steps}
                     breadcrumbSegments={segments}
                     headerActions={settingsActions}
+                    topSlot={
+                        currentProject?.series_id ? (
+                            <EpisodeMiniList
+                                seriesId={currentProject.series_id}
+                                currentProjectId={id}
+                                activeStep={activeStep}
+                            />
+                        ) : null
+                    }
                 />
             </div>
 
@@ -160,27 +219,63 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
                 isRequired={false}
             />
 
-            {/* Main Content Area */}
-            <div className="flex-1 flex overflow-hidden relative z-10">
+            {/* Main Content Area — no z-index to avoid trapping fixed modals in a stacking context */}
+            <div className="flex-1 flex overflow-hidden relative">
                 <div className="flex-1 overflow-hidden relative">
                     {activeStep === "script" && <ScriptProcessor />}
                     {activeStep === "art_direction" && <ArtDirection />}
-                    {activeStep === "assets" && <ConsistencyVault />}
+                    {activeStep === "cast" && <Cast />}
+                    {activeStep === "assets" && <ConsistencyVault />}  {/* legacy i2v only */}
                     {activeStep === "storyboard" && <StoryboardComposer />}
                     {activeStep === "storyboard_r2v" && <StoryboardR2V />}
                     {activeStep === "motion" && <VideoGenerator />}
                     {activeStep === "assembly" && <VideoAssembly />}
-                    {activeStep === "audio" && <VoiceActingStudio />}
-                    {activeStep === "mix" && <FinalMixStudio />}
-                    {activeStep === "export" && <ExportStudio />}
                 </div>
-
-                {/* Right Sidebar - Contextual Inspector */}
-                {activeStep !== "assembly" && activeStep !== "art_direction" && activeStep !== "storyboard_r2v" && <PropertiesPanel activeStep={activeStep} />}
             </div>
 
             {/* Global Log Sidebar */}
             <GlobalLogSidebar open={showLogs} onClose={() => setShowLogs(false)} />
+            <EntityExtractionConfirm />
         </main>
+    );
+}
+
+function EntityExtractionConfirm() {
+    const ts = useTranslations("script");
+    const pendingExtraction = useProjectStore((s) => s.pendingExtraction);
+    const currentProject = useProjectStore((s) => s.currentProject);
+    const confirmExtraction = useProjectStore((s) => s.confirmExtraction);
+    const discardExtraction = useProjectStore((s) => s.discardExtraction);
+
+    const handleConfirm = async () => {
+        try {
+            await confirmExtraction();
+            const refreshed = useProjectStore.getState().currentProject;
+            if (refreshed?.series_id) {
+                document.dispatchEvent(new CustomEvent("lumenx:openReconcile"));
+            }
+        } catch {
+            const { toast } = await import("@/store/toastStore");
+            toast.error(ts("analysisFailedShort"));
+        }
+    };
+
+    const handleDiscard = () => {
+        discardExtraction();
+        import("@/store/toastStore").then(({ toast }) => toast.info(ts("extractionDiscarded")));
+    };
+
+    return (
+        <EntityConfirmModal
+            isOpen={!!pendingExtraction}
+            preview={pendingExtraction}
+            currentCounts={{
+                characters: currentProject?.characters?.length ?? 0,
+                scenes: currentProject?.scenes?.length ?? 0,
+                props: currentProject?.props?.length ?? 0,
+            }}
+            onConfirm={handleConfirm}
+            onDiscard={handleDiscard}
+        />
     );
 }

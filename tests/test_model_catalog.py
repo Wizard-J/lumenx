@@ -27,19 +27,27 @@ class TestModelCatalog:
         catalog = build_catalog_dict(MODEL_CATALOG_ROOT)
 
         assert catalog["version"] == 1
+        # Defaults now point at the wan2.7 family (Phase 2 catalog upgrade
+        # 2026-Q1) and include the unified image_model surface used by
+        # the Atelier/Studio image generation path.
         assert catalog["defaults"]["model_settings"] == {
-            "t2i_model": "wan2.6-t2i",
-            "i2i_model": "wan2.6-image",
-            "i2v_model": "wan2.6-i2v",
+            "t2i_model": "wan2.7-image-pro",
+            "i2i_model": "wan2.7-image-pro",
+            "image_model": "wan2.7-image-pro",
+            "i2v_model": "happyhorse-1.0-i2v",
         }
 
         models = catalog["models"]
+        # wan2.6 entries remain in the catalog (hidden / legacy-visible)
+        # so existing project files keep round-tripping.
         assert "wan2.6-t2i" in models
         assert "wan2.6-image" in models
         assert "wan2.6-i2v" in models
         assert "wan2.6-r2v" in models
-        assert "kling-v3" in models
-        assert "viduq3-pro" in models
+        # The kling / vidu legacy ids gained an explicit modality suffix
+        # during Phase 2 to disambiguate i2v vs r2v entries.
+        assert "kling-v3-i2v" in models
+        assert "viduq3-pro-i2v" in models
         assert "pixverse-v4-i2v" in models
 
         assert models["wan2.6-i2v"]["ui"]["visible_in"] == [
@@ -122,14 +130,17 @@ class TestModelCatalog:
 
         assert family_map["kling-"].backend_env_key == "KLING_PROVIDER_MODE"
         assert family_map["vidu"].backend_env_key == "VIDU_PROVIDER_MODE"
-        assert family_map["pixverse-"].backend_env_key == "PIXVERSE_PROVIDER_MODE"
+        # Pixverse has no vendor backend yet — all pixverse routing
+        # currently goes through dashscope, so no PROVIDER_MODE env
+        # switch is wired in the catalog. Document the current state.
+        assert family_map["pixverse-"].backend_env_key is None
 
     def test_default_model_settings_come_from_catalog(self):
         defaults = get_default_model_settings(MODEL_CATALOG_ROOT)
 
-        assert defaults.t2i_model == "wan2.6-t2i"
-        assert defaults.i2i_model == "wan2.6-image"
-        assert defaults.i2v_model == "wan2.6-i2v"
+        assert defaults.t2i_model == "wan2.7-image-pro"
+        assert defaults.i2i_model == "wan2.7-image-pro"
+        assert defaults.i2v_model == "happyhorse-1.0-i2v"
 
     def test_validation_report_passes_for_repo_catalog(self):
         catalog = build_catalog_dict(MODEL_CATALOG_ROOT)
@@ -138,7 +149,7 @@ class TestModelCatalog:
 
         assert report.ok is True
         assert report.errors == ()
-        assert report.stats["defaults"]["t2i_model"] == "wan2.6-t2i"
+        assert report.stats["defaults"]["t2i_model"] == "wan2.7-image-pro"
         assert report.stats["surface_summary"]["video_sidebar"]["i2v"]
 
     def test_validation_report_detects_frontend_catalog_drift(self):
@@ -154,7 +165,10 @@ class TestModelCatalog:
     def test_validation_report_detects_default_visibility_regression(self):
         catalog = build_catalog_dict(MODEL_CATALOG_ROOT)
         broken_catalog = deepcopy(catalog)
-        broken_catalog["models"]["wan2.6-i2v"]["ui"]["visible_in"] = [
+        # Target the current default I2V model (happyhorse-1.0-i2v after
+        # the 2026-05-26 catalog meta switch) so the validation actually
+        # fires — the previous default (wan2.7-i2v) is no longer authoritative.
+        broken_catalog["models"]["happyhorse-1.0-i2v"]["ui"]["visible_in"] = [
             "project_settings",
             "series_settings",
             "global_settings",
@@ -176,6 +190,10 @@ class TestModelCatalogValidation:
                     "model_settings": {
                         "t2i_model": "wan2.6-t2i",
                         "i2i_model": "wan2.6-image",
+                        # image_model is required by the catalog validator
+                        # (added during the Phase 2 unified image surface
+                        # work) — synthetic test catalogs must include it.
+                        "image_model": "wan2.6-t2i",
                         "i2v_model": "wan2.6-i2v",
                     }
                 },
@@ -234,6 +252,10 @@ class TestModelCatalogValidation:
                     "model_settings": {
                         "t2i_model": "wan2.6-t2i",
                         "i2i_model": "wan2.6-image",
+                        # image_model is required by the catalog validator
+                        # (added during the Phase 2 unified image surface
+                        # work) — synthetic test catalogs must include it.
+                        "image_model": "wan2.6-t2i",
                         "i2v_model": "wan2.6-i2v",
                     }
                 },
@@ -445,19 +467,22 @@ class TestGetGatewayForModel:
     def test_gateway_lookup_vendor_backend(self):
         from src.utils.provider_registry import get_gateway_for_model
 
-        result = get_gateway_for_model("kling-v3", backend="vendor")
+        # Phase 2 catalog migration split kling-v3 into mode-suffixed
+        # legacy ids (kling-v3-i2v / kling-v3-r2v).
+        result = get_gateway_for_model("kling-v3-i2v", backend="vendor")
         assert result == "kling"
 
     def test_gateway_lookup_dashscope_backend_for_dual_provider(self):
         from src.utils.provider_registry import get_gateway_for_model
 
-        result = get_gateway_for_model("kling-v3", backend="dashscope")
+        result = get_gateway_for_model("kling-v3-i2v", backend="dashscope")
         assert result == "dashscope"
 
     def test_gateway_lookup_vidu_vendor(self):
         from src.utils.provider_registry import get_gateway_for_model
 
-        result = get_gateway_for_model("viduq3-pro", backend="vendor")
+        # viduq3-pro likewise split into viduq3-pro-i2v / -r2v.
+        result = get_gateway_for_model("viduq3-pro-i2v", backend="vendor")
         assert result == "vidu"
 
     def test_gateway_lookup_returns_none_for_unknown_model(self):

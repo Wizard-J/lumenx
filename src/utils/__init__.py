@@ -1,6 +1,15 @@
 import logging
 import sys
 import os
+from logging.handlers import RotatingFileHandler
+
+# Per-file size + backup count for the rotating log handler. Defaults
+# bound the on-disk footprint to ~20 MB (5 MB × 1 active + 3 backups).
+# Generous enough that a single bug-storm session lands in one file but
+# tight enough that long-running desktop installs don't accrete GBs of
+# logs over months.
+_LOG_MAX_BYTES = 5 * 1024 * 1024
+_LOG_BACKUP_COUNT = 3
 
 # User data directory for logs, config, and data
 def get_user_data_dir() -> str:

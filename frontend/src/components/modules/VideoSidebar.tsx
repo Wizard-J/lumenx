@@ -172,7 +172,7 @@ export default function VideoSidebar({ tasks, onRemix, params, setParams }: Vide
                                     <label className="block text-xs text-text-secondary mb-2">
                                         {tm("modelLabel")}
                                         {params.generationMode === "r2v" && (
-                                            <span className="text-purple-400 ml-2">{tm("r2vOnly", { name: r2vSelectionModelName })}</span>
+                                            <span className="text-primary ml-2">{tm("r2vOnly", { name: r2vSelectionModelName })}</span>
                                         )}
                                     </label>
                                     <div className="space-y-2">

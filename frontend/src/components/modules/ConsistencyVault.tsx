@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import { motion, AnimatePresence } from "framer-motion";
-import { Paintbrush, User, MapPin, Box, Lock, Unlock, RefreshCw, Upload, Image as ImageIcon, X, Check, Settings, ChevronRight, Trash2, Plus, Link as LinkIcon } from "lucide-react";
+import { Paintbrush, User, Users, MapPin, Box, Lock, Unlock, RefreshCw, Upload, Image as ImageIcon, X, Check, Settings, ChevronRight, Trash2, Plus, Link as LinkIcon } from "lucide-react";
 import { useProjectStore } from "@/store/projectStore";
 import { api, API_URL, crudApi } from "@/lib/api";
 import { getAssetUrl } from "@/lib/utils";
@@ -11,9 +11,12 @@ import CharacterWorkbench from "./CharacterWorkbench";
 import { VariantSelector } from "../common/VariantSelector";
 import { VideoVariantSelector } from "../common/VideoVariantSelector";
 import UploadAssetModal from "../modals/UploadAssetModal";
+import StepHeader from "@/components/shared/StepHeader";
+import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
 
 export default function ConsistencyVault() {
     const tv = useTranslations("vault");
+    const tStep = useTranslations("stepHeader");
     const currentProject = useProjectStore((state) => state.currentProject);
     const updateProject = useProjectStore((state) => state.updateProject);
 
@@ -357,42 +360,49 @@ export default function ConsistencyVault() {
 
     return (
         <div className="flex flex-col h-full text-foreground">
-            {/* Header */}
-            <div className="flex items-center justify-between p-6 border-b border-glass-border bg-surface">
-                <div className="flex gap-2 bg-surface p-1 rounded-xl border border-border-subtle">
+            <StepHeader
+                stepNumber={3}
+                totalSteps={6}
+                icon={<Users />}
+                englishName="Asset Library"
+                title={tStep("vaultTitle")}
+                subtitle={tStep("vaultSubtitle")}
+            />
+            {/* Tab bar + sync action */}
+            <div className="flex items-center justify-between gap-3 px-6 py-4 border-b border-glass-border bg-surface">
+                <div className="flex gap-2">
                     <TabButton
                         active={activeTab === "character"}
                         onClick={() => setActiveTab("character")}
-                        icon={<User size={18} />}
+                        icon={<User size={14} />}
                         label="Characters"
                         count={currentProject?.characters?.length || 0}
                     />
                     <TabButton
                         active={activeTab === "scene"}
                         onClick={() => setActiveTab("scene")}
-                        icon={<MapPin size={18} />}
+                        icon={<MapPin size={14} />}
                         label="Scenes"
                         count={currentProject?.scenes?.length || 0}
                     />
                     <TabButton
                         active={activeTab === "prop"}
                         onClick={() => setActiveTab("prop")}
-                        icon={<Box size={18} />}
+                        icon={<Box size={14} />}
                         label="Props"
                         count={currentProject?.props?.length || 0}
                     />
                 </div>
 
-                <div className="flex gap-2">
-                    <button
-                        onClick={handleSyncDescriptions}
-                        className="flex items-center gap-2 px-3 py-2 bg-glass hover:bg-hover-bg border border-glass-border rounded-lg transition-colors"
-                        title={tv("syncDescHint")}
-                    >
-                        <RefreshCw size={14} className="text-blue-400" />
-                        <span className="text-sm font-medium">{tv("syncDesc")}</span>
-                    </button>
-                </div>
+                <WorkflowActionButton
+                    variant="secondary"
+                    size="sm"
+                    leftIcon={<RefreshCw />}
+                    onClick={handleSyncDescriptions}
+                    title={tv("syncDescHint")}
+                >
+                    {tv("syncDesc")}
+                </WorkflowActionButton>
             </div>
 
             {/* Content Grid */}
@@ -770,16 +780,18 @@ function TabButton({ active, onClick, icon, label, count }: any) {
     return (
         <button
             onClick={onClick}
-            className={`flex items-center justify-between w-full p-3 rounded-xl transition-all ${active
-                ? "bg-glass text-foreground border border-glass-border shadow-sm"
-                : "text-text-muted hover:bg-glass hover:text-text-secondary"
+            className={`inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 border transition-colors ${active
+                ? "bg-[rgba(100,108,255,0.12)] text-foreground border-primary"
+                : "bg-glass text-text-secondary hover:text-foreground border-glass-border hover:border-glass-border-strong"
                 }`}
         >
-            <div className="flex items-center gap-3">
-                {icon}
-                <span className="font-bold text-sm">{label}</span>
-            </div>
-            <span className="text-xs bg-surface px-2 py-0.5 rounded-full">{count}</span>
+            <span className={active ? "text-primary" : ""}>{icon}</span>
+            <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.14em]">{label}</span>
+            <span className={`font-mono text-[9px] px-1.5 py-0.5 rounded-full border ${
+                active
+                    ? "text-primary border-primary/40 bg-[rgba(100,108,255,0.08)]"
+                    : "text-text-muted border-glass-border bg-black/30"
+            }`}>{count}</span>
         </button>
     );
 }
@@ -869,7 +881,7 @@ function AssetCard({ asset, type, isGenerating, onGenerate, onToggleLock, onClic
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             onClick={onClick}
-            className={`group relative aspect-[3/4] bg-surface rounded-2xl border overflow-hidden transition-colors cursor-pointer ${isLocked ? 'border-yellow-500/50' : 'border-glass-border hover:border-primary/50'
+            className={`group relative aspect-[3/4] bg-surface rounded-2xl border overflow-hidden transition-colors cursor-pointer ${isLocked ? 'border-primary/60 border-dashed' : 'border-glass-border hover:border-primary/50'
                 }`}
         >
             {/* Image Area */}
@@ -913,7 +925,7 @@ function AssetCard({ asset, type, isGenerating, onGenerate, onToggleLock, onClic
                         onToggleLock();
                     }}
                     className={`p-2 rounded-full backdrop-blur-md transition-colors ${isLocked
-                        ? "bg-yellow-500/20 text-yellow-500 hover:bg-yellow-500/30"
+                        ? "bg-primary/20 text-primary hover:bg-primary/30"
                         : "bg-surface text-foreground hover:bg-hover-bg"
                         }`}
                 >
@@ -929,26 +941,26 @@ function AssetCard({ asset, type, isGenerating, onGenerate, onToggleLock, onClic
                 </p>
 
                 <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0">
-                    <button
+                    <WorkflowActionButton
                         onClick={(e) => {
                             e.stopPropagation();
                             onGenerate();
                         }}
                         disabled={isLocked || isGenerating}
-                        className={`flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-colors ${isLocked
-                            ? 'bg-gray-600 text-text-secondary cursor-not-allowed'
-                            : 'bg-primary hover:bg-primary/90 text-white shadow-lg shadow-primary/20'
-                            }`}
+                        loading={isGenerating}
+                        leftIcon={!isGenerating ? <RefreshCw /> : undefined}
+                        variant="primary"
+                        size="sm"
+                        className="flex-1"
                     >
-                        <RefreshCw size={14} className={isGenerating ? "animate-spin" : ""} />
                         {isGenerating ? "Generating..." : "Generate"}
-                    </button>
+                    </WorkflowActionButton>
                     <button
                         onClick={(e) => {
                             e.stopPropagation();
                             onUpload?.();
                         }}
-                        className="p-2 bg-glass hover:bg-hover-bg rounded-lg text-white cursor-pointer transition-colors"
+                        className="px-2.5 rounded-full bg-glass hover:bg-hover-bg border border-glass-border text-white cursor-pointer transition-colors"
                         title={tv("uploadAsset")}
                     >
                         <Upload size={14} />

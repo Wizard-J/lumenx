@@ -505,6 +505,7 @@ class WanxModel(VideoGenModel):
                     watermark=watermark,
                     audio_setting=kwargs.get('audio_setting'),
                     extra_headers=extra_media_headers,
+                    on_provider_ids=kwargs.get('on_provider_ids'),
                 )
             else:
                 # Use SDK for other models
@@ -775,7 +776,18 @@ class WanxModel(VideoGenModel):
                            resolution: str = "1080P", duration: int = 5,
                            ratio: Optional[str] = None, seed: Optional[int] = None,
                            watermark: bool = False, audio_setting: Optional[str] = None,
-                           extra_headers: Optional[Mapping[str, str]] = None) -> str:
+                           extra_headers: Optional[Mapping[str, str]] = None,
+                           on_provider_ids: Optional[Callable[[str, Optional[str], Optional[str]], None]] = None) -> str:
+        """Generate video using HappyHorse models via HTTP API (asynchronous with polling).
+
+        on_provider_ids: optional callback fired AS SOON AS task creation succeeds,
+        BEFORE the long polling loop begins. Signature is
+        `(provider_name, provider_task_id, provider_request_id)`. Used by the
+        pipeline to persist Bailian / DashScope IDs onto our VideoTask so the
+        user can paste them into the 百炼 console for diagnosis even while the
+        task is still running (Issue 17). Failures during the callback are
+        logged but do not interrupt generation.
+        """
         """Generate video using HappyHorse models via HTTP API (asynchronous with polling)."""
         base = get_provider_base_url("DASHSCOPE")
         create_url = f"{base}/api/v1/services/aigc/video-generation/video-synthesis"
@@ -829,10 +841,21 @@ class WanxModel(VideoGenModel):
 
         result = response.json()
         task_id = result.get('output', {}).get('task_id')
+        request_id = result.get('request_id')
         if not task_id:
             raise RuntimeError(f"No task_id in response: {result}")
 
-        logger.info(f"HappyHorse task created: {task_id}")
+        logger.info(f"HappyHorse task created: {task_id} (request_id={request_id})")
+
+        # Fire provider-id callback ASAP — pipeline persists these onto our
+        # VideoTask so the UI / user can copy them while the task is still
+        # running. Wrap in try/except so a buggy callback can't kill the
+        # whole generation flow.
+        if on_provider_ids is not None:
+            try:
+                on_provider_ids("dashscope", task_id, request_id)
+            except Exception as cb_err:
+                logger.warning(f"on_provider_ids callback failed: {cb_err}")
 
         # Step 2: Poll for task completion
         poll_url = f"{base}/api/v1/tasks/{task_id}"

@@ -1,13 +1,17 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useTranslations } from "next-intl";
+import { Video } from "lucide-react";
 import { useProjectStore } from "@/store/projectStore";
 import VideoCreator from "./VideoCreator";
 import VideoSidebar from "./VideoSidebar";
 import { api, VideoTask } from "@/lib/api";
 import { resolveModelId } from "@/lib/modelCatalog";
+import StepHeader from "@/components/shared/StepHeader";
 
 export default function VideoGenerator() {
+    const tStep = useTranslations("stepHeader");
     const currentProject = useProjectStore((state) => state.currentProject);
     const updateProject = useProjectStore((state) => state.updateProject);
     const [tasks, setTasks] = useState<VideoTask[]>([]);
@@ -120,27 +124,60 @@ export default function VideoGenerator() {
         }));
     };
 
-    return (
-        <div className="flex h-full w-full overflow-hidden">
-            {/* Left: Creator (70%) */}
-            <div className="w-[70%] h-full border-r border-glass-border">
-                <VideoCreator
-                    onTaskCreated={handleTaskCreated}
-                    remixData={remixData}
-                    onRemixClear={() => setRemixData(null)}
-                    params={params}
-                    onParamsChange={(newParams) => setParams(p => ({ ...p, ...newParams }))}
-                />
-            </div>
+    const queueCount = tasks.filter(t => t.status === "pending" || t.status === "processing").length;
+    const doneCount = tasks.filter(t => t.status === "completed").length;
 
-            {/* Right: Sidebar (30%) */}
-            <div className="w-[30%] h-full">
-                <VideoSidebar
-                    tasks={tasks}
-                    onRemix={handleRemix}
-                    params={params}
-                    setParams={setParams}
-                />
+    return (
+        <div className="flex flex-col h-full w-full overflow-hidden">
+            <StepHeader
+                stepNumber={5}
+                totalSteps={6}
+                icon={<Video />}
+                englishName="Motion Generator"
+                title={tStep("motionTitle")}
+                subtitle={tStep("motionSubtitle")}
+                trailing={tasks.length > 0 ? (
+                    <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                        <span className="text-foreground font-medium">{tasks.length}</span>
+                        <span className="ml-1.5">shots</span>
+                        {doneCount > 0 ? (
+                            <>
+                                <span className="mx-1.5 text-text-muted/40">·</span>
+                                <span className="text-primary">{doneCount}</span>
+                                <span className="ml-1.5">done</span>
+                            </>
+                        ) : null}
+                        {queueCount > 0 ? (
+                            <>
+                                <span className="mx-1.5 text-text-muted/40">·</span>
+                                <span className="text-foreground">{queueCount}</span>
+                                <span className="ml-1.5">in queue</span>
+                            </>
+                        ) : null}
+                    </span>
+                ) : undefined}
+            />
+            <div className="flex flex-1 overflow-hidden">
+                {/* Left: Creator (70%) */}
+                <div className="w-[70%] h-full border-r border-glass-border">
+                    <VideoCreator
+                        onTaskCreated={handleTaskCreated}
+                        remixData={remixData}
+                        onRemixClear={() => setRemixData(null)}
+                        params={params}
+                        onParamsChange={(newParams) => setParams(p => ({ ...p, ...newParams }))}
+                    />
+                </div>
+
+                {/* Right: Sidebar (30%) */}
+                <div className="w-[30%] h-full">
+                    <VideoSidebar
+                        tasks={tasks}
+                        onRemix={handleRemix}
+                        params={params}
+                        setParams={setParams}
+                    />
+                </div>
             </div>
         </div>
     );

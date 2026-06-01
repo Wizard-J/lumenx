@@ -16,6 +16,7 @@ import GlobalLogSidebar from "@/components/layout/GlobalLogPanel";
 const SeriesModelSettingsModal = dynamic(() => import("./SeriesModelSettingsModal"), { ssr: false });
 const SeriesPromptConfigModal = dynamic(() => import("./SeriesPromptConfigModal"), { ssr: false });
 const ImportAssetsDialog = dynamic(() => import("./ImportAssetsDialog"), { ssr: false });
+const SeriesArtDirectionPanel = dynamic(() => import("./SeriesArtDirectionPanel"), { ssr: false });
 
 interface SeriesDetailPageProps {
   seriesId: string;
@@ -194,7 +195,13 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
       {/* ── Content Area ── */}
       <div className="flex-1 flex flex-col overflow-hidden bg-surface">
         <AnimatePresence mode="wait">
-          {activeItem.kind === "asset" ? (
+          {activeItem.kind === "art_direction" ? (
+            <SeriesArtDirectionPanel
+              key="art-direction"
+              seriesId={seriesId}
+              onSaved={refreshSeriesData}
+            />
+          ) : activeItem.kind === "asset" ? (
             <AssetContentPanel
               key={`asset-${activeItem.tab}`}
               tab={activeItem.tab}

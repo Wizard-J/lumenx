@@ -3,16 +3,22 @@
 import { useState, useEffect, useMemo } from "react";
 import { useTranslations } from "next-intl";
 import { motion, AnimatePresence } from "framer-motion";
-import { Play, Check, ChevronRight, Loader2, Film, AlertTriangle, Layout, Clock, FileText, Download } from "lucide-react";
+import { Check, Loader2, Film, AlertTriangle, Layout, Clock, FileText, Download, Music, Sliders, Package } from "lucide-react";
 import { useProjectStore } from "@/store/projectStore";
-import { api, API_URL } from "@/lib/api";
+import { api, type BgmPreset } from "@/lib/api";
 import { getAssetUrl, extractErrorDetail } from "@/lib/utils";
+import StepHeader from "@/components/shared/StepHeader";
+import SidePanelHeader from "@/components/shared/SidePanelHeader";
+
+type AssemblyPhase = "takes" | "mix" | "export";
 
 export default function VideoAssembly() {
     const ta = useTranslations("assembly");
+    const tStep = useTranslations("stepHeader");
     const currentProject = useProjectStore((state) => state.currentProject);
     const updateProject = useProjectStore((state) => state.updateProject);
 
+    const [phase, setPhase] = useState<AssemblyPhase>("takes");
     const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
     const [isMerging, setIsMerging] = useState(false);
     const [mergeError, setMergeError] = useState<string | null>(null);
@@ -104,26 +110,57 @@ export default function VideoAssembly() {
 
     const variants = selectedFrameId ? videosByFrame[selectedFrameId] || [] : [];
 
-    return (
-        <div className="h-full flex flex-col bg-surface overflow-hidden">
-            {/* Top Section: Split View (Timeline + Variants) */}
-            <div className="flex-1 flex flex-row min-h-0">
-                {/* Left Column: Vertical List + Action Bar */}
-                <div className="flex-1 flex flex-col min-w-0 border-r border-glass-border">
-                    {/* Header */}
-                    <div className="h-14 border-b border-glass-border flex items-center justify-between px-6 bg-surface">
-                        <h2 className="font-bold text-lg flex items-center gap-2">
-                            <Film className="text-primary" size={20} />
-                            {ta("assemblyTimeline")}
-                        </h2>
-                        <div className="text-sm text-text-secondary">
-                            <span className="text-foreground font-bold">{currentProject?.frames?.filter((f: any) => f.selected_video_id).length}</span>
-                            /{currentProject?.frames?.length} {ta("framesReady")}
-                        </div>
-                    </div>
+    const framesReady = currentProject?.frames?.filter((f: any) => f.selected_video_id).length ?? 0;
+    const framesTotal = currentProject?.frames?.length ?? 0;
 
-                    {/* Vertical List */}
-                    <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-4">
+    return (
+        // Layout v4: outer horizontal split. StepHeader belongs to main
+        // column; right Variants panel is floor-to-ceiling with its own
+        // SidePanelHeader.
+        <div className="h-full flex bg-surface overflow-hidden">
+            {/* Left: main column */}
+            <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+                <StepHeader
+                    stepNumber={4}
+                    icon={<Film />}
+                    englishName="Assembly"
+                    title={tStep("assemblyTitle")}
+                    subtitle={tStep("assemblySubtitle")}
+                    trailing={(
+                        <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                            <span className="text-foreground font-medium">{framesReady}</span>
+                            <span className="text-text-muted">/{framesTotal}</span>
+                            <span className="ml-1.5">frames ready</span>
+                        </span>
+                    )}
+                />
+                {/* PR-3k · Phase tabs — Takes / Mix / Export */}
+                <div className="flex items-center gap-1 px-6 pt-2 border-b border-glass-border bg-surface">
+                    {[
+                        { id: "takes" as const,  label: ta("phaseTakes"),  icon: <Film size={12} /> },
+                        { id: "mix" as const,    label: ta("phaseMix"),    icon: <Sliders size={12} /> },
+                        { id: "export" as const, label: ta("phaseExport"), icon: <Package size={12} /> },
+                    ].map((p) => (
+                        <button
+                            key={p.id}
+                            onClick={() => setPhase(p.id)}
+                            className={`relative inline-flex items-center gap-1.5 px-3 pb-2 font-mono text-[11px] uppercase tracking-[0.16em] transition-colors ${
+                                phase === p.id
+                                    ? "text-foreground"
+                                    : "text-text-muted hover:text-text-secondary"
+                            }`}
+                        >
+                            {p.icon}
+                            {p.label}
+                            {phase === p.id && (
+                                <span className="absolute bottom-0 left-2 right-2 h-px bg-primary" aria-hidden="true" />
+                            )}
+                        </button>
+                    ))}
+                </div>
+                {/* Takes phase body */}
+                {phase === "takes" && (
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-4">
                         {currentProject?.frames?.map((frame: any, index: number) => {
                             const hasVideos = videosByFrame[frame.id]?.length > 0;
                             const isSelected = frame.id === selectedFrameId;
@@ -143,7 +180,11 @@ export default function VideoAssembly() {
                                     <div className="w-48 aspect-video relative flex-shrink-0 border-r border-glass-border bg-elevated">
                                         {selectedVideo ? (
                                             <video
-                                                src={getAssetUrl(selectedVideo.video_url)}
+                                                src={getAssetUrl(
+                                                    frame.dubbed_video_task_id === selectedVideo.id && frame.dubbed_video_url
+                                                        ? frame.dubbed_video_url
+                                                        : selectedVideo.video_url
+                                                )}
                                                 className="w-full h-full object-cover"
                                                 muted
                                                 onMouseOver={(e) => e.currentTarget.play()}
@@ -216,68 +257,47 @@ export default function VideoAssembly() {
                                 </motion.div>
                             );
                         })}
-                    </div>
+                </div>
+                )}
 
-                    {/* Bottom Action Bar */}
-                    <div className="h-20 border-t border-glass-border bg-surface flex items-center justify-end px-8">
-                        <button
-                            onClick={handleMerge}
-                            disabled={isMerging}
-                            className="bg-glass hover:bg-hover-bg border border-primary/50 hover:border-primary text-primary hover:text-foreground px-8 py-3 rounded-xl font-bold flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                        >
-                            {isMerging ? <Loader2 className="animate-spin" /> : <Film />}
-                            {ta("mergeAndProceed")}
-                        </button>
-                    </div>
+                {/* Mix phase body — BGM picker + per-track volume sliders */}
+                {phase === "mix" && (
+                    <MixPhase scriptId={currentProject?.id ?? null}
+                              bgmUrl={currentProject?.bgm_url ?? null}
+                              mixSettings={currentProject?.mix_settings as Record<string, number> | undefined}
+                              onChange={(updated) => currentProject && updateProject(currentProject.id, updated)}
+                    />
+                )}
 
-                    {/* Error Display */}
-                    {mergeError && (
-                        <motion.div
-                            initial={{ opacity: 0, height: 0 }}
-                            animate={{ opacity: 1, height: "auto" }}
-                            className="px-8 pb-4"
-                        >
-                            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
-                                <div className="flex items-start gap-3">
-                                    <AlertTriangle className="text-red-500 flex-shrink-0 mt-0.5" size={20} />
-                                    <div className="flex-1">
-                                        <h4 className="text-sm font-bold text-red-400 mb-1">{ta("mergeFailed")}</h4>
-                                        <p className="text-xs text-red-300/90 whitespace-pre-wrap leading-relaxed font-mono">
-                                            {mergeError}
-                                        </p>
-                                        {mergeError.toLowerCase().includes("ffmpeg") && (
-                                            <a
-                                                href="https://ffmpeg.org/download.html"
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                className="text-xs text-blue-400 hover:text-blue-300 underline mt-2 inline-block"
-                                            >
-                                                Download FFmpeg →
-                                            </a>
-                                        )}
-                                        <button
-                                            onClick={() => setMergeError(null)}
-                                            className="mt-3 text-xs text-text-secondary hover:text-foreground underline"
-                                        >
-                                            {ta("dismiss")}
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </motion.div>
-                    )}
+                {/* Export phase body — merge action + final preview + download */}
+                {phase === "export" && (
+                    <div className="flex-1 overflow-y-auto custom-scrollbar p-8 space-y-6">
+                        <ExportPhase
+                            mergedVideoUrl={currentProject?.merged_video_url ?? null}
+                            isMerging={isMerging}
+                            isDownloading={isDownloading}
+                            mergeError={mergeError}
+                            framesReady={framesReady}
+                            framesTotal={framesTotal}
+                            onMerge={handleMerge}
+                            onDownload={handleDownload}
+                            onDismissError={() => setMergeError(null)}
+                        />
+                    </div>
+                )}
                 </div>
 
-                {/* Right Sidebar - Variants */}
-                <div className="w-96 bg-elevated flex flex-col shadow-md z-10 border-l border-glass-border">
-                    <div className="h-14 border-b border-glass-border flex items-center justify-between px-4 bg-surface">
-                        <h3 className="font-bold text-sm">{ta("variants")}</h3>
-                        {selectedFrameId && (
-                            <span className="text-xs text-text-muted">Frame #{(currentProject?.frames?.findIndex((f: any) => f.id === selectedFrameId) ?? -1) + 1}</span>
-                        )}
-                    </div>
-
-                    <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+            {/* Right Sidebar - Variants — only visible in Takes phase */}
+            {phase === "takes" && (
+            <div className="w-[360px] shrink-0 bg-surface flex flex-col z-10 border-l border-glass-border overflow-hidden">
+                <SidePanelHeader
+                    icon={<Film />}
+                    title={ta("variants")}
+                    subtitle={selectedFrameId
+                        ? `Frame #${(currentProject?.frames?.findIndex((f: any) => f.id === selectedFrameId) ?? -1) + 1}`
+                        : undefined}
+                />
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
                         {selectedFrameId ? (
                             <div className="space-y-4">
                                 {variants.length > 0 ? (
@@ -291,7 +311,11 @@ export default function VideoAssembly() {
                                             >
                                                 <div className="aspect-video relative bg-black">
                                                     <video
-                                                        src={getAssetUrl(video.video_url)}
+                                                        src={getAssetUrl(
+                                                            selectedFrame?.dubbed_video_task_id === video.id && selectedFrame?.dubbed_video_url
+                                                                ? selectedFrame.dubbed_video_url
+                                                                : video.video_url
+                                                        )}
                                                         className="w-full h-full object-contain"
                                                         controls
                                                     />
@@ -342,53 +366,244 @@ export default function VideoAssembly() {
                         )}
                     </div>
                 </div>
-            </div>
+            )}
+        </div>
+    );
+}
 
-            {/* Bottom Section: Merged Video Preview */}
-            <AnimatePresence>
-                {currentProject?.merged_video_url && (
-                    <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: "auto", opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        className="border-t border-glass-border bg-elevated shadow-md z-20"
+// ──────────────────────────────────────────────────────────────────
+// PR-3k · Phase sub-components
+// ──────────────────────────────────────────────────────────────────
+
+function MixPhase({
+    scriptId,
+    bgmUrl,
+    mixSettings,
+    onChange,
+}: {
+    scriptId: string | null;
+    bgmUrl: string | null;
+    mixSettings: Record<string, number> | undefined;
+    onChange: (updated: { bgm_url?: string | null; mix_settings?: Record<string, number> }) => void;
+}) {
+    const ta = useTranslations("assembly");
+    const [presets, setPresets] = useState<BgmPreset[]>([]);
+    const [loading, setLoading] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const mix = mixSettings ?? { dialogue: 100, bgm: 35, sfx: 60 };
+
+    useEffect(() => {
+        let cancelled = false;
+        setLoading(true);
+        api.listBgmPresets()
+            .then((p) => { if (!cancelled) setPresets(p); })
+            .catch(() => { if (!cancelled) setPresets([]); })
+            .finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
+    }, []);
+
+    const handlePick = async (preset: BgmPreset | null) => {
+        if (!scriptId) return;
+        setSaving(true);
+        try {
+            const updated = await api.updateAudioMix(scriptId, { bgm_url: preset ? preset.url : null });
+            onChange({ bgm_url: updated.bgm_url, mix_settings: updated.mix_settings });
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const handleVolume = async (track: "dialogue" | "bgm" | "sfx", value: number) => {
+        if (!scriptId) return;
+        // Optimistic update for snappy slider
+        onChange({ mix_settings: { ...mix, [track]: value } });
+        try {
+            const payload: Record<string, number> = {};
+            payload[`${track}_volume`] = value;
+            await api.updateAudioMix(scriptId, payload as any);
+        } catch (_) {
+            // Revert handled by next project refresh — keep silent for v1
+        }
+    };
+
+    return (
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-8 space-y-8">
+            {/* BGM picker */}
+            <section>
+                <h3 className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.18em] text-text-muted">
+                    <Music size={12} className="text-primary" />
+                    {ta("mixBgmTitle")}
+                    {saving && <Loader2 size={12} className="animate-spin text-primary" />}
+                </h3>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+                    <button
+                        onClick={() => handlePick(null)}
+                        className={`rounded-lg border p-3 text-left transition-colors ${
+                            !bgmUrl
+                                ? "border-primary bg-[rgba(100,108,255,0.10)]"
+                                : "border-glass-border bg-glass hover:border-white/15"
+                        }`}
                     >
-                        <div className="max-w-7xl mx-auto p-6 flex gap-8">
-                            {/* Video Player */}
-                            <div className="w-1/3 aspect-video bg-black rounded-xl overflow-hidden border border-glass-border shadow-lg relative group">
-                                <video
-                                    src={getAssetUrl(currentProject.merged_video_url)}
-                                    className="w-full h-full object-contain"
-                                    controls
-                                    autoPlay
-                                />
+                        <p className="text-[13px] font-medium text-foreground">{ta("mixBgmNone")}</p>
+                        <p className="mt-0.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-text-muted">silent</p>
+                    </button>
+                    {loading ? (
+                        <div className="col-span-3 grid place-items-center py-4 text-text-muted">
+                            <Loader2 size={16} className="animate-spin" />
+                        </div>
+                    ) : (
+                        presets.map((p) => {
+                            const selected = bgmUrl === p.url;
+                            return (
+                                <button
+                                    key={p.id}
+                                    onClick={() => handlePick(p)}
+                                    className={`rounded-lg border p-3 text-left transition-colors ${
+                                        selected
+                                            ? "border-primary bg-[rgba(100,108,255,0.10)]"
+                                            : "border-glass-border bg-glass hover:border-white/15"
+                                    }`}
+                                >
+                                    <p className="text-[13px] font-medium text-foreground truncate">{p.label}</p>
+                                    <p className="mt-0.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-text-muted">{p.mood}</p>
+                                </button>
+                            );
+                        })
+                    )}
+                </div>
+            </section>
+
+            {/* Volume sliders */}
+            <section>
+                <h3 className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.18em] text-text-muted">
+                    <Sliders size={12} className="text-primary" />
+                    {ta("mixLevelsTitle")}
+                </h3>
+                <div className="space-y-3 max-w-lg">
+                    {(["dialogue", "bgm", "sfx"] as const).map((track) => (
+                        <div key={track} className="flex items-center gap-3">
+                            <span className="w-20 font-mono text-[11px] uppercase tracking-[0.16em] text-text-muted">{ta(`mixTrack.${track}`)}</span>
+                            <input
+                                type="range"
+                                min={0}
+                                max={100}
+                                step={1}
+                                value={mix[track] ?? 0}
+                                onChange={(e) => handleVolume(track, Number(e.target.value))}
+                                className="flex-1 accent-primary"
+                            />
+                            <span className="w-12 text-right font-mono text-[11px] text-text-secondary">{mix[track] ?? 0}</span>
+                        </div>
+                    ))}
+                </div>
+                <p className="mt-3 text-[11px] text-text-muted max-w-lg">
+                    {ta("mixHint")}
+                </p>
+            </section>
+        </div>
+    );
+}
+
+function ExportPhase({
+    mergedVideoUrl,
+    isMerging,
+    isDownloading,
+    mergeError,
+    framesReady,
+    framesTotal,
+    onMerge,
+    onDownload,
+    onDismissError,
+}: {
+    mergedVideoUrl: string | null;
+    isMerging: boolean;
+    isDownloading: boolean;
+    mergeError: string | null;
+    framesReady: number;
+    framesTotal: number;
+    onMerge: () => void;
+    onDownload: () => void;
+    onDismissError: () => void;
+}) {
+    const ta = useTranslations("assembly");
+    const allReady = framesTotal > 0 && framesReady === framesTotal;
+    return (
+        <div className="space-y-6 max-w-3xl">
+            <section className="rounded-xl border border-glass-border bg-glass p-6">
+                <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                        <h3 className="text-display font-medium text-foreground flex items-center gap-2">
+                            <Package size={16} className="text-primary" />
+                            {ta("exportTitle")}
+                        </h3>
+                        <p className="mt-1 text-body-sm text-text-secondary">
+                            {ta("exportSubtitle", { ready: framesReady, total: framesTotal })}
+                        </p>
+                    </div>
+                    <button
+                        onClick={onMerge}
+                        disabled={isMerging || !allReady}
+                        className="shrink-0 inline-flex items-center gap-2 bg-primary text-white border border-[rgba(100,108,255,0.65)] shadow-[inset_0_1.5px_0_rgba(255,255,255,0.14)] hover:bg-[#7a82ff] disabled:opacity-40 disabled:cursor-not-allowed px-5 py-2.5 rounded-md font-semibold text-[13px]"
+                    >
+                        {isMerging ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
+                        {ta("mergeAndProceed")}
+                    </button>
+                </div>
+            </section>
+
+            {mergeError && (
+                <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
+                    <div className="flex items-start gap-3">
+                        <AlertTriangle className="text-red-500 flex-shrink-0 mt-0.5" size={20} />
+                        <div className="flex-1 min-w-0">
+                            <h4 className="text-sm font-bold text-red-400 mb-1">{ta("mergeFailed")}</h4>
+                            <p className="text-xs text-red-300/90 whitespace-pre-wrap leading-relaxed font-mono break-all">
+                                {mergeError}
+                            </p>
+                            {mergeError.toLowerCase().includes("ffmpeg") && (
+                                <a href="https://ffmpeg.org/download.html" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-400 hover:text-blue-300 underline mt-2 inline-block">
+                                    Download FFmpeg →
+                                </a>
+                            )}
+                            <button onClick={onDismissError} className="mt-3 text-xs text-text-secondary hover:text-foreground underline">
+                                {ta("dismiss")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <AnimatePresence>
+                {mergedVideoUrl && (
+                    <motion.section
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="rounded-xl border border-glass-border bg-elevated overflow-hidden"
+                    >
+                        <div className="grid md:grid-cols-2 gap-0">
+                            <div className="aspect-video bg-black">
+                                <video src={getAssetUrl(mergedVideoUrl)} className="w-full h-full object-contain" controls autoPlay />
                             </div>
-
-                            {/* Info & Actions */}
-                            <div className="flex-1 flex flex-col justify-center space-y-4">
+                            <div className="p-5 flex flex-col justify-center gap-3">
                                 <div>
-                                    <h3 className="text-xl font-bold text-foreground flex items-center gap-2">
-                                        <Check className="text-green-500" /> {ta("mergedVideoReady")}
+                                    <h3 className="text-display font-medium text-foreground flex items-center gap-2">
+                                        <Check className="text-green-500" size={16} />
+                                        {ta("mergedVideoReady")}
                                     </h3>
-                                    <p className="text-text-secondary mt-1">
-                                        {ta("mergedVideoDesc")}
-                                    </p>
+                                    <p className="text-body-sm text-text-secondary mt-1">{ta("mergedVideoDesc")}</p>
                                 </div>
-
-                                <div className="flex gap-4">
-                                    <button
-                                        onClick={handleDownload}
-                                        disabled={isDownloading}
-                                        className="px-6 py-3 bg-hover-bg hover:bg-hover-bg text-foreground rounded-lg font-bold flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        <Download size={18} />
-                                        {isDownloading ? ta("downloading") : ta("downloadMP4")}
-                                    </button>
-                                    {/* Optional: Proceed Button if needed, or user uses sidebar */}
-                                </div>
+                                <button
+                                    onClick={onDownload}
+                                    disabled={isDownloading}
+                                    className="self-start inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-glass border border-glass-border text-foreground hover:bg-hover-bg transition-colors text-[13px] font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <Download size={14} />
+                                    {isDownloading ? ta("downloading") : ta("downloadMP4")}
+                                </button>
                             </div>
                         </div>
-                    </motion.div>
+                    </motion.section>
                 )}
             </AnimatePresence>
         </div>

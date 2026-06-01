@@ -32,4 +32,16 @@ if (!fs.existsSync(frontendModules)) {
   execSync('npm install', { stdio: 'inherit', cwd: path.join(root, 'frontend') });
 }
 
+// 3. Pre-download Demucs model (required for dub workflow)
+console.log('[setup] Checking Demucs model...');
+try {
+  execSync(
+    'python -c "from demucs.pretrained import get_model; get_model(\'htdemucs\'); print(\'[setup] Demucs htdemucs model ready.\')"',
+    { stdio: 'inherit', cwd: root, timeout: 180000 }
+  );
+} catch (e) {
+  console.warn('[setup] ⚠️  Demucs model download failed. Dubbing feature will attempt download on first use.');
+  console.warn('[setup]    If you are behind a firewall, manually run: python -c "from demucs.pretrained import get_model; get_model(\'htdemucs\')"');
+}
+
 console.log('[setup] Done.');

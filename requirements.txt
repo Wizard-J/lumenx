@@ -23,6 +23,10 @@ alibabacloud-tea-openapi>=0.3.0
 alibabacloud-tea-util>=0.3.0
 oss2>=2.18.0
 
+# Audio Processing
+demucs>=4.0.0
+soundfile>=0.12.0
+
 # Optional Dependencies
 # Uncomment if needed:
 # numpy>=1.24.0

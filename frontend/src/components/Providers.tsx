@@ -4,6 +4,8 @@ import { useEffect } from 'react';
 import { NextIntlClientProvider } from 'next-intl';
 import { useSettingsStore } from '@/store/settingsStore';
 import { getMessages } from '@/lib/i18n';
+import { LightboxProvider } from '@/components/shared/preview/LightboxProvider';
+import ToastContainer from '@/components/shared/ToastContainer';
 
 export function Providers({ children }: { children: React.ReactNode }) {
     const locale = useSettingsStore((s) => s.locale);
@@ -22,7 +24,13 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
     return (
         <NextIntlClientProvider locale={locale} messages={messages} timeZone="Asia/Shanghai">
-            {children}
+            {/* LightboxProvider must wrap any subtree that uses PreviewImage /
+             *  PreviewVideo. Singleton portal — see Issue 14 design notes in
+             *  LightboxProvider.tsx. */}
+            <LightboxProvider>
+                {children}
+                <ToastContainer />
+            </LightboxProvider>
         </NextIntlClientProvider>
     );
 }

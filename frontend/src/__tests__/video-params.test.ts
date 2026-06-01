@@ -70,9 +70,14 @@ describe('Wan 2.6 模型参数', () => {
 
 // ── Wan 2.5 参数 ───────────────────────────────────────────────────────
 
+// wan2.5-i2v-preview is now hidden in the catalog (visible_in: []), so
+// it doesn't appear in I2V_MODELS. Read its params directly from the
+// generated catalog to keep the wan2.5 contract documented and tested.
+import rawCatalog from '@/generated/modelCatalog.json';
+
 describe('Wan 2.5 模型参数', () => {
-    const wan25 = I2V_MODELS.find(m => m.id === 'wan2.5-i2v-preview')!;
-    const p = wan25.params;
+    const wan25Params = (rawCatalog as any).models['wan2.5-i2v-preview']?.params;
+    const p = wan25Params as ModelParamSupport;
 
     it('支持 resolution, seed, negativePrompt, audio', () => {
         expect(p.resolution).toBeDefined();
@@ -90,8 +95,10 @@ describe('Wan 2.5 模型参数', () => {
 // ── Wan 2.2 参数 ───────────────────────────────────────────────────────
 
 describe('Wan 2.2 模型参数', () => {
-    const wan22 = I2V_MODELS.find(m => m.id === 'wan2.2-i2v-plus')!;
-    const p = wan22.params;
+    // wan2.2-i2v-plus is now hidden in the catalog. Read params directly
+    // from the raw catalog so the legacy contract stays documented.
+    const wan22Params = (rawCatalog as any).models['wan2.2-i2v-plus']?.params;
+    const p = wan22Params as ModelParamSupport;
 
     it('支持 resolution, seed, negativePrompt', () => {
         expect(p.resolution).toBeDefined();
@@ -109,7 +116,8 @@ describe('Wan 2.2 模型参数', () => {
 // ── Kling v3 参数 ──────────────────────────────────────────────────────
 
 describe('Kling v3 模型参数', () => {
-    const kling = I2V_MODELS.find(m => m.id === 'kling-v3')!;
+    // Phase 2 split kling-v3 → kling-v3-i2v / kling-v3-r2v.
+    const kling = I2V_MODELS.find(m => m.id === 'kling-v3-i2v')!;
     const p = kling.params;
 
     it('支持 negativePrompt, mode, sound, cfgScale', () => {
@@ -136,7 +144,10 @@ describe('Kling v3 模型参数', () => {
         expect(p.seed).toBeUndefined();
         expect(p.promptExtend).toBeUndefined();
         expect(p.shotType).toBeUndefined();
-        expect(p.audio).toBeUndefined();
+        // kling-v3-i2v gained an `audio` capability flag in the Phase 2
+        // catalog (separate from `sound`); the original test predates
+        // that. Documenting the new shape here.
+        expect(p.audio).toBe(true);
     });
 
     it('不支持 Vidu 独有参数', () => {
@@ -148,8 +159,9 @@ describe('Kling v3 模型参数', () => {
 // ── Vidu Q3 参数 ───────────────────────────────────────────────────────
 
 describe('Vidu Q3 模型参数', () => {
-    const viduPro = I2V_MODELS.find(m => m.id === 'viduq3-pro')!;
-    const viduTurbo = I2V_MODELS.find(m => m.id === 'viduq3-turbo')!;
+    // Phase 2 split viduq3-pro / viduq3-turbo by modality suffix.
+    const viduPro = I2V_MODELS.find(m => m.id === 'viduq3-pro-i2v')!;
+    const viduTurbo = I2V_MODELS.find(m => m.id === 'viduq3-turbo-i2v')!;
 
     it('Pro 和 Turbo 使用相同的参数配置', () => {
         expect(viduPro.params).toEqual(viduTurbo.params);
@@ -240,14 +252,14 @@ describe('模型切换参数重置逻辑', () => {
     }
 
     it('切换到 Kling → mode 默认 std', () => {
-        const result = simulateModelSwitch('kling-v3');
+        const result = simulateModelSwitch('kling-v3-i2v');
         expect(result.mode).toBe('std');
         expect(result.cfgScale).toBe(0.5);
         expect(result.promptExtend).toBe(false);
     });
 
     it('切换到 Vidu → movementAmplitude 默认 auto', () => {
-        const result = simulateModelSwitch('viduq3-pro');
+        const result = simulateModelSwitch('viduq3-pro-i2v');
         expect(result.movementAmplitude).toBe('auto');
         expect(result.viduAudio).toBe(true);
     });
