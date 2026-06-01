@@ -189,6 +189,16 @@ export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose }: 
     const addGeneratingTask = useProjectStore((state) => state.addGeneratingTask);
     const removeGeneratingTask = useProjectStore((state) => state.removeGeneratingTask);
 
+    // ESC key closes the modal
+    useEffect(() => {
+        if (!isOpen) return;
+        const handler = (e: KeyboardEvent) => {
+            if (e.key === "Escape") onClose();
+        };
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, [isOpen, onClose]);
+
     // Look up the live entity from the store so it stays in sync after
     // generation calls patch the project.
     const entity = useMemo(() => {
