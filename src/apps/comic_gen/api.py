@@ -1805,11 +1805,7 @@ def analyze_to_storyboard(script_id: str, request: AnalyzeToStoryboardRequest):
     Replaces existing frames with newly generated ones.
     """
     try:
-        loop = asyncio.get_event_loop()
-        updated_script = loop.run_in_executor(
-            None,
-            partial(pipeline.analyze_text_to_frames, script_id, request.text),
-        )
+        updated_script = pipeline.analyze_text_to_frames(script_id, request.text)
         return signed_response(updated_script)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1837,17 +1833,12 @@ def refine_storyboard_prompt(script_id: str, request: RefinePromptRequest):
     and the event loop stays free for concurrent GETs.
     """
     try:
-        loop = asyncio.get_event_loop()
-        result = loop.run_in_executor(
-            None,
-            partial(
-                pipeline.refine_frame_prompt,
+        result = pipeline.refine_frame_prompt(
                 script_id,
                 request.frame_id,
                 request.raw_prompt,
                 request.assets,
-                request.feedback,
-            ),
+            request.feedback,
         )
         return result
     except ValueError as e:
