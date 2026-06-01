@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Save, Loader2, Key, ChevronDown, ChevronRight, Settings, MessageSquareCode, Palette, Globe } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Save, Loader2, Key, ChevronDown, ChevronRight, Settings, MessageSquareCode, Palette, Globe, Upload, FileJson, CheckCircle, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { api, type EnvConfigPayload, type ProviderMode } from "@/lib/api";
 import { ASPECT_RATIOS } from "@/store/projectStore";
@@ -140,6 +140,11 @@ export default function SettingsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [endpointsOpen, setEndpointsOpen] = useState(false);
   const [showLegacyProviders, setShowLegacyProviders] = useState(false);
+  const [workflowModes, setWorkflowModes] = useState<Record<string, boolean>>({});
+  const [uploadMode, setUploadMode] = useState("t2i");
+  const [dragOver, setDragOver] = useState(false);
+  const [workflowUploading, setWorkflowUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Default Model Settings ──
   const [modelSettings, setModelSettings] = useState<DefaultModelSettings>(() =>
@@ -156,6 +161,23 @@ export default function SettingsPage() {
 
   useEffect(() => {
     loadConfig();
+    fetchWorkflowStatus();
+  }, []);
+
+  const fetchWorkflowStatus = useCallback(async () => {
+    try {
+      const res = await api.getComfyUIWorkflows();
+      // API returns { mode: { exists: true, node_count: N } }
+      const modes: Record<string, boolean> = {};
+      for (const [key, val] of Object.entries(res)) {
+        if (val && typeof val === "object" && "exists" in val) {
+          modes[key] = !!(val as any).exists;
+        }
+      }
+      setWorkflowModes(modes);
+    } catch {
+      // endpoint not available or error - ignore
+    }
   }, []);
 
   const loadConfig = async () => {
@@ -169,6 +191,48 @@ export default function SettingsPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+
+  const handleWorkflowUpload = async (file: File) => {
+    if (!file.name.endsWith(".json")) {
+      alert("Please upload a .json workflow file.");
+      return;
+    }
+    setWorkflowUploading(true);
+    try {
+      const text = await file.text();
+      const workflow = JSON.parse(text);
+      await api.uploadComfyUIWorkflow(uploadMode, workflow);
+      await fetchWorkflowStatus();
+    } catch (e: any) {
+      alert("Upload failed: " + (e?.message ?? String(e)));
+    } finally {
+      setWorkflowUploading(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleWorkflowUpload(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleWorkflowUpload(file);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const handleSaveApiConfig = async () => {
@@ -355,9 +419,12 @@ export default function SettingsPage() {
                   <button type="button" onClick={() => handleChange("IMAGE_PROVIDER", "openai")} className={modeButtonClass(config.IMAGE_PROVIDER === "openai")}>
                     OpenAI Compatible
                   </button>
+                  <button type="button" onClick={() => handleChange("IMAGE_PROVIDER", "comfyui")} className={modeButtonClass(config.IMAGE_PROVIDER === "comfyui")}>
+                    ComfyUI
+                  </button>
                 </div>
                 <p className="text-xs text-text-muted">
-                  DashScope mode uses your DashScope API key. OpenAI Compatible mode connects to any OpenAI‑standard Images API.
+                  DashScope (Wan 2.7) · OpenAI Compatible (DALL·E etc.) · ComfyUI (remote workflow server).
                 </p>
                 {config.IMAGE_PROVIDER === "openai" && (
                 <>
@@ -394,9 +461,12 @@ export default function SettingsPage() {
                   <button type="button" onClick={() => handleChange("VIDEO_PROVIDER", "openai")} className={modeButtonClass(config.VIDEO_PROVIDER === "openai")}>
                     OpenAI Compatible
                   </button>
+                  <button type="button" onClick={() => handleChange("VIDEO_PROVIDER", "comfyui")} className={modeButtonClass(config.VIDEO_PROVIDER === "comfyui")}>
+                    ComfyUI
+                  </button>
                 </div>
                 <p className="text-xs text-text-muted">
-                  DashScope mode uses your DashScope API key. OpenAI Compatible mode connects to any OpenAI‑standard Video API.
+                  DashScope (Wan I2V) · OpenAI Compatible · ComfyUI (remote workflow server).
                 </p>
                 {config.VIDEO_PROVIDER === "openai" && (
                 <>
@@ -458,7 +528,125 @@ export default function SettingsPage() {
         )}
       </section>
 
-      {/* ── Section 2: Cloud & Vendor Providers ── */}
+      {/* ── Section 2: ComfyUI Provider ── */}
+      <section className="glass-panel rounded-xl p-6 space-y-6">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-gradient-to-br from-purple-500/20 to-pink-500/20 rounded-lg">
+            <Upload size={20} className="text-purple-400" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-foreground">ComfyUI Provider</h2>
+            <p className="text-xs text-text-secondary">Connect to a remote ComfyUI server for custom workflow-based image and video generation.</p>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+              <span>ComfyUI Base URL</span>
+              <span className="text-text-muted font-normal text-xs">http://localhost:8188</span>
+            </label>
+            <input type="text" value={config.COMFYUI_BASE_URL ?? ""} onChange={(e) => handleChange("COMFYUI_BASE_URL", e.target.value)} placeholder="http://localhost:8188" className={inputClass} />
+          </div>
+          <div>
+            <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+              <span>API Key (Optional)</span>
+              <span className="text-text-muted font-normal text-xs">If server requires auth</span>
+            </label>
+            <input type="password" value={config.COMFYUI_API_KEY ?? ""} onChange={(e) => handleChange("COMFYUI_API_KEY", e.target.value)} placeholder="Optional API key" className={inputClass} />
+          </div>
+        </div>
+
+        {/* Workflow Upload */}
+        <div className="pt-4 border-t border-glass-border">
+          <h3 className="text-sm font-bold text-foreground mb-3">Workflow Templates</h3>
+          <p className="text-xs text-text-muted mb-3">
+            Drag &amp; drop or select a ComfyUI workflow JSON exported from your ComfyUI server (API format). Each mode (T2I / I2I / T2V / I2V) can have its own workflow.
+          </p>
+
+          {/* Mode Tabs */}
+          <div className="flex gap-1 mb-3">
+            {(["t2i","i2i","t2v","i2v"] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setUploadMode(mode)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border transition-colors font-medium ${
+                  uploadMode === mode
+                    ? "bg-primary/20 border-primary/50 text-primary"
+                    : "border-glass-border bg-surface text-text-secondary hover:text-foreground"
+                }`}
+              >
+                {mode.toUpperCase()}
+                {workflowModes[mode] && <CheckCircle size={12} className="text-green-400" />}
+              </button>
+            ))}
+          </div>
+
+          {/* Drop Zone */}
+          <div
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onClick={() => fileInputRef.current?.click()}
+            className={`relative border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
+              dragOver
+                ? "border-primary/50 bg-primary/5"
+                : "border-glass-border hover:border-text-muted bg-surface/50"
+            }`}
+          >
+            {workflowUploading ? (
+              <div className="flex flex-col items-center gap-2">
+                <Loader2 size={24} className="text-primary animate-spin" />
+                <span className="text-xs text-text-secondary">Uploading workflow...</span>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-2">
+                <Upload size={24} className="text-text-muted" />
+                <div>
+                  <p className="text-sm text-text-secondary font-medium">
+                    {workflowModes[uploadMode]
+                      ? `Replace ${uploadMode.toUpperCase()} workflow`
+                      : `Upload ${uploadMode.toUpperCase()} workflow`}
+                  </p>
+                  <p className="text-xs text-text-muted mt-1">
+                    Drop a .json file here or click to browse
+                  </p>
+                </div>
+              </div>
+            )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json"
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+          </div>
+
+          {/* Status */}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {(["t2i","i2i","t2v","i2v"] as const).map((mode) => (
+              <span
+                key={mode}
+                className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                  workflowModes[mode]
+                    ? "border-green-500/30 bg-green-500/10 text-green-400"
+                    : "border-glass-border bg-surface text-text-muted"
+                }`}
+              >
+                {workflowModes[mode] ? (
+                  <CheckCircle size={10} className="inline mr-1" />
+                ) : (
+                  <X size={10} className="inline mr-1" />
+                )}
+                {mode.toUpperCase()}
+              </span>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── Section 3: Cloud & Vendor Providers ── */}
       <section className="glass-panel rounded-xl p-6 space-y-6">
         <button
           type="button"
@@ -470,7 +658,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <h2 className="text-lg font-bold text-foreground">Cloud & Vendor Providers</h2>
-            <p className="text-xs text-text-secondary">DashScope, OSS storage, ComfyUI, and legacy vendor-direct routing</p>
+            <p className="text-xs text-text-secondary">DashScope, OSS storage, and legacy vendor-direct routing</p>
           </div>
         </button>
         {showLegacyProviders && (
@@ -510,27 +698,6 @@ export default function SettingsPage() {
               <div className="mt-3">
                 <label className="block text-sm font-medium text-text-secondary mb-2">OSS Base Path</label>
                 <input type="text" value={config.OSS_BASE_PATH} onChange={(e) => handleChange("OSS_BASE_PATH", e.target.value)} placeholder="lumenx" className={inputClass} />
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-glass-border">
-              <h3 className="text-sm font-bold text-foreground mb-4">ComfyUI Provider</h3>
-              <p className="text-xs text-text-muted mb-3">Connect to a remote ComfyUI server for custom workflow-based generation.</p>
-              <div className="space-y-3">
-                <div>
-                  <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
-                    <span>ComfyUI Base URL</span>
-                    <span className="text-text-muted font-normal text-xs">http://localhost:8188</span>
-                  </label>
-                  <input type="text" value={config.COMFYUI_BASE_URL ?? ""} onChange={(e) => handleChange("COMFYUI_BASE_URL", e.target.value)} placeholder="http://localhost:8188" className={inputClass} />
-                </div>
-                <div>
-                  <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
-                    <span>API Key (Optional)</span>
-                    <span className="text-text-muted font-normal text-xs">If server requires auth</span>
-                  </label>
-                  <input type="password" value={config.COMFYUI_API_KEY ?? ""} onChange={(e) => handleChange("COMFYUI_API_KEY", e.target.value)} placeholder="Optional API key" className={inputClass} />
-                </div>
               </div>
             </div>
 
@@ -589,7 +756,7 @@ export default function SettingsPage() {
         )}
       </section>
 
-      {/* ── Section 3: Default Model Settings ── */}
+      {/* ── Section 4: Default Model Settings ── */}
       <section className="glass-panel rounded-xl p-6 space-y-6">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-gradient-to-br from-blue-500/20 to-purple-500/20 rounded-lg">
@@ -692,7 +859,7 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      {/* ── Section 3: Default Prompt Config ── */}
+      {/* ── Section 5: Default Prompt Config ── */}
       <section className="glass-panel rounded-xl p-6 space-y-6">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-purple-500/20 rounded-lg">

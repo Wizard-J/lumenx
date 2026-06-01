@@ -963,11 +963,18 @@ export default function StoryboardR2V() {
             i === index ? { ...s, t2iStatus: "pending" } : s
         ));
 
+        // Build reference_image_urls from R2V asset tags
+        const refUrls = parseAssetTags(shot.prompt);
+        const compositionData: any = {};
+        if (refUrls.length > 0) {
+            compositionData.reference_image_urls = refUrls;
+        }
+
         try {
             const result = await api.renderFrame(
                 currentProject.id,
                 shot.id,
-                {},  // compositionData (empty for now)
+                compositionData,
                 cleanPrompt(shot.prompt),
                 1    // batchSize
             );
@@ -998,7 +1005,7 @@ export default function StoryboardR2V() {
                 i === index ? { ...s, t2iStatus: "failed" } : s
             ));
         }
-    }, [shots, currentProject, persistWorkbench]);
+    }, [shots, currentProject, persistWorkbench, parseAssetTags]);
 
     // Generate video for a shot
     const generateVideo = useCallback(async (index: number) => {

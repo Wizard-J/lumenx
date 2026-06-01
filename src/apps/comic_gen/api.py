@@ -1062,6 +1062,53 @@ def get_config_info():
     }
 
 
+
+@app.get("/config/comfyui/workflows")
+def get_comfyui_workflows():
+    """Return which ComfyUI workflow modes have uploaded files."""
+    import os as _os
+    workflows_dir = _os.path.join("output", "workflows")
+    modes = ["t2i", "i2i", "t2v", "i2v"]
+    result = {}
+    for mode in modes:
+        path = _os.path.join(workflows_dir, f"{mode}.json")
+        if _os.path.exists(path):
+            try:
+                with open(path) as f:
+                    wf = json.load(f)
+                result[mode] = {
+                    "exists": True,
+                    "node_count": len(wf) if isinstance(wf, dict) else 0,
+                }
+            except Exception:
+                result[mode] = {"exists": True, "node_count": 0}
+        else:
+            result[mode] = {"exists": False, "node_count": 0}
+    return result
+
+
+class ComfyUIWorkflowUpload(BaseModel):
+    mode: str  # t2i, i2i, t2v, i2v
+    workflow: dict
+
+
+@app.post("/config/comfyui/workflow")
+def upload_comfyui_workflow(upload: ComfyUIWorkflowUpload):
+    """Upload a ComfyUI workflow JSON for a given mode."""
+    import os as _os
+    valid_modes = {"t2i", "i2i", "t2v", "i2v"}
+    if upload.mode not in valid_modes:
+        raise HTTPException(status_code=400, detail=f"Invalid mode. Must be one of: {valid_modes}")
+    if not isinstance(upload.workflow, dict) or len(upload.workflow) == 0:
+        raise HTTPException(status_code=400, detail="Workflow must be a non-empty JSON object")
+    workflows_dir = _os.path.join("output", "workflows")
+    _os.makedirs(workflows_dir, exist_ok=True)
+    path = _os.path.join(workflows_dir, f"{upload.mode}.json")
+    with open(path, "w") as f:
+        json.dump(upload.workflow, f, indent=2)
+    return {"status": "ok", "mode": upload.mode, "node_count": len(upload.workflow)}
+
+
 @app.post("/config/env")
 def update_env_config(config: EnvConfig):
     """Updates environment configuration and saves to config file."""

@@ -61,6 +61,9 @@ class AssetGenerator:
         if image_provider == "openai" and has_key:
             from ...models.openai_image import OpenAIImageModel
             return OpenAIImageModel(self.config.get('model', {}))
+        elif image_provider == "comfyui":
+            from ...models.comfyui import ComfyUIImageModel
+            return ComfyUIImageModel(self.config.get('model', {}))
         else:
             return WanxImageModel(self.config.get('model', {}))
 

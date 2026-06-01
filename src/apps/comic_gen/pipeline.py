@@ -360,6 +360,10 @@ class ComicGenPipeline:
             from ...models.openai_video import OpenAIVideoModel
             logger.info("Using OpenAI-compatible video model")
             return OpenAIVideoModel(self.config.get('video', {}).get('model', {}))
+        elif video_provider == "comfyui":
+            from ...models.comfyui import ComfyUIVideoModel
+            logger.info("Using ComfyUI video model")
+            return ComfyUIVideoModel(self.config.get('video', {}).get('model', {}))
         else:
             return self.video_generator.model
 

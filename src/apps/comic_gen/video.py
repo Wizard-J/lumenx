@@ -20,6 +20,10 @@ class VideoGenerator:
             from ...models.openai_video import OpenAIVideoModel
             logger.info("VideoGenerator: Using OpenAI-compatible video model")
             return OpenAIVideoModel(self.config.get('model', {}))
+        elif video_provider == "comfyui":
+            from ...models.comfyui import ComfyUIVideoModel
+            logger.info("VideoGenerator: Using ComfyUI video model")
+            return ComfyUIVideoModel(self.config.get('model', {}))
         return self.model
 
     def generate_i2v(self, image_url: str, prompt: str, duration: int = 5, audio_url: str = None) -> Dict[str, Any]:

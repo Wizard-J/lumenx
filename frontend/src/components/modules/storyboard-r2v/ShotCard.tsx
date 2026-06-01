@@ -856,6 +856,21 @@ export default function ShotCard({
                                     )}
                                 </motion.button>
 
+                                {/* R2V: Generate first-frame image CTA */}
+                                {shot.tabMode === "direct_r2v" && !shot.t2iImageUrl && shot.t2iStatus !== "processing" && shot.t2iStatus !== "pending" && (
+                                    <motion.button
+                                        whileHover={{ scale: 1.02 }}
+                                        whileTap={{ scale: 0.98 }}
+                                        type="button"
+                                        onClick={onGenerateT2I}
+                                        disabled={!shot.prompt.trim()}
+                                        title="生成分镜参考图（用于后续图生视频）"
+                                        className="inline-flex items-center gap-1.5 rounded-md px-4 py-2 font-sans text-[12px] font-semibold tracking-tight transition-colors duration-fast ease-out-quart focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 disabled:cursor-not-allowed disabled:opacity-40 bg-white/[0.08] text-text-secondary border border-white/[0.08] hover:bg-white/[0.14] hover:text-foreground hover:border-white/[0.18]"
+                                    >
+                                        <ImageIcon size={14} strokeWidth={2} />
+                                        <span>生成图片</span>
+                                    </motion.button>
+                                )}
                                 <div className="flex items-center gap-1 shrink-0">
                                     {[1, 2, 4, 6].map((n) => {
                                         const active = generateCount === n;

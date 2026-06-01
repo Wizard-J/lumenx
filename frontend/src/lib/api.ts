@@ -1106,6 +1106,21 @@ export const api = {
         return res.data;
     },
 
+    getComfyUIWorkflows: async (): Promise<Record<string, { exists: boolean; node_count: number }>> => {
+        const res = await axios.get(`${API_URL}/config/comfyui/workflows`, {
+            timeout: 10000,
+        });
+        return res.data;
+    },
+
+    uploadComfyUIWorkflow: async (mode: string, workflow: object) => {
+        const res = await axios.post(`${API_URL}/config/comfyui/workflow`, {
+            mode,
+            workflow,
+        }, { timeout: 30000 });
+        return res.data;
+    },
+
     extractLastFrame: async (scriptId: string, frameId: string, videoTaskId: string) => {
         const res = await axios.post(`${API_URL}/projects/${scriptId}/frames/${frameId}/extract_last_frame`, {
             video_task_id: videoTaskId,
