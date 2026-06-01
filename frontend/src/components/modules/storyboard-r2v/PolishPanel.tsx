@@ -54,6 +54,8 @@ interface PolishPanelProps {
      *  pure text-only polish (back-compat for shots with no frame). */
     imageUrls?: string[];
     onApply: (text: string) => void;
+    /** Inline: 触发按钮可与其他控件同行；展开态面板会占满整行并换行显示。 */
+    variant?: "block" | "inline";
 }
 
 /** 把后端 reason 映射到 i18n key（错误码列表与 llm.py PolishError 对齐）。 */
@@ -93,6 +95,7 @@ export default function PolishPanel({
     slots = [],
     imageUrls = [],
     onApply,
+    variant = "block",
 }: PolishPanelProps) {
     const t = useTranslations("storyboardR2V");
     const [polished, setPolished] = useState<PolishedPrompt | null>(null);
@@ -178,18 +181,21 @@ export default function PolishPanel({
     // Trigger 按钮 — 当没有结果、没有错误、不在 loading 时显示
     // ────────────────────────────────────────────────────────────────────
     if (!polished && !error && !isPolishing) {
+        const trigger = (
+            <WorkflowActionButton
+                variant="secondary"
+                size="sm"
+                leftIcon={<Sparkles />}
+                onClick={() => runPolish("")}
+                disabled={disabled}
+                title={t("polish")}
+            >
+                {t("polish")}
+            </WorkflowActionButton>
+        );
         return (
-            <div className="flex items-center justify-end">
-                <WorkflowActionButton
-                    variant="secondary"
-                    size="sm"
-                    leftIcon={<Sparkles />}
-                    onClick={() => runPolish("")}
-                    disabled={disabled}
-                    title={t("polish")}
-                >
-                    {t("polish")}
-                </WorkflowActionButton>
+            <div className={variant === "inline" ? "ml-auto" : "flex items-center justify-end"}>
+                {trigger}
             </div>
         );
     }
@@ -339,7 +345,7 @@ export default function PolishPanel({
     if (useGlow) {
         // animated 仅在首次结果产生那一帧 sweep —— mount 时间点 = polished 由
         // null 变为 truthy 那一刻，符合"AI 生成完成"瞬间的强调意图。
-        return (
+        const body = (
             <BorderGlow
                 animated={!!polished}
                 glowColor="262 80 70"
@@ -357,9 +363,10 @@ export default function PolishPanel({
                 </div>
             </BorderGlow>
         );
+        return variant === "inline" ? <div className="w-full mt-2">{body}</div> : body;
     }
 
-    return (
+    const body = (
         <div
             className={clsx(
                 "rounded-md border p-3 space-y-2.5 motion-safe:animate-[shotPanelIn_220ms_cubic-bezier(0.22,1,0.36,1)_both]",
@@ -371,6 +378,7 @@ export default function PolishPanel({
             {containerInner}
         </div>
     );
+    return variant === "inline" ? <div className="w-full mt-2">{body}</div> : body;
 }
 
 // ────────────────────────────────────────────────────────────────────

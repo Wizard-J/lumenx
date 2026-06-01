@@ -15,7 +15,6 @@ import {
     PanelBottomClose,
     Sparkles,
     Loader2,
-    Code2,
     ChevronRight,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -584,10 +583,8 @@ export default function ShotCard({
                             </div>
                         ) : null}
 
-                        {/* Prompt Editor wrapper — relative so the
-                            expand icon can sit absolute top-right
-                            without taking layout space. */}
-                        <div className="relative">
+                        {/* Prompt Editor */}
+                        <div>
                             <textarea
                                 ref={textareaRef}
                                 value={shot.prompt}
@@ -605,96 +602,95 @@ export default function ShotCard({
                                 placeholder={t("promptPlaceholder")}
                                 // rows=5 baseline (B3); auto-grow up
                                 // to max-h-[260px] (≈10 lines, B2).
-                                // pr-8 reserves space for the expand
-                                // icon so it never overlays text.
-                                className="w-full text-sm resize-none leading-relaxed bg-transparent border border-white/[0.06] rounded-lg pl-3 pr-8 py-2.5 text-foreground placeholder:text-text-muted focus:outline-none focus:border-primary/30 focus:bg-white/[0.02] transition-all duration-200 min-h-[110px] max-h-[260px] overflow-y-auto"
+                                className="w-full text-sm resize-none leading-relaxed bg-transparent border border-white/[0.06] rounded-lg px-3 py-2.5 text-foreground placeholder:text-text-muted focus:outline-none focus:border-primary/30 focus:bg-white/[0.02] transition-all duration-200 min-h-[110px] max-h-[260px] overflow-y-auto"
                                 rows={5}
                             />
-                            {/* Expand-to-modal icon — top-right,
-                                always visible. 24×24 hit area on
-                                a 14×14 visual via padding. */}
-                            <button
-                                type="button"
-                                onClick={() => setExpandOpen(true)}
-                                aria-label={t("promptExpand")}
-                                title={`${t("promptExpand")} (⌘/Ctrl + E)`}
-                                className="btn-tip absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded text-text-muted/70 transition-colors duration-fast ease-out-quart hover:bg-hover-bg hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55"
-                            >
-                                <Maximize2 size={12} aria-hidden="true" />
-                            </button>
                         </div>
 
-                        {/* AI Polish — bilingual prompt rewrite using
-                            the project's polish system prompt
-                            (storyboard_polish / video_polish /
-                            r2v_polish from PromptConfig). Routes to
-                            the right API by tabMode. */}
-                        <PolishPanel
-                            prompt={shot.prompt}
-                            tabMode={shot.tabMode}
-                            scriptId={currentProjectId ?? ""}
-                            slots={r2vSlots}
-                            imageUrls={polishImageUrls}
-                            onApply={onUpdatePrompt}
-                        />
+                        {/* Row: prompt-expand icon + field tags + AI polish trigger (same line) */}
+                        <div className="mt-1 flex flex-wrap items-start gap-2">
+                            <div className="flex items-center flex-wrap gap-1.5 min-w-0">
+                                {/* Expand-to-modal icon — moved inline (user requested it to be on this row) */}
+                                <button
+                                    type="button"
+                                    onClick={() => setExpandOpen(true)}
+                                    aria-label={t("promptExpand")}
+                                    title={`${t("promptExpand")} (⌘/Ctrl + E)`}
+                                    className="btn-tip grid h-7 w-7 place-items-center rounded-md border border-white/[0.08] bg-black/25 text-text-muted transition-colors hover:bg-hover-bg hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55"
+                                >
+                                    <Maximize2 size={13} aria-hidden="true" />
+                                </button>
 
-                        {/* Structured field tags — interactive Popover editors */}
-                        <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
-                            {/* Duration: always visible */}
-                            <FieldTagChip
-                                field="duration"
-                                value={shot.duration}
-                                editorConfig={durationEditorConfig
-                                    ? { type: "duration", ...durationEditorConfig }
-                                    : { type: "duration", min: 3, max: 15, step: 1 }
-                                }
-                                onChange={(v) => onUpdateField("duration", v)}
-                            />
-                            {/* Shot size: visible when has value */}
-                            {shot.shotSize !== undefined && shot.shotSize !== null && (
-                                <FieldTagChip
-                                    field="shotSize"
-                                    value={shot.shotSize}
-                                    editorConfig={{ type: "preset", presets: ["特写", "近景", "中景", "全景", "远景", "大特写"] }}
-                                    onChange={(v) => onUpdateField("shotSize", v)}
-                                />
-                            )}
-                            {/* Camera angle: visible when has value */}
-                            {shot.cameraAngle !== undefined && shot.cameraAngle !== null && (
-                                <FieldTagChip
-                                    field="cameraAngle"
-                                    value={shot.cameraAngle}
-                                    editorConfig={{ type: "preset", presets: ["平视", "俯视", "仰视", "鸟瞰", "低角度"] }}
-                                    onChange={(v) => onUpdateField("cameraAngle", v)}
-                                />
-                            )}
-                            {/* Camera movement: visible when has value */}
-                            {shot.cameraMovementStructured && (
-                                <FieldTagChip
-                                    field="cameraMovement"
-                                    value={shot.cameraMovementStructured.description || shot.cameraMovementStructured.primary}
-                                    editorConfig={{ type: "preset", presets: ["固定镜头", "缓慢推进", "跟随平移", "环绕旋转", "快速拉远", "缓慢上升"] }}
-                                    onChange={(v) => onUpdateField("cameraMovement", v)}
-                                />
-                            )}
-                            {/* Transition hint: visible when has value */}
-                            {shot.transitionHint !== undefined && shot.transitionHint !== null && (
-                                <FieldTagChip
-                                    field="transitionHint"
-                                    value={shot.transitionHint}
-                                    editorConfig={{ type: "preset", presets: ["硬切", "淡入淡出", "溶解", "闪白", "划像"], allowCustom: true }}
-                                    onChange={(v) => onUpdateField("transitionHint", v)}
-                                />
-                            )}
-                            {/* "+" button to add optional fields */}
-                            <AddFieldButton
-                                onAdd={(field: FieldType) => {
-                                    if (field === "cameraMovement") {
-                                        onUpdateField("cameraMovement", "固定镜头");
-                                    } else {
-                                        onUpdateField(field, "");
-                                    }
-                                }}
+                                {/* Structured field tags — interactive Popover editors */}
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                    {/* Duration: always visible */}
+                                    <FieldTagChip
+                                        field="duration"
+                                        value={shot.duration}
+                                        editorConfig={durationEditorConfig
+                                            ? { type: "duration", ...durationEditorConfig }
+                                            : { type: "duration", min: 3, max: 15, step: 1 }
+                                        }
+                                        onChange={(v) => onUpdateField("duration", v)}
+                                    />
+                                    {/* Shot size: visible when has value */}
+                                    {shot.shotSize !== undefined && shot.shotSize !== null && (
+                                        <FieldTagChip
+                                            field="shotSize"
+                                            value={shot.shotSize}
+                                            editorConfig={{ type: "preset", presets: ["特写", "近景", "中景", "全景", "远景", "大特写"] }}
+                                            onChange={(v) => onUpdateField("shotSize", v)}
+                                        />
+                                    )}
+                                    {/* Camera angle: visible when has value */}
+                                    {shot.cameraAngle !== undefined && shot.cameraAngle !== null && (
+                                        <FieldTagChip
+                                            field="cameraAngle"
+                                            value={shot.cameraAngle}
+                                            editorConfig={{ type: "preset", presets: ["平视", "俯视", "仰视", "鸟瞰", "低角度"] }}
+                                            onChange={(v) => onUpdateField("cameraAngle", v)}
+                                        />
+                                    )}
+                                    {/* Camera movement: visible when has value */}
+                                    {shot.cameraMovementStructured && (
+                                        <FieldTagChip
+                                            field="cameraMovement"
+                                            value={shot.cameraMovementStructured.description || shot.cameraMovementStructured.primary}
+                                            editorConfig={{ type: "preset", presets: ["固定镜头", "缓慢推进", "跟随平移", "环绕旋转", "快速拉远", "缓慢上升"] }}
+                                            onChange={(v) => onUpdateField("cameraMovement", v)}
+                                        />
+                                    )}
+                                    {/* Transition hint: visible when has value */}
+                                    {shot.transitionHint !== undefined && shot.transitionHint !== null && (
+                                        <FieldTagChip
+                                            field="transitionHint"
+                                            value={shot.transitionHint}
+                                            editorConfig={{ type: "preset", presets: ["硬切", "淡入淡出", "溶解", "闪白", "划像"], allowCustom: true }}
+                                            onChange={(v) => onUpdateField("transitionHint", v)}
+                                        />
+                                    )}
+                                    {/* "+" button to add optional fields */}
+                                    <AddFieldButton
+                                        onAdd={(field: FieldType) => {
+                                            if (field === "cameraMovement") {
+                                                onUpdateField("cameraMovement", "固定镜头");
+                                            } else {
+                                                onUpdateField(field, "");
+                                            }
+                                        }}
+                                    />
+                                </div>
+                            </div>
+
+                            {/* AI Polish — trigger sits inline; expanded panel wraps to next line */}
+                            <PolishPanel
+                                prompt={shot.prompt}
+                                tabMode={shot.tabMode}
+                                scriptId={currentProjectId ?? ""}
+                                slots={r2vSlots}
+                                imageUrls={polishImageUrls}
+                                onApply={onUpdatePrompt}
+                                variant="inline"
                             />
                         </div>
 
@@ -710,7 +706,7 @@ export default function ShotCard({
                             </div>
                         )}
 
-                        {/* Assembled prompt preview (read-only, collapsible) — uses buildAssembledPrompt for real-time computation */}
+                        {/* Assembled prompt preview (read-only, collapsible) */}
                         {(shot.prompt || shot.shotSize || shot.cameraMovementStructured) && (
                             <div className="mt-1">
                                 <button
@@ -718,11 +714,11 @@ export default function ShotCard({
                                     onClick={() => setPromptPreviewOpen(v => !v)}
                                     className="inline-flex items-center gap-1 text-[11px] text-text-muted hover:text-text-secondary transition-colors"
                                 >
-                                    <Code2 size={12} strokeWidth={1.5} />
                                     <span>查看最终提示词</span>
                                     <ChevronRight
                                         size={11}
                                         className={`transition-transform duration-200 ${promptPreviewOpen ? "rotate-90" : ""}`}
+                                        aria-hidden="true"
                                     />
                                 </button>
                                 <AnimatePresence>
@@ -833,85 +829,81 @@ export default function ShotCard({
                             </div>
 
                             <div className="flex items-center gap-2">
-                            <div className="flex items-center gap-1 shrink-0">
-                                {[1, 2, 4, 6].map((n) => {
-                                    const active = generateCount === n;
-                                    return (
-                                        <button
-                                            key={n}
-                                            type="button"
-                                            onClick={() => onSetGenerateCount?.(n)}
-                                            aria-pressed={active}
-                                            aria-label={`Generate ${n} at a time`}
-                                            title={`每次生成 ${n} 条候选`}
-                                            className={`grid h-9 w-9 place-items-center rounded-md border font-mono text-[11px] font-medium transition-colors duration-fast ease-out-quart focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 ${
-                                                active
-                                                    ? "border-primary/55 bg-primary/15 text-primary"
-                                                    : "border-glass-border bg-black/20 text-text-secondary hover:border-white/20 hover:text-foreground"
-                                            }`}
-                                        >
-                                            ×{n}
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                            <motion.button
-                                whileHover={canGenerate && inFlightCount === 0 ? { scale: 1.005 } : undefined}
-                                whileTap={canGenerate && inFlightCount === 0 ? { scale: 0.995 } : undefined}
-                                type="button"
-                                onClick={() => onGenerateBatch?.(generateCount)}
-                                disabled={!canGenerate || inFlightCount > 0}
-                                title={!canGenerate
-                                    ? (shot.tabMode === "t2i_i2v"
-                                        ? "请先在上方生成或上传首帧"
-                                        : "请先输入提示词")
-                                    : `生成 ${generateCount} 条视频候选`}
-                                className="inline-flex items-center justify-center gap-1.5 rounded-md px-5 py-2 min-w-[140px] font-sans text-[13px] font-semibold tracking-tight transition-colors duration-fast ease-out-quart focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 disabled:cursor-not-allowed disabled:opacity-40 bg-primary text-white border border-[rgba(100,108,255,0.65)] shadow-[inset_0_1.5px_0_rgba(255,255,255,0.14),inset_0_-1px_0_rgba(60,68,200,0.45),0_4px_14px_-2px_rgba(100,108,255,0.45)] hover:bg-[#7a82ff] hover:border-[rgba(100,108,255,0.85)] disabled:hover:bg-primary disabled:hover:border-[rgba(100,108,255,0.65)]"
-                            >
-                                {inFlightCount > 0 ? (
-                                    <>
-                                        <Loader2 size={14} className="animate-spin" strokeWidth={2} />
-                                        <span>{`生成中 · ${inFlightCount}`}</span>
-                                    </>
-                                ) : (
-                                    <>
-                                        <Sparkles size={14} strokeWidth={2} />
-                                        <span>{`生成 ×${generateCount}`}</span>
-                                    </>
-                                )}
-                            </motion.button>
-                            </div>
-                        </div>
+                                {/* 参数 / TAKES disclosure — moved into the same row with tools + generate */}
+                                <motion.button
+                                    whileHover={{ scale: 1.005 }}
+                                    whileTap={{ scale: 0.995 }}
+                                    type="button"
+                                    onClick={onToggleExpanded}
+                                    aria-expanded={expanded}
+                                    aria-label={expanded ? t("collapseShot") : t("expandShot")}
+                                    className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.14em] transition-colors duration-fast ease-out-quart focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 ${
+                                        expanded
+                                            ? "border-primary/40 bg-primary/12 text-primary hover:bg-primary/20"
+                                            : "border-glass-border bg-black/30 text-text-secondary hover:border-white/20 hover:bg-white/[0.06] hover:text-foreground"
+                                    }`}
+                                >
+                                    {expanded ? (
+                                        <PanelBottomClose size={13} strokeWidth={1.6} aria-hidden="true" />
+                                    ) : (
+                                        <PanelBottomOpen size={13} strokeWidth={1.6} aria-hidden="true" />
+                                    )}
+                                    <span>{expanded ? t("collapseShotShort") : t("expandShotShort")}</span>
+                                    {expanded ? (
+                                        <ChevronUp size={12} strokeWidth={2} className="opacity-60" aria-hidden="true" />
+                                    ) : (
+                                        <ChevronDown size={12} strokeWidth={2} className="opacity-60" aria-hidden="true" />
+                                    )}
+                                </motion.button>
 
-                        {/* PR-3b · 参数 / Takes disclosure bar — 控制 attached
-                            panel 显隐. Right-aligned 适宜宽度 (跟生成行对齐,
-                            不全宽，避免视觉过重). */}
-                        <div className="mt-2 flex justify-end">
-                            <motion.button
-                                whileHover={{ scale: 1.005 }}
-                                whileTap={{ scale: 0.995 }}
-                                type="button"
-                                onClick={onToggleExpanded}
-                                aria-expanded={expanded}
-                                aria-label={expanded ? t("collapseShot") : t("expandShot")}
-                                className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 font-mono text-[11px] font-medium uppercase tracking-[0.14em] transition-colors duration-fast ease-out-quart focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 ${
-                                    expanded
-                                        ? "border-primary/40 bg-primary/12 text-primary hover:bg-primary/20"
-                                        : "border-glass-border bg-black/30 text-text-secondary hover:border-white/20 hover:bg-white/[0.06] hover:text-foreground"
-                                }`}
-                            >
-                                {expanded ? (
-                                    <PanelBottomClose size={13} strokeWidth={1.6} aria-hidden="true" />
-                                ) : (
-                                    <PanelBottomOpen size={13} strokeWidth={1.6} aria-hidden="true" />
-                                )}
-                                <span>{expanded ? t("collapseShotShort") : t("expandShotShort")}</span>
-                                {expanded ? (
-                                    <ChevronUp size={12} strokeWidth={2} className="opacity-60" aria-hidden="true" />
-                                ) : (
-                                    <ChevronDown size={12} strokeWidth={2} className="opacity-60" aria-hidden="true" />
-                                )}
-                            </motion.button>
+                                <div className="flex items-center gap-1 shrink-0">
+                                    {[1, 2, 4, 6].map((n) => {
+                                        const active = generateCount === n;
+                                        return (
+                                            <button
+                                                key={n}
+                                                type="button"
+                                                onClick={() => onSetGenerateCount?.(n)}
+                                                aria-pressed={active}
+                                                aria-label={`Generate ${n} at a time`}
+                                                title={`每次生成 ${n} 条候选`}
+                                                className={`grid h-9 w-9 place-items-center rounded-md border font-mono text-[11px] font-medium transition-colors duration-fast ease-out-quart focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 ${
+                                                    active
+                                                        ? "border-primary/55 bg-primary/15 text-primary"
+                                                        : "border-glass-border bg-black/20 text-text-secondary hover:border-white/20 hover:text-foreground"
+                                                }`}
+                                            >
+                                                ×{n}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                                <motion.button
+                                    whileHover={canGenerate && inFlightCount === 0 ? { scale: 1.005 } : undefined}
+                                    whileTap={canGenerate && inFlightCount === 0 ? { scale: 0.995 } : undefined}
+                                    type="button"
+                                    onClick={() => onGenerateBatch?.(generateCount)}
+                                    disabled={!canGenerate || inFlightCount > 0}
+                                    title={!canGenerate
+                                        ? (shot.tabMode === "t2i_i2v"
+                                            ? "请先在上方生成或上传首帧"
+                                            : "请先输入提示词")
+                                        : `生成 ${generateCount} 条视频候选`}
+                                    className="inline-flex items-center justify-center gap-1.5 rounded-md px-5 py-2 min-w-[140px] font-sans text-[13px] font-semibold tracking-tight transition-colors duration-fast ease-out-quart focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 disabled:cursor-not-allowed disabled:opacity-40 bg-primary text-white border border-[rgba(100,108,255,0.65)] shadow-[inset_0_1.5px_0_rgba(255,255,255,0.14),inset_0_-1px_0_rgba(60,68,200,0.45),0_4px_14px_-2px_rgba(100,108,255,0.45)] hover:bg-[#7a82ff] hover:border-[rgba(100,108,255,0.85)] disabled:hover:bg-primary disabled:hover:border-[rgba(100,108,255,0.65)]"
+                                >
+                                    {inFlightCount > 0 ? (
+                                        <>
+                                            <Loader2 size={14} className="animate-spin" strokeWidth={2} />
+                                            <span>{`生成中 · ${inFlightCount}`}</span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Sparkles size={14} strokeWidth={2} />
+                                            <span>{`生成 ×${generateCount}`}</span>
+                                        </>
+                                    )}
+                                </motion.button>
+                            </div>
                         </div>
                     </div>
                 </div>
