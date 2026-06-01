@@ -356,6 +356,18 @@ lumenx/
 
 ## 🆕 近期更新 (2026-06-01)
 
+### ComfyUI 自定义工作流接口
+- 新增 ComfyUI Provider，支持连接远程 ComfyUI 服务器，使用自定义工作流进行图像和视频生成
+- 设置页中独立 ComfyUI Provider 配置区（Section 2），位于核心 API 配置之后、Cloud & Vendor 之前
+- 支持 4 种工作流模式：**T2I**（文生图）、**I2I**（图生图）、**T2V**（文生视频）、**I2V**（图生视频）
+- **拖拽上传**工作流 JSON 文件（从 ComfyUI 导出 API 格式），每种模式独立配置
+- 工作流模板占位符：在 ComfyUI 中为 prompt 节点填写 `{{prompt}}`，为 LoadImage 节点填写 `{{input_image}}`，运行时自动替换
+- 配置项：`COMFYUI_BASE_URL`, `COMFYUI_API_KEY`
+- 使用方式：`IMAGE_PROVIDER=comfyui` 或 `VIDEO_PROVIDER=comfyui`
+- ComfyUI 视频输出通过全局 `/history` 接口轮询，兼容反代部署场景
+- R2V 模式下，分镜 @ 引用的资产图片自动作为 i2v 工作流的输入参考图
+- 分镜卡片新增「生成图片」按钮，支持先基于资产图生成分镜参考图，再图生视频
+
 ### OpenAI 兼容视频接口
 - 新增 OpenAI 兼容的视频生成 adapter (`src/models/openai_video.py`)
 - 支持通过 `VIDEO_PROVIDER=openai` 切换到第三方 OpenAI 兼容视频 API
