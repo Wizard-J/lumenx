@@ -82,7 +82,7 @@ export default function Cast() {
     useEffect(() => {
         const sid = currentProject?.series_id;
         if (sid) {
-            import("@/lib/api").then(({ default: api }) => {
+            import("@/lib/api").then(({ api }) => {
                 api.getSeries(sid).then((s: any) => {
                     setSeriesAssets({ characters: s.characters || [], scenes: s.scenes || [], props: s.props || [] });
                 }).catch(() => {});
