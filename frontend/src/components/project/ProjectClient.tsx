@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { Palette, Layout, Film, Share2, Mic, Music, BookOpen, Users, Video, Settings, Key, MessageSquareCode, Clapperboard } from "lucide-react";
+import { Palette, Layout, Film, Share2, Mic, Music, BookOpen, Users, Video, Settings, Key, MessageSquareCode, Clapperboard, Terminal } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useProjectStore } from "@/store/projectStore";
+import { useLogStore } from "@/store/logStore";
 import PipelineSidebar from "@/components/layout/PipelineSidebar";
 import type { BreadcrumbSegment } from "@/components/layout/BreadcrumbBar";
 import PropertiesPanel from "@/components/modules/PropertiesPanel";
@@ -20,6 +21,7 @@ import ModelSettingsModal from "@/components/common/ModelSettingsModal";
 import EnvConfigDialog from "@/components/project/EnvConfigDialog";
 import PromptConfigModal from "@/components/project/PromptConfigModal";
 import StoryboardR2V from "@/components/modules/StoryboardR2V";
+import GlobalLogSidebar from "@/components/layout/GlobalLogPanel";
 import dynamic from "next/dynamic";
 
 const CreativeCanvas = dynamic(() => import("@/components/canvas/CreativeCanvas"), { ssr: false });
@@ -49,6 +51,7 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
     const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
     const [envDialogOpen, setEnvDialogOpen] = useState(false);
     const [promptConfigOpen, setPromptConfigOpen] = useState(false);
+    const { showLogs, toggleLogs, setShowLogs } = useLogStore();
     const t = useTranslations("project");
 
     const selectProject = useProjectStore((state) => state.selectProject);
@@ -175,6 +178,9 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
                 {/* Right Sidebar - Contextual Inspector */}
                 {activeStep !== "assembly" && activeStep !== "art_direction" && activeStep !== "storyboard_r2v" && <PropertiesPanel activeStep={activeStep} />}
             </div>
+
+            {/* Global Log Sidebar */}
+            <GlobalLogSidebar open={showLogs} onClose={() => setShowLogs(false)} />
         </main>
     );
 }

@@ -546,7 +546,7 @@
     "saveFailed": "Save failed"
   },
   "character": {
-    "workbench": "Character Workbench",
+    "applyStyle": "Apply series art style",
     "tipConsistency": "Keep the three images consistent for best results",
     "masterAsset": "1. Master Asset (Full Body)",
     "threeViews": "2. Three-Views",
@@ -573,7 +573,8 @@
     "viewLarger": "Click to view larger",
     "noImage": "No image yet",
     "generateRef": "Generate Reference",
-    "motionRef": "Motion Reference"
+    "motionRef": "Motion Reference",
+    "negativePrompt": "Negative Prompt"
   },
   "vault": {
     "title": "Consistency Vault",

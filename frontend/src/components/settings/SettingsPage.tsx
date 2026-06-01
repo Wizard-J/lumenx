@@ -27,6 +27,14 @@ type EnvConfig = EnvConfigPayload & {
   KLING_ACCESS_KEY: string;
   KLING_SECRET_KEY: string;
   VIDU_API_KEY: string;
+  IMAGE_PROVIDER: string;
+  IMAGE_API_KEY: string;
+  IMAGE_BASE_URL: string;
+  IMAGE_MODEL: string;
+  VIDEO_PROVIDER: string;
+  VIDEO_API_KEY: string;
+  VIDEO_BASE_URL: string;
+  VIDEO_MODEL: string;
   endpoint_overrides: Record<string, string>;
 };
 
@@ -49,6 +57,14 @@ const DEFAULT_CONFIG: EnvConfig = {
   KLING_ACCESS_KEY: "",
   KLING_SECRET_KEY: "",
   VIDU_API_KEY: "",
+  IMAGE_PROVIDER: "dashscope",
+  IMAGE_API_KEY: "",
+  IMAGE_BASE_URL: "",
+  IMAGE_MODEL: "",
+  VIDEO_PROVIDER: "dashscope",
+  VIDEO_API_KEY: "",
+  VIDEO_BASE_URL: "",
+  VIDEO_MODEL: "",
   endpoint_overrides: {},
 };
 
@@ -332,6 +348,46 @@ export default function SettingsPage() {
             </div>
 
             <div className="pt-4 border-t border-glass-border">
+              <h3 className="text-sm font-bold text-foreground mb-4">LLM Provider</h3>
+              <div className="bg-surface border border-glass-border rounded-lg p-4 space-y-4">
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => handleChange("LLM_PROVIDER", "dashscope")} className={modeButtonClass(config.LLM_PROVIDER === "dashscope")}>
+                    DashScope
+                  </button>
+                  <button type="button" onClick={() => handleChange("LLM_PROVIDER", "openai")} className={modeButtonClass(config.LLM_PROVIDER === "openai")}>
+                    OpenAI Compatible
+                  </button>
+                </div>
+                <p className="text-xs text-text-muted">
+                  DashScope: Default, uses Alibaba DashScope API (requires DashScope API Key).
+                  {" "}OpenAI Compatible: Connect to any OpenAI‑standard API (OpenAI, DeepSeek, Ollama, etc.).
+                </p>
+                {config.LLM_PROVIDER === "openai" && (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-text-secondary mb-2">API Key <span className="text-red-500">*</span></label>
+                      <input type="password" value={config.LLM_API_KEY} onChange={(e) => handleChange("LLM_API_KEY", e.target.value)} placeholder="sk-..." className={inputClass} />
+                    </div>
+                    <div>
+                      <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+                        <span>Base URL</span>
+                        <span className="text-text-muted font-normal text-xs">override endpoint</span>
+                      </label>
+                      <input type="text" value={config.endpoint_overrides?.LLM_BASE_URL ?? ""} onChange={(e) => handleEndpointChange("LLM_BASE_URL", e.target.value)} placeholder="https://api.openai.com/v1" className={inputClass} />
+                    </div>
+                    <div>
+                      <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+                        <span>Model</span>
+                        <span className="text-text-muted font-normal text-xs">default: gpt-4o</span>
+                      </label>
+                      <input type="text" value={config.LLM_MODEL} onChange={(e) => handleChange("LLM_MODEL", e.target.value)} placeholder="gpt-4o" className={inputClass} />
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-glass-border">
               <h3 className="text-sm font-bold text-foreground mb-4">Kling Provider</h3>
               <div className="bg-surface border border-glass-border rounded-lg p-4 space-y-4">
                 <div className="flex flex-wrap gap-2">
@@ -379,6 +435,84 @@ export default function SettingsPage() {
                     <label className="block text-sm font-medium text-text-secondary mb-2">Vidu API Key <span className="text-red-500">*</span></label>
                     <input type="password" value={config.VIDU_API_KEY} onChange={(e) => handleChange("VIDU_API_KEY", e.target.value)} placeholder="Vidu API Key" className={inputClass} />
                   </div>
+                )}
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-glass-border">
+              <h3 className="text-sm font-bold text-foreground mb-4">Image Generation Provider</h3>
+              <div className="bg-surface border border-glass-border rounded-lg p-4 space-y-4">
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => handleChange("IMAGE_PROVIDER", "dashscope")} className={modeButtonClass(config.IMAGE_PROVIDER === "dashscope")}>
+                    DashScope
+                  </button>
+                  <button type="button" onClick={() => handleChange("IMAGE_PROVIDER", "openai")} className={modeButtonClass(config.IMAGE_PROVIDER === "openai")}>
+                    OpenAI Compatible
+                  </button>
+                </div>
+                <p className="text-xs text-text-muted">
+                  DashScope mode uses your DashScope API key. OpenAI Compatible mode connects to any OpenAI‑standard Images API.
+                </p>
+                {config.IMAGE_PROVIDER === "openai" && (
+                <>
+                <div>
+                  <label className="block text-sm font-medium text-text-secondary mb-2">API Key</label>
+                  <input type="password" value={config.IMAGE_API_KEY} onChange={(e) => handleChange("IMAGE_API_KEY", e.target.value)} placeholder="sk-..." className={inputClass} />
+                </div>
+                <div>
+                  <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+                    <span>Base URL</span>
+                    <span className="text-text-muted font-normal text-xs">https://api.openai.com/v1</span>
+                  </label>
+                  <input type="text" value={config.IMAGE_BASE_URL} onChange={(e) => handleChange("IMAGE_BASE_URL", e.target.value)} placeholder="https://api.openai.com/v1" className={inputClass} />
+                </div>
+                <div>
+                  <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+                    <span>Model</span>
+                    <span className="text-text-muted font-normal text-xs">dall-e-3</span>
+                  </label>
+                  <input type="text" value={config.IMAGE_MODEL} onChange={(e) => handleChange("IMAGE_MODEL", e.target.value)} placeholder="dall-e-3" className={inputClass} />
+                </div>
+                </>
+                )}
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-glass-border">
+              <h3 className="text-sm font-bold text-foreground mb-4">Video Generation Provider</h3>
+              <div className="bg-surface border border-glass-border rounded-lg p-4 space-y-4">
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => handleChange("VIDEO_PROVIDER", "dashscope")} className={modeButtonClass(config.VIDEO_PROVIDER === "dashscope")}>
+                    DashScope
+                  </button>
+                  <button type="button" onClick={() => handleChange("VIDEO_PROVIDER", "openai")} className={modeButtonClass(config.VIDEO_PROVIDER === "openai")}>
+                    OpenAI Compatible
+                  </button>
+                </div>
+                <p className="text-xs text-text-muted">
+                  DashScope mode uses your DashScope API key. OpenAI Compatible mode connects to any OpenAI‑standard Video API.
+                </p>
+                {config.VIDEO_PROVIDER === "openai" && (
+                <>
+                <div>
+                  <label className="block text-sm font-medium text-text-secondary mb-2">API Key</label>
+                  <input type="password" value={config.VIDEO_API_KEY} onChange={(e) => handleChange("VIDEO_API_KEY", e.target.value)} placeholder="sk-..." className={inputClass} />
+                </div>
+                <div>
+                  <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+                    <span>Base URL</span>
+                    <span className="text-text-muted font-normal text-xs">https://api.openai.com/v1</span>
+                  </label>
+                  <input type="text" value={config.VIDEO_BASE_URL} onChange={(e) => handleChange("VIDEO_BASE_URL", e.target.value)} placeholder="https://api.openai.com/v1" className={inputClass} />
+                </div>
+                <div>
+                  <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+                    <span>Model</span>
+                    <span className="text-text-muted font-normal text-xs">dall-e-3</span>
+                  </label>
+                  <input type="text" value={config.VIDEO_MODEL} onChange={(e) => handleChange("VIDEO_MODEL", e.target.value)} placeholder="dall-e-3" className={inputClass} />
+                </div>
+                </>
                 )}
               </div>
             </div>

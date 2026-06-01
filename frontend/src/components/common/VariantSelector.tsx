@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { ImageAsset, ImageVariant } from '@/store/projectStore';
-import { Trash2, Check, ChevronLeft, ChevronRight, Layers, X, Maximize2, Star } from 'lucide-react';
+import { Trash2, Check, ChevronLeft, ChevronRight, Layers, X, Maximize2, Star, RefreshCw, Loader2 } from 'lucide-react';
 import { API_URL } from '@/lib/api';
 import { getAssetUrl } from '@/lib/utils';
 import { useTranslations } from "next-intl";
@@ -145,13 +145,22 @@ export const VariantSelector: React.FC<VariantSelectorProps> = ({
                     <button
                         onClick={() => onGenerate(batchSize)}
                         disabled={isGenerating}
-                        className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${isGenerating
-                            ? 'bg-gray-700 text-text-secondary cursor-not-allowed'
-                            : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg shadow-blue-500/20'
-                            }`}
+                        className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                            isGenerating
+                                ? 'bg-gray-700 text-text-secondary cursor-not-allowed'
+                                : variants.length > 0
+                                ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/30'
+                                : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg shadow-blue-500/20'
+                        }`}
                     >
-                        <Layers size={16} />
-                        {t("generate")}
+                        {isGenerating ? (
+                            <Loader2 size={16} className="animate-spin" />
+                        ) : variants.length > 0 ? (
+                            <RefreshCw size={16} />
+                        ) : (
+                            <Layers size={16} />
+                        )}
+                        {isGenerating ? t("generating") || "生成中…" : variants.length > 0 ? t("regenerate") || "重新生成" : t("generate")}
                     </button>
                 </div>
 

@@ -34,6 +34,7 @@ export default function GlobalLogSidebar({ open, onClose }: GlobalLogSidebarProp
   const [entries, setEntries] = useState<OpEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [activeTab, setActiveTab] = useState<"all" | "llm" | "image" | "video">("all");
 
   const load = useCallback(async () => {
     try {
@@ -55,6 +56,13 @@ export default function GlobalLogSidebar({ open, onClose }: GlobalLogSidebarProp
     return () => clearInterval(t);
   }, [open, autoRefresh, load]);
 
+  useEffect(() => {
+    if (!open) return;
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [open, onClose]);
+
   const handleClear = async () => {
     await clearLogs();
     setEntries([]);
@@ -74,8 +82,9 @@ export default function GlobalLogSidebar({ open, onClose }: GlobalLogSidebarProp
     return d.toLocaleTimeString("zh-CN", { hour12: false });
   };
 
-  const successCount = entries.filter((e) => e.status === "success").length;
-  const errorCount = entries.filter((e) => e.status === "error").length;
+  const filteredEntries = activeTab === "all" ? entries : entries.filter((e) => e.type === (activeTab === "llm" ? "llm_call" : activeTab));
+  const successCount = filteredEntries.filter((e) => e.status === "success").length;
+  const errorCount = filteredEntries.filter((e) => e.status === "error").length;
 
   if (!open) return null;
 
@@ -89,6 +98,24 @@ export default function GlobalLogSidebar({ open, onClose }: GlobalLogSidebarProp
           {successCount} ok / {errorCount} err
         </span>
         <div className="flex-1" />
+
+        {/* Tab filters */}
+        <div className="flex gap-0.5 bg-white/[0.04] rounded-lg p-0.5 border border-white/[0.06]">
+          {(["all", "llm", "image", "video"] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-2.5 py-1 text-[10px] font-medium rounded-md transition-colors ${
+                activeTab === tab
+                  ? "bg-purple-500/20 text-purple-300"
+                  : "text-text-muted hover:text-text-secondary"
+              }`}
+            >
+              {tab === "all" ? "All" : tab === "llm" ? "LLM" : tab === "image" ? "Img" : "Vid"}
+            </button>
+          ))}
+        </div>
+
         <label className="flex items-center gap-1 text-[10px] text-text-muted cursor-pointer select-none">
           <input
             type="checkbox"
@@ -121,12 +148,12 @@ export default function GlobalLogSidebar({ open, onClose }: GlobalLogSidebarProp
 
       {/* Body */}
       <div className="overflow-y-auto flex-1 font-mono text-[11px] leading-relaxed">
-        {entries.length === 0 ? (
+        {filteredEntries.length === 0 ? (
           <div className="px-4 py-10 text-center text-text-muted">
-            {loading ? "Loading..." : "No requests yet"}
+            {loading ? "加载中..." : activeTab === "all" ? "暂无请求记录" : "暂无" + (activeTab === "llm" ? "LLM" : activeTab === "image" ? "Img" : "Vid") + "调用"}
           </div>
         ) : (
-          entries.map((e, i) => (
+          filteredEntries.map((e, i) => (
             <div
               key={i}
               className={`px-3 py-2 border-b border-glass-border/20 hover:bg-white/[0.02] transition-colors ${

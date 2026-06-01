@@ -326,6 +326,80 @@ export default function EnvConfigDialog({ isOpen, onClose, isRequired = false }:
 
                 <div className="pt-4 border-t border-glass-border">
                   <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-bold text-foreground">LLM Provider</h3>
+                    <span className="text-[10px] text-text-muted">LLM</span>
+                  </div>
+                  <div className="bg-glass border border-glass-border rounded-lg p-4 space-y-4">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleChange("LLM_PROVIDER", "dashscope")}
+                        className={modeButtonClass(config.LLM_PROVIDER === "dashscope")}
+                      >
+                        DashScope
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleChange("LLM_PROVIDER", "openai")}
+                        className={modeButtonClass(config.LLM_PROVIDER === "openai")}
+                      >
+                        OpenAI Compatible
+                      </button>
+                    </div>
+                    <p className="text-xs text-text-muted">
+                      DashScope: Default, uses Alibaba DashScope API (requires DashScope API Key).
+                      {" "}OpenAI Compatible: Connect to any OpenAI‑standard API (OpenAI, DeepSeek, Ollama, etc.).
+                    </p>
+
+                    {config.LLM_PROVIDER === "openai" && (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium text-foreground mb-2">
+                            API Key <span className="text-red-500">*</span>
+                          </label>
+                          <input
+                            type="password"
+                            value={config.LLM_API_KEY}
+                            onChange={(e) => handleChange("LLM_API_KEY", e.target.value)}
+                            placeholder="sk-..."
+                            className={inputClass}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="flex items-center justify-between text-sm font-medium text-foreground mb-2">
+                            <span>Base URL</span>
+                            <span className="text-text-muted font-normal text-xs">override endpoint</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={config.endpoint_overrides?.LLM_BASE_URL ?? ""}
+                            onChange={(e) => handleEndpointChange("LLM_BASE_URL", e.target.value)}
+                            placeholder="https://api.openai.com/v1"
+                            className={inputClass}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="flex items-center justify-between text-sm font-medium text-foreground mb-2">
+                            <span>Model</span>
+                            <span className="text-text-muted font-normal text-xs">default: gpt-4o</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={config.LLM_MODEL}
+                            onChange={(e) => handleChange("LLM_MODEL", e.target.value)}
+                            placeholder="gpt-4o"
+                            className={inputClass}
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-glass-border">
+                  <div className="flex items-center justify-between mb-4">
                     <h3 className="text-sm font-bold text-foreground">Kling Provider</h3>
                     <span className="text-[10px] text-text-muted">{t("chooseProvider")}</span>
                   </div>

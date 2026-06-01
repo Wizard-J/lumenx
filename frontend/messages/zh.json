@@ -546,7 +546,7 @@
     "saveFailed": "保存失败"
   },
   "character": {
-    "workbench": "角色工作台",
+    "applyStyle": "应用系列画风",
     "tipConsistency": "保持三张图片风格一致以获得最佳效果",
     "masterAsset": "1. 主体资产（全身图）",
     "threeViews": "2. 三视图",
@@ -573,7 +573,8 @@
     "viewLarger": "点击查看大图",
     "noImage": "暂无图片",
     "generateRef": "生成参考",
-    "motionRef": "动态参考"
+    "motionRef": "动态参考",
+    "negativePrompt": "负向提示词"
   },
   "vault": {
     "title": "一致性金库",

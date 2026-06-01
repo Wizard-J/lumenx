@@ -49,6 +49,9 @@ class QwenVLModel:
             logger.warning("Dashscope API Key not found in config or environment variables.")
         return api_key
 
+    '''
+    百炼的地址，如果被更换的话，可能需要改过来
+    '''
     def _get_client(self):
         """Get or create the OpenAI-compatible client (lazy, cached)."""
         if self._client is None:

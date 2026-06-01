@@ -15,6 +15,7 @@ import {
     ImageIcon,
     AtSign,
 } from "lucide-react";
+import { getAssetUrl } from "@/lib/utils";
 import { useTranslations } from "next-intl";
 import AssetChipBar from "./AssetChipBar";
 
@@ -95,21 +96,39 @@ export default function ShotCard({
         if (shot.tabMode === "t2i_i2v") {
             if (shot.videoUrl) {
                 return (
-                    <div className="w-full aspect-video relative group/preview">
+                    <div className="w-full aspect-video relative group/preview cursor-pointer">
                         <video
-                            src={shot.videoUrl}
+                            ref={el => {
+                                if (el && shot.videoUrl) {
+                                    el.muted = true;
+                                    el.loop = true;
+                                    el.playsInline = true;
+                                    el.preload = "auto";
+                                }
+                            }}
+                            src={getAssetUrl(shot.videoUrl)}
                             className="w-full h-full object-cover"
                             muted
                             loop
-                            onMouseEnter={(e) => (e.target as HTMLVideoElement).play()}
-                            onMouseLeave={(e) => {
-                                (e.target as HTMLVideoElement).pause();
-                                (e.target as HTMLVideoElement).currentTime = 0;
-                            }}
+                            playsInline
+                            preload="auto"
                         />
-                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/preview:opacity-100 transition-opacity duration-300">
-                            <div className="w-10 h-10 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center">
-                                <Play size={18} className="text-white ml-0.5" />
+                        <div
+                            className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/preview:opacity-100 transition-opacity duration-300"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                const vid = e.currentTarget.parentElement?.querySelector("video");
+                                if (vid) {
+                                    if (vid.paused) {
+                                        vid.play().catch(() => {});
+                                    } else {
+                                        vid.pause();
+                                    }
+                                }
+                            }}
+                        >
+                            <div className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center">
+                                <Play size={22} className="text-white ml-0.5" />
                             </div>
                         </div>
                     </div>
@@ -184,21 +203,39 @@ export default function ShotCard({
         // Direct R2V mode
         if (shot.videoUrl) {
             return (
-                <div className="w-full aspect-video relative group/preview">
+                <div className="w-full aspect-video relative group/preview cursor-pointer">
                     <video
-                        src={shot.videoUrl}
+                        ref={el => {
+                            if (el) {
+                                el.muted = true;
+                                el.loop = true;
+                                el.playsInline = true;
+                                el.preload = "auto";
+                            }
+                        }}
+                        src={getAssetUrl(shot.videoUrl)}
                         className="w-full h-full object-cover"
                         muted
                         loop
-                        onMouseEnter={(e) => (e.target as HTMLVideoElement).play()}
-                        onMouseLeave={(e) => {
-                            (e.target as HTMLVideoElement).pause();
-                            (e.target as HTMLVideoElement).currentTime = 0;
-                        }}
+                        playsInline
+                        preload="auto"
                     />
-                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/preview:opacity-100 transition-opacity duration-300">
-                        <div className="w-10 h-10 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center">
-                            <Play size={18} className="text-white ml-0.5" />
+                    <div
+                        className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/preview:opacity-100 transition-opacity duration-300"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            const vid = e.currentTarget.parentElement?.querySelector("video");
+                            if (vid) {
+                                if (vid.paused) {
+                                    vid.play().catch(() => {});
+                                } else {
+                                    vid.pause();
+                                }
+                            }
+                        }}
+                    >
+                        <div className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center">
+                            <Play size={22} className="text-white ml-0.5" />
                         </div>
                     </div>
                 </div>
@@ -248,7 +285,21 @@ export default function ShotCard({
             "relative flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg overflow-hidden transition-all duration-200 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100";
 
         if (shot.tabMode === "t2i_i2v") {
-            if (shot.t2iImageUrl && !shot.videoUrl && !shot.videoTaskId) {
+            if (shot.videoUrl && shot.videoStatus !== "failed") {
+                return (
+                    <motion.button
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={onGenerateVideo}
+                        disabled={isProcessing}
+                        className={`${baseButtonClasses} bg-surface/80 hover:bg-surface text-text-secondary hover:text-foreground border border-white/[0.08]`}
+                    >
+                        <Video size={13} strokeWidth={2} />
+                        重新生成
+                    </motion.button>
+                );
+            }
+            if (shot.t2iImageUrl && !shot.videoUrl) {
                 return (
                     <motion.button
                         whileHover={{ scale: 1.02 }}
@@ -280,6 +331,21 @@ export default function ShotCard({
             );
         }
 
+        // Already have a video for this shot — show regenerate button
+        if (shot.videoUrl && shot.videoStatus !== "failed") {
+            return (
+                <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={onGenerateVideo}
+                    disabled={isProcessing}
+                    className={`${baseButtonClasses} bg-surface/80 hover:bg-surface text-text-secondary hover:text-foreground border border-white/[0.08]`}
+                >
+                    <Video size={13} strokeWidth={2} />
+                    重新生成
+                </motion.button>
+            );
+        }
         return (
             <motion.button
                 whileHover={{ scale: 1.02 }}

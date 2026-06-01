@@ -47,9 +47,20 @@ ASPECT_RATIO_TO_SIZE = {
 class AssetGenerator:
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
-        # Default to Wanx for now, can be swapped based on config
-        self.model = WanxImageModel(self.config.get('model', {}))
+        self._model = None
+        self._model_provider = None
         self.output_dir = self.config.get('output_dir', 'output/assets')
+
+    def _get_model(self):
+        """Get image model based on current IMAGE_PROVIDER env var."""
+        import os
+        image_provider = os.environ.get("IMAGE_PROVIDER", "dashscope").lower()
+        has_key = bool(os.environ.get("IMAGE_API_KEY", ""))
+        if image_provider == "openai" and has_key:
+            from ...models.openai_image import OpenAIImageModel
+            return OpenAIImageModel(self.config.get('model', {}))
+        else:
+            return WanxImageModel(self.config.get('model', {}))
 
     def generate_character(self, character: Character, generation_type: str = "all", prompt: str = "", positive_prompt: str = None, negative_prompt: str = "", batch_size: int = 1, model_name: str = None, i2i_model_name: str = None, size: str = None) -> Character:
         """
@@ -147,7 +158,7 @@ class AssetGenerator:
                                 effective_generation_prompt = f"{reverse_enhancement}{generation_prompt}"
                                 logger.debug(f"Reverse generation enhanced prompt: {effective_generation_prompt[:100]}...")
                         
-                        self.model.generate(effective_generation_prompt, fullbody_path, ref_image_path=ref_image_path, negative_prompt=negative_prompt, model_name=effective_model_name, size=effective_size)
+                        self._get_model().generate(effective_generation_prompt, fullbody_path, ref_image_path=ref_image_path, negative_prompt=negative_prompt, model_name=effective_model_name, size=effective_size)
                         
                         rel_fullbody_path = os.path.relpath(fullbody_path, "output")
                         
@@ -295,7 +306,7 @@ class AssetGenerator:
                         variant_id = str(uuid.uuid4())
                         sheet_path = os.path.join(self.output_dir, 'characters', f"{character.id}_sheet_{variant_id}.png")
                         
-                        self.model.generate(generation_prompt, sheet_path, ref_image_path=fullbody_path, negative_prompt=sheet_negative, ref_strength=0.8, model_name=i2i_model_name)
+                        self._get_model().generate(generation_prompt, sheet_path, ref_image_path=fullbody_path, negative_prompt=sheet_negative, ref_strength=0.8, model_name=i2i_model_name)
                         
                         rel_sheet_path = os.path.relpath(sheet_path, "output")
                         
@@ -355,7 +366,7 @@ class AssetGenerator:
             if generation_type in ["all", "headshot"]:
                 if not prompt or generation_type == "all":
                     # Add reference consistency emphasis
-                    base_prompt = f"Close-up portrait of the SAME character {character.name}. {character.description}. STRICTLY MAINTAIN the SAME face, hairstyle, skin tone, and facial features as the reference image. Zoom in on face and shoulders, detailed facial features, neutral expression, looking at viewer, high quality, masterpiece."
+                    base_prompt = f"Close-up portrait of the SAME character {character.name}. {character.description}. STRICTLY MAINTAIN the SAME face, hairstyle, skin tone, and facial features as the reference image. Zoom in on face and shoulders, detailed facial features, neutral expression, looking at viewer. Clean white background, isolated, no other objects, simple background, high quality, masterpiece."
                 else:
                     base_prompt = prompt
                 
@@ -371,7 +382,7 @@ class AssetGenerator:
                         variant_id = str(uuid.uuid4())
                         avatar_path = os.path.join(self.output_dir, 'characters', f"{character.id}_avatar_{variant_id}.png")
                         
-                        self.model.generate(generation_prompt, avatar_path, ref_image_path=fullbody_path, negative_prompt=negative_prompt, ref_strength=0.8, model_name=i2i_model_name)
+                        self._get_model().generate(generation_prompt, avatar_path, ref_image_path=fullbody_path, negative_prompt=negative_prompt, ref_strength=0.8, model_name=i2i_model_name)
                         
                         rel_avatar_path = os.path.relpath(avatar_path, "output")
                         
@@ -462,7 +473,7 @@ class AssetGenerator:
                 output_path = os.path.join(self.output_dir, 'scenes', f"{scene.id}_{variant_id}.png")
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 
-                image_path, _ = self.model.generate(prompt, output_path, negative_prompt=negative_prompt, model_name=model_name, size=effective_size)
+                image_path, _ = self._get_model().generate(prompt, output_path, negative_prompt=negative_prompt, model_name=model_name, size=effective_size)
                 
                 rel_path = os.path.relpath(output_path, "output")
                 
@@ -524,7 +535,7 @@ class AssetGenerator:
                 output_path = os.path.join(self.output_dir, 'props', f"{prop.id}_{variant_id}.png")
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 
-                image_path, _ = self.model.generate(prompt, output_path, negative_prompt=negative_prompt, model_name=model_name, size=effective_size)
+                image_path, _ = self._get_model().generate(prompt, output_path, negative_prompt=negative_prompt, model_name=model_name, size=effective_size)
                 
                 rel_path = os.path.relpath(output_path, "output")
                 

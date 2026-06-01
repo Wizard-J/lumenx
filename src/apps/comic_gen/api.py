@@ -352,6 +352,29 @@ async def get_series(series_id: str):
     # Include episode summaries
     episodes = pipeline.get_series_episodes(series_id)
     result = series.model_dump()
+    # DEBUG: log asset counts
+    chars = result.get('characters', [])
+    for c in chars:
+        hsa = c.get('headshot_asset', {})
+        fba = c.get('full_body_asset', {})
+        tva = c.get('three_view_asset', {})
+        hs_v = len(hsa.get('variants', [])) if hsa else 0
+        fb_v = len(fba.get('variants', [])) if fba else 0
+        tv_v = len(tva.get('variants', [])) if tva else 0
+        if hs_v > 0 or fb_v > 0 or tv_v > 0:
+            logger.info(f"[DEBUG] get_series character {c.get('name')}: fb={fb_v} tv={tv_v} hs={hs_v}")
+    props = result.get('props', [])
+    for p in props:
+        ia = p.get('image_asset', {})
+        iv = len(ia.get('variants', [])) if ia else 0
+        if iv > 0:
+            logger.info(f"[DEBUG] get_series prop {p.get('name')}: image_variants={iv}")
+    scenes = result.get('scenes', [])
+    for s in scenes:
+        ia = s.get('image_asset', {})
+        iv = len(ia.get('variants', [])) if ia else 0
+        if iv > 0:
+            logger.info(f"[DEBUG] get_series scene {s.get('name')}: image_variants={iv}")
     result["episodes"] = [
         {
             "id": ep.id,
@@ -682,6 +705,14 @@ class EnvConfig(ProviderRoutingConfig):
     LLM_PROVIDER: Optional[str] = None
     LLM_API_KEY: Optional[str] = None
     LLM_MODEL: Optional[str] = None
+    IMAGE_PROVIDER: Optional[str] = None
+    IMAGE_API_KEY: Optional[str] = None
+    IMAGE_BASE_URL: Optional[str] = None
+    IMAGE_MODEL: Optional[str] = None
+    VIDEO_PROVIDER: Optional[str] = None
+    VIDEO_API_KEY: Optional[str] = None
+    VIDEO_BASE_URL: Optional[str] = None
+    VIDEO_MODEL: Optional[str] = None
     endpoint_overrides: Dict[str, str] = Field(default_factory=dict)
 
 
@@ -1049,7 +1080,11 @@ async def analyze_to_storyboard(script_id: str, request: AnalyzeToStoryboardRequ
     Replaces existing frames with newly generated ones.
     """
     try:
-        updated_script = pipeline.analyze_text_to_frames(script_id, request.text)
+        loop = asyncio.get_event_loop()
+        updated_script = await loop.run_in_executor(
+            None,
+            partial(pipeline.analyze_text_to_frames, script_id, request.text),
+        )
         return signed_response(updated_script)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1073,12 +1108,17 @@ async def refine_storyboard_prompt(script_id: str, request: RefinePromptRequest)
     Returns the refined prompts and optionally updates the frame.
     """
     try:
-        result = pipeline.refine_frame_prompt(
-            script_id,
-            request.frame_id,
-            request.raw_prompt,
-            request.assets,
-            request.feedback,
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            partial(
+                pipeline.refine_frame_prompt,
+                script_id,
+                request.frame_id,
+                request.raw_prompt,
+                request.assets,
+                request.feedback,
+            ),
         )
         return result
     except ValueError as e:
@@ -2053,6 +2093,14 @@ async def get_env_config():
             "LLM_PROVIDER": _env("LLM_PROVIDER", "dashscope"),
             "LLM_API_KEY": _env("LLM_API_KEY"),
             "LLM_MODEL": _env("LLM_MODEL"),
+            "IMAGE_PROVIDER": _env("IMAGE_PROVIDER", "dashscope"),
+            "IMAGE_API_KEY": _env("IMAGE_API_KEY"),
+            "IMAGE_BASE_URL": _env("IMAGE_BASE_URL"),
+            "IMAGE_MODEL": _env("IMAGE_MODEL"),
+            "VIDEO_PROVIDER": _env("VIDEO_PROVIDER", "dashscope"),
+            "VIDEO_API_KEY": _env("VIDEO_API_KEY"),
+            "VIDEO_BASE_URL": _env("VIDEO_BASE_URL"),
+            "VIDEO_MODEL": _env("VIDEO_MODEL"),
             "endpoint_overrides": endpoint_overrides,
         }
     except Exception as e:

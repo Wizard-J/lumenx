@@ -27,4 +27,4 @@ oss2>=2.18.0
 # Uncomment if needed:
 # numpy>=1.24.0
 # pillow>=10.0.0
-# openai>=1.0.0  # Required when LLM_PROVIDER=openai
+openai>=1.0.0

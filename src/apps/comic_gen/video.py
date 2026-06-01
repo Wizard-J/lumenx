@@ -12,6 +12,16 @@ class VideoGenerator:
         self.model = WanxModel(self.config.get('model', {}))
         self.output_dir = self.config.get('output_dir', 'output/video')
 
+    def _resolve_model(self):
+        """Dynamically select video model based on VIDEO_PROVIDER env var."""
+        video_provider = os.environ.get("VIDEO_PROVIDER", "dashscope").lower()
+        has_key = bool(os.environ.get("VIDEO_API_KEY", ""))
+        if video_provider == "openai" and has_key:
+            from ...models.openai_video import OpenAIVideoModel
+            logger.info("VideoGenerator: Using OpenAI-compatible video model")
+            return OpenAIVideoModel(self.config.get('model', {}))
+        return self.model
+
     def generate_i2v(self, image_url: str, prompt: str, duration: int = 5, audio_url: str = None) -> Dict[str, Any]:
         """
         Generate Image-to-Video for motion reference.
@@ -43,7 +53,8 @@ class VideoGenerator:
             output_path = os.path.join(self.output_dir, output_filename)
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
-            video_path, _ = self.model.generate(
+            video_model = self._resolve_model()
+            video_path, _ = video_model.generate(
                 prompt=prompt,
                 output_path=output_path,
                 img_path=img_path,
@@ -118,7 +129,8 @@ class VideoGenerator:
         try:
             output_path = os.path.join(self.output_dir, f"{frame.id}.mp4")
             
-            video_path, _ = self.model.generate(
+            video_model = self._resolve_model()
+            video_path, _ = video_model.generate(
                 prompt=prompt,
                 output_path=output_path,
                 img_path=img_path, # Pass local path, model will upload

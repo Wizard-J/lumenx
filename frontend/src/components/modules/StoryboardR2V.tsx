@@ -20,14 +20,46 @@ export default function StoryboardR2V() {
     // Derive shots from project frames or initialize empty
     const [shots, setShots] = useState<ShotNode[]>(() => {
         if (currentProject?.frames && currentProject.frames.length > 0) {
-            return currentProject.frames.map((frame: any) => ({
-                id: frame.id,
-                prompt: frame.action_description || "",
-                tabMode: "direct_r2v" as const,
-                videoUrl: frame.video_url || undefined,
-                videoStatus: frame.video_url ? ("completed" as const) : undefined,
-                imageUrl: frame.rendered_image_url || frame.image_url || undefined,
-            }));
+            // Build asset lookups for tag reconstruction
+            const charById: Record<string, string> = {};
+            for (const c of (currentProject.characters || [])) charById[c.id] = c.name;
+            const sceneById: Record<string, string> = {};
+            for (const s of (currentProject.scenes || [])) sceneById[s.id] = s.name;
+            const propById: Record<string, string> = {};
+            for (const p of (currentProject.props || [])) propById[p.id] = p.name;
+
+            return currentProject.frames.map((frame: any) => {
+                // Rebuild asset tags from frame data (survives page refresh)
+                const tags: string[] = [];
+                if (frame.scene_id && sceneById[frame.scene_id]) {
+                    tags.push(`[scene:${sceneById[frame.scene_id]}]`);
+                }
+                if (frame.character_ids) {
+                    for (const cid of frame.character_ids) {
+                        if (charById[cid]) tags.push(`[character:${charById[cid]}]`);
+                    }
+                }
+                if (frame.prop_ids) {
+                    for (const pid of frame.prop_ids) {
+                        if (propById[pid]) tags.push(`[prop:${propById[pid]}]`);
+                    }
+                }
+
+                const actionDesc = frame.action_description || "";
+                const visualAtm = frame.visual_atmosphere || "";
+                const dialogue = frame.dialogue ? ` 对话: ${frame.dialogue}` : "";
+                // prompt = clean description (no tags); tags saved separately
+                const fullPrompt = [visualAtm, actionDesc, dialogue].filter(Boolean).join(" ");
+
+                return {
+                    id: frame.id,
+                    prompt: fullPrompt || frame.action_description || "",
+                    tabMode: "direct_r2v" as const,
+                    videoUrl: frame.video_url || undefined,
+                    videoStatus: frame.video_url ? ("completed" as const) : undefined,
+                    imageUrl: frame.rendered_image_url || frame.image_url || undefined,
+                };
+            });
         }
         return [{ id: `shot_${Date.now()}`, prompt: "", tabMode: "direct_r2v" }];
     });
@@ -176,8 +208,9 @@ export default function StoryboardR2V() {
                 const actionDesc = frame.action_description || "";
                 const visualAtm = frame.visual_atmosphere || "";
                 const dialogue = frame.dialogue ? ` 对话: ${frame.dialogue}` : "";
-                const fullPrompt = [tags.join(" "), visualAtm, actionDesc, dialogue]
-                    .filter(Boolean).join(" ");
+                // prompt = clean description (no tags); tags saved separately
+                const fullPrompt = [visualAtm, actionDesc, dialogue].filter(Boolean).join(" ");
+
 
                 return {
                     id: frame.id || `shot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -212,38 +245,68 @@ export default function StoryboardR2V() {
         setShots(prev => prev.map((s, i) => i === index ? { ...s, tabMode: mode } : s));
     }, []);
 
-    // Parse asset tags from prompt and resolve to URLs
-    const parseAssetTags = useCallback((prompt: string): string[] => {
+    // Resolve asset URLs from frame data (independent of prompt tags)
+    // Cached Series asset data (loaded on demand)
+    const [seriesAssets, setSeriesAssets] = useState<{ characters: any[]; scenes: any[]; props: any[] } | null>(null);
+    useEffect(() => {
+        const sid = currentProject?.series_id;
+        if (sid) {
+            console.log('[r2v-video] Loading seriesAssets for sid:', sid);
+            import("@/lib/api").then(({ default: api }) => {
+                api.getSeries(sid).then((s: any) => {
+                    console.log('[r2v-video] seriesAssets loaded:', s.characters?.length, 'chars,', s.scenes?.length, 'scenes,', s.props?.length, 'props');
+                    console.log('[r2v-video] First char variants:', s.characters?.[0]?.full_body_asset?.variants?.length);
+                    setSeriesAssets({ characters: s.characters || [], scenes: s.scenes || [], props: s.props || [] });
+                }).catch(() => {});
+            });
+        }
+    }, [currentProject?.series_id]);
+
+    const resolveAssetUrls = useCallback((shotIndex: number): string[] => {
         const urls: string[] = [];
-        const tagPattern = /\[(character\d+|scene|prop):([^\]]+)\]/g;
-        let match;
-        while ((match = tagPattern.exec(prompt)) !== null) {
-            const [, type, name] = match;
-            if (type.startsWith("character")) {
-                const char = characters.find((c: any) => c.name === name);
-                if (char) {
+        const frame = currentProject?.frames?.[shotIndex];
+        if (!frame) return urls;
+
+        // Prefer Series-level assets (which have generated images) over Episode-level copies
+        const hasSeriesCharVariants = seriesAssets?.characters?.some((c: any) => c.full_body_asset?.variants?.length);
+        const hasEpCharVariants = characters.some((c: any) => c.full_body_asset?.variants?.length);
+        const allChars = hasSeriesCharVariants ? (seriesAssets?.characters || characters) : (hasEpCharVariants ? characters : (seriesAssets?.characters || characters));
+        const allScenes = seriesAssets?.scenes?.length ? seriesAssets.scenes : scenes;
+        const allProps = seriesAssets?.props?.length ? seriesAssets.props : props;
+        
+        console.log('[r2v-video] resolveAssetUrls for shot', shotIndex, '- allChars:', allChars.length, 'seriesChars variants:', hasSeriesCharVariants, 'epChars variants:', hasEpCharVariants);
+
+        // Characters from frame.character_ids
+        if (frame.character_ids) {
+            for (const cid of frame.character_ids) {
+                const char = allChars.find((c: any) => c.id === cid);
+                if (char?.full_body_asset?.variants?.length) {
                     const asset = char.full_body_asset;
-                    if (asset?.selected_id && asset.variants?.length) {
-                        const selected = asset.variants.find((v: any) => v.id === asset.selected_id);
-                        if (selected) urls.push(selected.url);
-                    } else if (asset?.variants?.[0]) {
-                        urls.push(asset.variants[0].url);
-                    }
+                    const selected = asset.selected_id
+                        ? asset.variants.find((v: any) => v.id === asset.selected_id)
+                        : asset.variants[0];
+                    if (selected?.url) urls.push(selected.url);
                 }
-            } else if (type === "scene") {
-                const scene = scenes.find((s: any) => s.name === name);
-                if (scene?.image_asset?.variants?.[0]) {
-                    urls.push(scene.image_asset.variants[0].url);
-                }
-            } else if (type === "prop") {
-                const prop = props.find((p: any) => p.name === name);
-                if (prop?.image_asset?.variants?.[0]) {
+            }
+        }
+        // Scene from frame.scene_id
+        if (frame.scene_id) {
+            const scene = allScenes.find((s: any) => s.id === frame.scene_id);
+            if (scene?.image_asset?.variants?.[0]?.url) {
+                urls.push(scene.image_asset.variants[0].url);
+            }
+        }
+        // Props from frame.prop_ids
+        if (frame.prop_ids) {
+            for (const pid of frame.prop_ids) {
+                const prop = allProps.find((p: any) => p.id === pid);
+                if (prop?.image_asset?.variants?.[0]?.url) {
                     urls.push(prop.image_asset.variants[0].url);
                 }
             }
         }
         return urls;
-    }, [characters, scenes, props]);
+    }, [characters, scenes, props, currentProject, seriesAssets]);
 
     // Strip tags from prompt for clean text
     const cleanPrompt = (prompt: string): string => {
@@ -302,7 +365,10 @@ export default function StoryboardR2V() {
         try {
             if (shot.tabMode === "direct_r2v") {
                 // R2V mode: use reference assets
-                const referenceUrls = parseAssetTags(shot.prompt);
+                const referenceUrls = resolveAssetUrls(index);
+                console.log('[r2v-video] referenceUrls for shot', index, ':', referenceUrls.length, 'urls', referenceUrls.map(u => typeof u === 'string' ? u.substring(0, 50) : u));
+                console.log('[r2v-video] allChars count:', characters.length, 'seriesAssets chars:', seriesAssets?.characters?.length);
+                console.log('[r2v-video] frame character_ids:', currentProject?.frames?.[index]?.character_ids);
                 const routeModelId = getR2vRouteModelId(videoConfig.model);
                 const imageBased = isR2vImageBased(routeModelId);
 
@@ -328,9 +394,10 @@ export default function StoryboardR2V() {
                     imageBased ? referenceUrls : undefined, // referenceImageUrls
                 );
 
-                if (task && task.id) {
+                const createdTask = Array.isArray(task) ? task[0] : task;
+                if (createdTask && createdTask.id) {
                     setShots(prev => prev.map((s, i) =>
-                        i === index ? { ...s, videoTaskId: task.id, videoStatus: "processing" } : s
+                        i === index ? { ...s, videoTaskId: createdTask.id, videoStatus: "processing" } : s
                     ));
                 }
             } else {
@@ -365,9 +432,10 @@ export default function StoryboardR2V() {
                     undefined,
                 );
 
-                if (task && task.id) {
+                const createdTask = Array.isArray(task) ? task[0] : task;
+                if (createdTask && createdTask.id) {
                     setShots(prev => prev.map((s, i) =>
-                        i === index ? { ...s, videoTaskId: task.id, videoStatus: "processing" } : s
+                        i === index ? { ...s, videoTaskId: createdTask.id, videoStatus: "processing" } : s
                     ));
                 }
             }
@@ -377,14 +445,31 @@ export default function StoryboardR2V() {
                 i === index ? { ...s, videoStatus: "failed" } : s
             ));
         }
-    }, [shots, currentProject, videoConfig, parseAssetTags]);
+    }, [shots, currentProject, videoConfig, resolveAssetUrls]);
 
     // Poll for task completion (both T2I and video)
+    // When VIDEO_PROVIDER is openai, use the configured VIDEO_MODEL name
+    useEffect(() => {
+        const loadVideoProviderModel = async () => {
+            try {
+                const envConfig = await api.getEnvConfig();
+                if (envConfig?.VIDEO_PROVIDER === 'openai' && envConfig?.VIDEO_MODEL) {
+                    setVideoConfig(prev => {
+                        if (prev.model === envConfig.VIDEO_MODEL) return prev;
+                        return { ...prev, model: envConfig.VIDEO_MODEL };
+                    });
+                }
+            } catch {}
+        };
+        loadVideoProviderModel();
+    }, []);
+
     useEffect(() => {
         const processingShots = shots.filter(s =>
             (s.videoTaskId && (s.videoStatus === "processing" || s.videoStatus === "pending")) ||
             (s.t2iTaskId && (s.t2iStatus === "processing" || s.t2iStatus === "pending"))
         );
+        console.log('[video-poll] processing shots:', processingShots.length, processingShots.map(s => ({ id: s.id, videoStatus: s.videoStatus, videoTaskId: s.videoTaskId })));
         if (processingShots.length === 0) return;
 
         const interval = setInterval(async () => {
@@ -393,11 +478,14 @@ export default function StoryboardR2V() {
                 if (shot.videoTaskId && (shot.videoStatus === "processing" || shot.videoStatus === "pending")) {
                     try {
                         const status = await api.getTaskStatus(shot.videoTaskId);
+                        console.log('[video-poll] task status:', status.status, 'video_url:', !!status.video_url, 'for shot:', shot.id);
                         if (status.status === "completed" && status.video_url) {
+                            console.log('[video-poll] SETTING completed for shot:', shot.id);
                             setShots(prev => prev.map(s =>
                                 s.id === shot.id ? { ...s, videoStatus: "completed", videoUrl: status.video_url } : s
                             ));
                         } else if (status.status === "failed") {
+                            console.log('[video-poll] SETTING failed for shot:', shot.id);
                             setShots(prev => prev.map(s =>
                                 s.id === shot.id ? { ...s, videoStatus: "failed" } : s
                             ));
@@ -454,8 +542,14 @@ export default function StoryboardR2V() {
         }
     }, [drawerState.targetShotIndex, shots, updatePrompt]);
 
-    // Get model display name for toolbar
-    const currentModelName = VIDEO_I2V_MODELS.find(m => m.id === videoConfig.model)?.name ?? videoConfig.model;
+    // Get model display name for toolbar (supports both built-in and OpenAI models)
+    const currentModelName = (() => {
+        const builtin = VIDEO_I2V_MODELS.find(m => m.id === videoConfig.model);
+        if (builtin) return builtin.name;
+        // For OpenAI/external models, show a readable label
+        if (videoConfig.model) return videoConfig.model.replace(/_/g, ' ');
+        return videoConfig.model || 'Unknown';
+    })();
 
     return (
         <div className="h-full flex flex-col overflow-hidden relative">

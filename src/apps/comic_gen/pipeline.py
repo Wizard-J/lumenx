@@ -78,6 +78,7 @@ class ComicGenPipeline:
         # Cached model instances for Kling/Vidu (lazily initialized)
         self._kling_model = None
         self._vidu_model = None
+        self._openai_video_model = None
 
     def _resolve_video_backend(self, model_name: str) -> str:
         try:
@@ -96,6 +97,17 @@ class ComicGenPipeline:
                 e,
             )
             return "dashscope"
+
+    def _get_video_model(self):
+        """Get video model based on current VIDEO_PROVIDER env var."""
+        video_provider = os.environ.get("VIDEO_PROVIDER", "dashscope").lower()
+        has_key = bool(os.environ.get("VIDEO_API_KEY", ""))
+        if video_provider == "openai" and has_key:
+            from ...models.openai_video import OpenAIVideoModel
+            logger.info("Using OpenAI-compatible video model")
+            return OpenAIVideoModel(self.config.get('video', {}).get('model', {}))
+        else:
+            return self.video_generator.model
 
     # ... (existing methods)
 
@@ -451,17 +463,56 @@ class ComicGenPipeline:
         else:
             raise ValueError(f"Unknown asset type: {asset_type}")
 
+        # DEBUG: verify asset data was written
+        if asset_type == "character":
+            target2 = next((c for c in series.characters if c.id == asset_id), None)
+            if target2:
+                fb = len(target2.full_body_asset.variants) if target2.full_body_asset else 0
+                tv = len(target2.three_view_asset.variants) if target2.three_view_asset else 0
+                hs = len(target2.headshot_asset.variants) if target2.headshot_asset else 0
+                logger.info(f"[DEBUG] After generate_character: full_body={fb} three_view={tv} headshot={hs}")
+        elif asset_type in ("scene", "prop"):
+            target2 = next((a for a in (series.scenes if asset_type == "scene" else series.props) if a.id == asset_id), None)
+            if target2:
+                iv = len(target2.image_asset.variants) if target2.image_asset else 0
+                logger.info(f"[DEBUG] After generate_{asset_type}: image_variants={iv}")
         self._save_series_data()
+        # DEBUG: verify saved data
+        reloaded = self._storage.get_series(series_id)
+        if reloaded:
+            import json
+            chars_json = json.loads(reloaded.get("characters_json", "[]"))
+            for c in chars_json:
+                if c.get("id") == asset_id:
+                    hs = c.get("headshot_asset", {})
+                    ia = c.get("image_asset", {})
+                    fba = c.get("full_body_asset", {})
+                    tva = c.get("three_view_asset", {})
+                    logger.info(f"[DEBUG] Saved to DB - headshot variants={len(hs.get('variants',[]))}, image variants={len(ia.get('variants',[]))}, full_body variants={len(fba.get('variants',[]))}, three_view variants={len(tva.get('variants',[]))}")
+                    break
 
     def get_asset_generation_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
         """Returns the status of an asset generation task."""
         # Check image tasks first
         task = self.asset_generation_tasks.get(task_id)
         if not task:
-            # Then check video tasks
+            # Then check video tasks (motion ref)
             task = self.video_generation_tasks.get(task_id)
-            
+        
         if not task:
+            # Finally, scan all scripts for VideoTask objects
+            for script in self.scripts.values():
+                for vt in (script.video_tasks or []):
+                    if vt.id == task_id:
+                        return {
+                            "task_id": task_id,
+                            "status": vt.status,
+                            "progress": vt.progress if hasattr(vt, 'progress') else 0,
+                            "error": vt.error if hasattr(vt, 'error') else None,
+                            "script_id": script.id,
+                            "video_url": vt.video_url if hasattr(vt, 'video_url') else None,
+                            "created_at": vt.created_at if hasattr(vt, 'created_at') else None,
+                        }
             return None
         
         return {
@@ -2088,8 +2139,9 @@ class ComicGenPipeline:
                     movement_amplitude=task.movement_amplitude or "auto",
                 )
             else:
-                # Default: Wanx model
-                video_path, _ = self.video_generator.model.generate(
+                # Check for OpenAI video provider first
+                video_model = self._get_video_model()
+                video_path, _ = video_model.generate(
                     prompt=task.prompt,
                     output_path=output_path,
                     img_path=img_path,
@@ -2114,6 +2166,16 @@ class ComicGenPipeline:
             
             task.video_url = os.path.relpath(output_path, "output")
             task.status = "completed"
+            
+            # Sync video_url back to the corresponding frame
+            if task.frame_id:
+                for frame in script.frames:
+                    if frame.id == task.frame_id:
+                        frame.video_url = task.video_url
+                        logger.info(
+                            f"Synced video_url to frame {task.frame_id}"
+                        )
+                        break
             
             # Sync with asset if this is an asset video
             if task.asset_id:

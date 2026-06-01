@@ -24,13 +24,28 @@ interface CharacterWorkbenchProps {
     onGenerateVideo?: (prompt: string, duration: number, subType?: string) => void;
     onDeleteVideo?: (videoId: string) => void;
     isGeneratingVideo?: boolean;
+    onSelectVariant?: (type: string, variantId: string) => void;
 }
 
-export default function CharacterWorkbench({ asset, onClose, onUpdateDescription, onGenerate, generatingTypes = [], stylePrompt = "", styleNegativePrompt = "", onGenerateVideo, onDeleteVideo, isGeneratingVideo }: CharacterWorkbenchProps) {
+export default function CharacterWorkbench({ asset, onClose, onUpdateDescription, onGenerate, generatingTypes = [], stylePrompt = "", styleNegativePrompt = "", onGenerateVideo, onDeleteVideo, isGeneratingVideo, onSelectVariant }: CharacterWorkbenchProps) {
     const tc = useTranslations("character");
+    // Normalize: scenes/props use image_asset, characters use full_body/three_view/headshot
+    const normalizedAsset = {
+        ...asset,
+        full_body_asset: asset.full_body_asset || asset.image_asset,
+        three_view_asset: asset.three_view_asset || asset.image_asset,
+        headshot_asset: asset.headshot_asset || asset.image_asset,
+    };
     const [activePanel, setActivePanel] = useState<"full_body" | "three_view" | "headshot" | "video">("full_body");
     const updateProject = useProjectStore(state => state.updateProject);
     const currentProject = useProjectStore(state => state.currentProject);
+
+    // ESC to close
+    useEffect(() => {
+        const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+        window.addEventListener('keydown', handleKey);
+        return () => window.removeEventListener('keydown', handleKey);
+    }, [onClose]);
 
     // Mode state for Asset Activation v2 (Static/Motion)
     const [fullBodyMode, setFullBodyMode] = useState<'static' | 'motion'>('static');
@@ -50,12 +65,13 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
 
 
     // === Reverse Generation: Detect uploaded images ===
-    const hasUploadedThreeViews = asset.three_view_asset?.variants?.some((v: any) => v.is_uploaded_source) || false;
-    const hasUploadedHeadshot = asset.headshot_asset?.variants?.some((v: any) => v.is_uploaded_source) || false;
-    const hasUploadedFullBody = asset.full_body_asset?.variants?.some((v: any) => v.is_uploaded_source) || false;
+    const hasUploadedThreeViews = normalizedAsset.three_view_asset?.variants?.some((v: any) => v.is_uploaded_source) || false;
+    const hasUploadedHeadshot = normalizedAsset.headshot_asset?.variants?.some((v: any) => v.is_uploaded_source) || false;
+    const hasUploadedFullBody = normalizedAsset.full_body_asset?.variants?.some((v: any) => v.is_uploaded_source) || false;
     const hasAnyUpload = hasUploadedThreeViews || hasUploadedHeadshot || hasUploadedFullBody;
     const hasNonFullBodyUpload = hasUploadedThreeViews || hasUploadedHeadshot;
-    const hasFullBodyImage = !!(asset.full_body_image_url || (asset.full_body_asset?.variants?.length > 0));
+    const hasFullBodyImage = !!(normalizedAsset.full_body_image_url || (normalizedAsset.full_body_asset?.variants?.length > 0));
+  const isCharacter = !!(asset.full_body_asset || asset.three_view_asset || asset.headshot_asset);
 
     // Local state for prompts
     const getInitialPrompt = (type: string, existingPrompt: string) => {
@@ -79,9 +95,9 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
         return "";
     };
 
-    const [fullBodyPrompt, setFullBodyPrompt] = useState(getInitialPrompt("full_body", asset.full_body_prompt));
-    const [threeViewPrompt, setThreeViewPrompt] = useState(getInitialPrompt("three_view", asset.three_view_prompt));
-    const [headshotPrompt, setHeadshotPrompt] = useState(getInitialPrompt("headshot", asset.headshot_prompt));
+    const [fullBodyPrompt, setFullBodyPrompt] = useState(getInitialPrompt("full_body", normalizedAsset.full_body_prompt));
+    const [threeViewPrompt, setThreeViewPrompt] = useState(getInitialPrompt("three_view", normalizedAsset.three_view_prompt));
+    const [headshotPrompt, setHeadshotPrompt] = useState(getInitialPrompt("headshot", normalizedAsset.headshot_prompt));
     const [videoPrompt, setVideoPrompt] = useState(asset.video_prompt || "");
 
     // New State for Style Control
@@ -94,12 +110,12 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
     // Get the uploaded image URL for reverse generation reference
     const getUploadedReferenceUrl = () => {
         if (hasUploadedThreeViews) {
-            const uploadedVariant = asset.three_view_asset?.variants?.find((v: any) => v.is_uploaded_source);
-            return uploadedVariant?.url || asset.three_view_image_url;
+            const uploadedVariant = normalizedAsset.three_view_asset?.variants?.find((v: any) => v.is_uploaded_source);
+            return uploadedVariant?.url || normalizedAsset.three_view_image_url;
         }
         if (hasUploadedHeadshot) {
-            const uploadedVariant = asset.headshot_asset?.variants?.find((v: any) => v.is_uploaded_source);
-            return uploadedVariant?.url || asset.headshot_image_url;
+            const uploadedVariant = normalizedAsset.headshot_asset?.variants?.find((v: any) => v.is_uploaded_source);
+            return uploadedVariant?.url || normalizedAsset.headshot_image_url;
         }
         return null;
     };
@@ -110,8 +126,8 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
 
         // Check if source image exists
         const hasSourceImage = assetType === 'full_body'
-            ? (asset.full_body_image_url || asset.full_body_asset?.variants?.length > 0)
-            : (asset.headshot_image_url || asset.headshot_asset?.variants?.length > 0);
+            ? (normalizedAsset.full_body_image_url || normalizedAsset.full_body_asset?.variants?.length > 0)
+            : (normalizedAsset.headshot_image_url || normalizedAsset.headshot_asset?.variants?.length > 0);
 
         if (!hasSourceImage) {
             alert(tc('generateFirstStatic', { type: assetType === 'full_body' ? tc('fullBodyType') : tc('avatarType') }));
@@ -221,17 +237,17 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
 
     // Update local state when asset updates (e.g. after generation)
     useEffect(() => {
-        if (asset.full_body_prompt) setFullBodyPrompt(asset.full_body_prompt);
+        if (normalizedAsset.full_body_prompt) setFullBodyPrompt(normalizedAsset.full_body_prompt);
         else if (hasNonFullBodyUpload && !fullBodyPrompt.includes("STRICTLY MAINTAIN")) {
             setFullBodyPrompt(getInitialPrompt("full_body", ""));
         }
 
-        if (asset.three_view_prompt) setThreeViewPrompt(asset.three_view_prompt);
+        if (normalizedAsset.three_view_prompt) setThreeViewPrompt(normalizedAsset.three_view_prompt);
         else if (hasAnyUpload && !threeViewPrompt.includes("STRICTLY MAINTAIN")) {
             setThreeViewPrompt(getInitialPrompt("three_view", ""));
         }
 
-        if (asset.headshot_prompt) setHeadshotPrompt(asset.headshot_prompt);
+        if (normalizedAsset.headshot_prompt) setHeadshotPrompt(normalizedAsset.headshot_prompt);
         else if (hasAnyUpload && !headshotPrompt.includes("STRICTLY MAINTAIN")) {
             setHeadshotPrompt(getInitialPrompt("headshot", ""));
         }
@@ -258,6 +274,12 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
     };
 
     const handleSelectVariant = async (type: "full_body" | "three_view" | "headshot", variantId: string) => {
+        // Use parent callback if provided (Series mode)
+        if (onSelectVariant) {
+            onSelectVariant(type, variantId);
+            return;
+        }
+        // Fallback: project mode
         if (!currentProject) return;
 
         try {
@@ -300,7 +322,7 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
             >
                 <div className="h-16 border-b border-glass-border flex justify-between items-center px-6 bg-surface">
                     <div className="flex items-center gap-4">
-                        <h2 className="text-xl font-bold text-foreground">{asset.name} <span className="text-text-muted font-normal text-sm ml-2">{tc("workbench")}</span></h2>
+                        <h2 className="text-xl font-bold text-foreground">{asset.name} </h2>
                         <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-full">
                             <span className="text-xs text-blue-400 font-medium">{tc("tipConsistency")}</span>
                         </div>
@@ -319,8 +341,8 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
                         isActive={activePanel === "full_body"}
                         onClick={() => setActivePanel("full_body")}
 
-                        asset={asset.full_body_asset}
-                        currentImageUrl={asset.full_body_image_url}
+                        asset={normalizedAsset.full_body_asset}
+                        currentImageUrl={normalizedAsset.full_body_image_url}
                         onSelect={(id: string) => handleSelectVariant("full_body", id)}
                         onDelete={(id: string) => handleDeleteVariant("full_body", id)}
                         onFavorite={(id: string, isFav: boolean) => handleFavoriteVariant("full_body", id, isFav)}
@@ -340,7 +362,7 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
                         supportsMotion={true}
                         mode={fullBodyMode}
                         onModeChange={setFullBodyMode}
-                        hasStaticImage={!!asset.full_body_image_url || (asset.full_body_asset?.variants?.length > 0)}
+                        hasStaticImage={!!normalizedAsset.full_body_image_url || (normalizedAsset.full_body_asset?.variants?.length > 0)}
                         motionRefVideos={asset.full_body?.video_variants || []}
                         onGenerateMotionRef={(prompt: string, audioUrl?: string) => handleGenerateMotionRef('full_body', prompt, audioUrl)}
                         isGeneratingMotion={generatingTypes.some(t => t.type === "video_full_body")}
@@ -356,18 +378,21 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
 
 
                     {/* Divider */}
+                    {isCharacter && (
                     <div className="w-px bg-glass flex items-center justify-center">
                         <ChevronRight size={16} className="text-text-muted" />
                     </div>
+                    )}
 
                     {/* Panel 2: Three View (Derived) */}
+                    {isCharacter && (
                     <WorkbenchPanel
                         title={tc("threeViews")}
                         isActive={activePanel === "three_view"}
                         onClick={() => setActivePanel("three_view")}
 
-                        asset={asset.three_view_asset}
-                        currentImageUrl={asset.three_view_image_url}
+                        asset={normalizedAsset.three_view_asset}
+                        currentImageUrl={normalizedAsset.three_view_image_url}
                         onSelect={(id: string) => handleSelectVariant("three_view", id)}
                         onDelete={(id: string) => handleDeleteVariant("three_view", id)}
                         onFavorite={(id: string, isFav: boolean) => handleFavoriteVariant("three_view", id, isFav)}
@@ -377,24 +402,28 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
                         onGenerate={(batchSize: number) => handleGenerateClick("three_view", batchSize)}
                         isGenerating={getGeneratingInfo("three_view").isGenerating}
                         generatingBatchSize={getGeneratingInfo("three_view").batchSize}
-                        isLocked={!asset.full_body_image_url && !hasAnyUpload}
+                        isLocked={!normalizedAsset.full_body_image_url && !hasAnyUpload}
                         description="Front, side, and back views for 3D-like consistency."
                         aspectRatio="16:9"
                     />
+                    )}
 
                     {/* Divider */}
+                    {isCharacter && (
                     <div className="w-px bg-glass flex items-center justify-center">
                         <ChevronRight size={16} className="text-text-muted" />
                     </div>
+                    )}
 
                     {/* Panel 3: Headshot (Derived) */}
+                    {isCharacter && (
                     <WorkbenchPanel
                         title={tc("avatar")}
                         isActive={activePanel === "headshot"}
                         onClick={() => setActivePanel("headshot")}
 
-                        asset={asset.headshot_asset}
-                        currentImageUrl={asset.headshot_image_url || asset.avatar_url}
+                        asset={normalizedAsset.headshot_asset}
+                        currentImageUrl={normalizedAsset.headshot_image_url || asset.avatar_url}
                         onSelect={(id: string) => handleSelectVariant("headshot", id)}
                         onDelete={(id: string) => handleDeleteVariant("headshot", id)}
                         onFavorite={(id: string, isFav: boolean) => handleFavoriteVariant("headshot", id, isFav)}
@@ -404,14 +433,14 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
                         onGenerate={(batchSize: number) => handleGenerateClick("headshot", batchSize)}
                         isGenerating={getGeneratingInfo("headshot").isGenerating}
                         generatingBatchSize={getGeneratingInfo("headshot").batchSize}
-                        isLocked={!asset.full_body_image_url && !hasAnyUpload}
+                        isLocked={!normalizedAsset.full_body_image_url && !hasAnyUpload}
                         description="Close-up facial details and expressions."
                         aspectRatio="1:1"
 
                         supportsMotion={true}
                         mode={headshotMode}
                         onModeChange={setHeadshotMode}
-                        hasStaticImage={!!asset.headshot_image_url || (asset.headshot_asset?.variants?.length > 0)}
+                        hasStaticImage={!!normalizedAsset.headshot_image_url || (normalizedAsset.headshot_asset?.variants?.length > 0)}
                         motionRefVideos={asset.head_shot?.video_variants || []}
                         onGenerateMotionRef={(prompt: string, audioUrl?: string) => handleGenerateMotionRef('head_shot', prompt, audioUrl)}
                         isGeneratingMotion={generatingTypes.some(t => t.type === "video_head_shot")}
@@ -424,7 +453,7 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
                         setIsVideoLoading={setIsVideoLoading}
                         onResetPrompt={() => handleResetMotionPrompt('headshot')}
                     />
-
+                    )}
 
                 </div>
 
@@ -434,7 +463,7 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
                     <div className="px-6 py-3 flex items-start gap-4">
                         {/* User's Negative Prompt (Editable) */}
                         <div className="flex-1">
-                            <label className="text-xs font-bold text-text-muted uppercase mb-2 block">{tc("workbench")}</label>
+                            <label className="text-xs font-bold text-text-muted uppercase mb-2 block">{tc("negativePrompt")}</label>
                             <textarea
                                 value={negativePrompt}
                                 onChange={(e) => setNegativePrompt(e.target.value)}
@@ -454,7 +483,7 @@ export default function CharacterWorkbench({ asset, onClose, onUpdateDescription
                                     className="rounded border-gray-600 bg-gray-700 text-primary focus:ring-primary w-4 h-4"
                                 />
                                 <label htmlFor="applyStyleFooter" className="text-xs font-bold text-text-secondary cursor-pointer select-none whitespace-nowrap">
-                                    {tc("workbench")}
+                                    {tc("applyStyle")}
                                 </label>
                             </div>
                         </div>

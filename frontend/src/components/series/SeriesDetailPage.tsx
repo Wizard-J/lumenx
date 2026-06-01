@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { motion, AnimatePresence } from "framer-motion";
-import { Image as ImageIcon, Play, ChevronRight, Sparkles, Loader2, Terminal } from "lucide-react";
+import { Image as ImageIcon, Play, ChevronRight, Sparkles, Loader2, Terminal, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Series, Character, Scene, Prop, Project } from "@/store/projectStore";
 import AssetCard from "@/components/common/AssetCard";
@@ -201,6 +201,8 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
               assets={getAssets(activeItem.tab)}
               label={ASSET_LABELS[activeItem.tab]}
               seriesId={seriesId}
+              series={series}
+              onSeriesUpdate={setSeries}
             />
           ) : selectedEpisode ? (
             <EpisodeContentPanel
@@ -253,17 +255,39 @@ function AssetContentPanel({
   assets,
   label,
   seriesId,
+  series,
+  onSeriesUpdate,
 }: {
   tab: AssetTab;
   assets: (Character | Scene | Prop)[];
   label: string;
   seriesId: string;
+  series: Series | null;
+  onSeriesUpdate: (s: Series) => void;
 }) {
   const t = useTranslations("series");
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
   const [generatingAll, setGeneratingAll] = useState(false);
   const [workbenchAsset, setWorkbenchAsset] = useState<(Character | Scene | Prop) | null>(null);
   const [workbenchGeneratingTypes, setWorkbenchGeneratingTypes] = useState<{ type: string; batchSize: number }[]>([]);
+  const [workbenchVersion, setWorkbenchVersion] = useState(0);
+
+  // Sync workbenchAsset when series data changes (e.g., after polling updates)
+  const workbenchAssetIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    workbenchAssetIdRef.current = workbenchAsset?.id || null;
+  }, [workbenchAsset]);
+  useEffect(() => {
+    const assetId = workbenchAssetIdRef.current;
+    if (assetId && series) {
+      const assetList = tab === "characters" ? series.characters
+        : tab === "scenes" ? series.scenes : series.props;
+      const freshAsset = assetList.find((a: any) => a.id === assetId);
+      if (freshAsset) {
+        setWorkbenchAsset(freshAsset);
+      }
+    }
+  }, [series, tab]);
 
   const assetTypeSingular = tab === "characters" ? "character" : tab === "scenes" ? "scene" : "prop";
 
@@ -285,13 +309,29 @@ function AssetContentPanel({
           const assetList = tab === "characters" ? updatedSeries.characters
             : tab === "scenes" ? updatedSeries.scenes : updatedSeries.props;
           const asset = assetList.find((a: any) => a.id === assetId);
-          if (asset?.full_body_asset?.variants?.length > 0 ||
-              asset?.three_view_asset?.variants?.length > 0 ||
-              asset?.headshot_asset?.variants?.length > 0 ||
-              asset?.image_asset?.variants?.length > 0) {
+
+          // Check the specific asset type being generated (not any asset)
+          const assetKeyMap: Record<string, string> = {
+            full_body: 'full_body_asset',
+            three_view: 'three_view_asset',
+            headshot: 'headshot_asset',
+          };
+          // For non-character assets (scene/prop), always check image_asset
+          const isNonChar = tab === "scenes" || tab === "props";
+          const targetKey = isNonChar ? 'image_asset' : (assetKeyMap[genType] || 'image_asset');
+          const targetAsset = asset?.[targetKey];
+
+          if (targetAsset?.variants?.length > 0) {
             clearInterval(pollInterval);
             setWorkbenchGeneratingTypes([]);
-            window.location.reload();
+            onSeriesUpdate(updatedSeries);
+            const updatedAsset = (tab === "characters" ? updatedSeries.characters
+              : tab === "scenes" ? updatedSeries.scenes : updatedSeries.props)
+              .find((a: any) => a.id === assetId);
+            if (updatedAsset) {
+              setWorkbenchAsset(updatedAsset);
+              setWorkbenchVersion(v => v + 1);
+            }
           }
         } catch { /* retry */ }
       }, 3000);
@@ -302,6 +342,32 @@ function AssetContentPanel({
     }
   }, [workbenchAsset, seriesId, assetTypeSingular, tab]);
 
+  const handleSelectWorkbenchVariant = useCallback((type: string, variantId: string) => {
+    if (!workbenchAsset || !series) return;
+    const typeMap: Record<string, string> = {
+      full_body: 'full_body_asset',
+      three_view: 'three_view_asset',
+      headshot: 'headshot_asset',
+    };
+    const assetKey = typeMap[type] || 'full_body_asset';
+    const updated = { ...series };
+    const list = tab === 'characters' ? [...(updated.characters || [])]
+      : tab === 'scenes' ? [...(updated.scenes || [])]
+      : [...(updated.props || [])];
+    const idx = list.findIndex((a: any) => a.id === workbenchAsset.id);
+    if (idx >= 0) {
+      const asset = { ...list[idx] };
+      if (!asset[assetKey]) asset[assetKey] = {};
+      asset[assetKey] = { ...asset[assetKey], selected_id: variantId };
+      list[idx] = asset;
+      if (tab === 'characters') updated.characters = list;
+      else if (tab === 'scenes') updated.scenes = list;
+      else updated.props = list;
+      onSeriesUpdate(updated as Series);
+      setWorkbenchAsset(asset);
+    }
+  }, [workbenchAsset, series, tab, onSeriesUpdate]);
+
   const handleGenerateSingle = async (assetId: string) => {
     setGeneratingIds(prev => new Set(prev).add(assetId));
     try {
@@ -309,14 +375,17 @@ function AssetContentPanel({
       const pollInterval = setInterval(async () => {
         try {
           const updatedSeries = await api.getSeries(seriesId);
-          const assetList = tab === "characters" ? updatedSeries.characters
-            : tab === "scenes" ? updatedSeries.scenes : updatedSeries.props;
-          const asset = assetList.find((a: any) => a.id === assetId);
-          if (asset?.full_body_asset?.variants?.length > 0 ||
-              asset?.image_asset?.variants?.length > 0) {
-            clearInterval(pollInterval);
-            setGeneratingIds(prev => { const next = new Set(prev); next.delete(assetId); return next; });
-            window.location.reload();
+          if (updatedSeries) {
+            // Update local state with fresh data (no full page reload)
+            onSeriesUpdate(updatedSeries);
+            const assetList = tab === "characters" ? updatedSeries.characters
+              : tab === "scenes" ? updatedSeries.scenes : updatedSeries.props;
+            const asset = assetList.find((a: any) => a.id === assetId);
+            if (asset?.full_body_asset?.variants?.length > 0 ||
+                asset?.image_asset?.variants?.length > 0) {
+              clearInterval(pollInterval);
+              setGeneratingIds(prev => { const next = new Set(prev); next.delete(assetId); return next; });
+            }
           }
         } catch { }
       }, 3000);
@@ -413,17 +482,23 @@ function AssetContentPanel({
               >
                 <div
                   className="relative group/card cursor-pointer"
-                  onClick={() => { if (tab === "characters") setWorkbenchAsset(asset); }}
+                  onClick={() => setWorkbenchAsset(asset)}
                 >
                   <AssetCard asset={asset} type={tab} />
                   <button
                     onClick={(e) => { e.stopPropagation(); handleGenerateSingle(asset.id); }}
                     disabled={generatingIds.has(asset.id)}
-                    className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/60 text-amber-400 opacity-0 group-hover/card:opacity-100 hover:bg-black/80 disabled:opacity-50 transition-all"
+                    className={`absolute top-2 right-2 p-1.5 rounded-lg opacity-0 group-hover/card:opacity-100 transition-all ${
+                      (asset.full_body_asset?.variants?.length > 0 || asset.image_asset?.variants?.length > 0)
+                        ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
+                        : 'bg-black/60 text-amber-400 hover:bg-black/80'
+                    } ${generatingIds.has(asset.id) ? 'opacity-100' : ''}`}
                     title={t("generateSingle")}
                   >
                     {generatingIds.has(asset.id) ? (
                       <Loader2 size={14} className="animate-spin" />
+                    ) : (asset.full_body_asset?.variants?.length > 0 || asset.image_asset?.variants?.length > 0) ? (
+                      <RefreshCw size={14} />
                     ) : (
                       <Sparkles size={14} />
                     )}
@@ -437,7 +512,7 @@ function AssetContentPanel({
 
       {/* Character Workbench Modal */}
       <AnimatePresence>
-        {workbenchAsset && tab === "characters" && (
+        {workbenchAsset && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -453,9 +528,11 @@ function AssetContentPanel({
               onClick={(e) => e.stopPropagation()}
             >
               <CharacterWorkbench
+                key={`wb-${workbenchAsset.id}-v${workbenchVersion}`}
                 asset={workbenchAsset}
                 onClose={() => { setWorkbenchAsset(null); setWorkbenchGeneratingTypes([]); }}
                 onUpdateDescription={() => {}}
+                onSelectVariant={handleSelectWorkbenchVariant}
                 onGenerate={handleWorkbenchGenerate}
                 generatingTypes={workbenchGeneratingTypes}
               />

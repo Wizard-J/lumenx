@@ -15,5 +15,11 @@ class ModelFactory:
         elif model_name in ('vidu', 'viduq3-pro', 'viduq3-turbo'):
             from .vidu import ViduModel
             return ViduModel(config.get('model') or {})
+        elif model_name == 'openai_image':
+            from .openai_image import OpenAIImageModel
+            return OpenAIImageModel(config.get('model') or {})
+        elif model_name == 'openai_video':
+            from .openai_video import OpenAIVideoModel
+            return OpenAIVideoModel(config.get('model') or {})
         else:
             raise ValueError(f"Unknown model: {model_name}")
