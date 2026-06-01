@@ -426,10 +426,18 @@ class OpenAIVideoModel(VideoGenModel):
         audio: bool = False,
         **kwargs,
     ) -> Tuple[str, float]:
-        model = model_name or self.model_name
+        # Always use env-configured VIDEO_MODEL for OpenAI-compatible endpoints.
+        # Frontend may pass a catalog model name (e.g., wan2.7-i2v), but the
+        # third-party provider may support a different model ID (e.g., wan2.6-i2v).
+        model = self.model_name or model_name
         if not model:
             raise ValueError(
                 "VIDEO_MODEL not configured."
+            )
+        if model_name and model_name != model:
+            logger.info(
+                f"[OpenAI Video] Overriding frontend model '{model_name}' "
+                f"with env VIDEO_MODEL='{model}'"
             )
 
         resolved_image = self._resolve_image_input(img_url, img_path)

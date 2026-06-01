@@ -353,6 +353,36 @@ lumenx/
 
 ---
 
+
+## 🆕 近期更新 (2026-06-01)
+
+### OpenAI 兼容视频接口
+- 新增 OpenAI 兼容的视频生成 adapter (`src/models/openai_video.py`)
+- 支持通过 `VIDEO_PROVIDER=openai` 切换到第三方 OpenAI 兼容视频 API
+- 配置项：`VIDEO_API_KEY`, `VIDEO_BASE_URL`, `VIDEO_MODEL`
+- R2V 模式下自动跳过 DashScope 模型覆盖，直接使用 env 配置的模型
+
+### 请求日志面板
+- 全局请求日志侧边栏，支持按 LLM / 图像 / 视频 分类筛选
+- 日志持久化到 `output/lumenx.db` (SQLite)
+- 删除日志功能修复：清空后立即重新拉取确认状态
+
+### 后端日志持久化
+- 服务启动日志写入 `logs/` 目录，文件名带时间戳
+- 不再因 uvicorn reload 丢失历史日志
+
+### Series 资产模块修复
+- 修复 DB 中 `props_json` / `art_direction_json` / `custom_voices_json` 格式异常导致 Series 加载失败的问题
+- Series 资产生成后自动持久化到 SQLite
+- Cast 页面资产生成组件与共享资产页面统一
+- ESC 键关闭资产浮层
+
+### 体验优化
+- Storyboard 左上角模型名显示改为 env 配置的实际模型（而非 catalog 默认值）
+- OpenAI 图片生成 adapter 优先级修复
+
+---
+
 ## 🤝 参与贡献
 
 我们非常欢迎社区贡献！请先阅读 [贡献指南](CONTRIBUTING.md) 了解代码规范和提交流程。

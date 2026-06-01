@@ -16,4 +16,7 @@ echo "========================================"
 cd "$(dirname "$0")"
 
 # 仅监控源码目录，避免 .venv 变动触发无效重载
-./.venv/bin/python -m uvicorn src.apps.comic_gen.api:app --reload --reload-dir src --port 17177 --host 0.0.0.0
+mkdir -p logs
+LOG_FILE="logs/backend_$(date +%Y%m%d_%H%M%S).log"
+echo "Logging to: $LOG_FILE"
+./.venv/bin/python -m uvicorn src.apps.comic_gen.api:app --reload --reload-dir src --port 17177 --host 0.0.0.0 2>&1 | tee "$LOG_FILE"

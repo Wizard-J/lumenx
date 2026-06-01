@@ -99,7 +99,8 @@ export default function StoryboardR2V() {
     });
 
     // Global video config (with localStorage persistence for model selection)
-    const [videoConfig, setVideoConfig] = useState<VideoConfig>(() => {
+    const [envModelName, setEnvModelName] = useState<string>("");
+  const [videoConfig, setVideoConfig] = useState<VideoConfig>(() => {
         const ls = typeof window !== 'undefined' ? window.localStorage : null;
         const savedI2v = ls?.getItem('storyboard-r2v-model') ?? null;
         const savedR2v = ls?.getItem('storyboard-r2v-r2v-model') ?? null;
@@ -156,7 +157,16 @@ export default function StoryboardR2V() {
     // ParamsSection panels under each ShotCard. handleConfigChange is
     // also gone — model writes now flow through handleShotParamsChange
     // below, which mirrors them to localStorage.)
-    const [drawerState, setDrawerState] = useState<{ isOpen: boolean; targetShotIndex: number | null }>({
+    // Fetch env video model name for display
+  useEffect(() => {
+    api.getEnvConfig().then(cfg => {
+      if (cfg.VIDEO_PROVIDER === "openai" && cfg.VIDEO_MODEL) {
+        setEnvModelName(cfg.VIDEO_MODEL as string);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const [drawerState, setDrawerState] = useState<{ isOpen: boolean; targetShotIndex: number | null }>({
         isOpen: false,
         targetShotIndex: null,
     });
@@ -1461,7 +1471,9 @@ export default function StoryboardR2V() {
     // through wan2.6-r2v / wan2.7-r2v — confusing and the source of
     // the "but I selected R2V" support thread.
     const isR2VWorkflow = (currentProject?.workflow_mode ?? "r2v") === "r2v";
-    const currentModelName = isR2VWorkflow
+    const currentModelName = envModelName
+        ? envModelName
+        : isR2VWorkflow
         ? (VIDEO_R2V_MODELS.find(m => m.id === videoConfig.r2vModel)?.name ?? videoConfig.r2vModel)
         : (VIDEO_I2V_MODELS.find(m => m.id === videoConfig.model)?.name ?? videoConfig.model);
 

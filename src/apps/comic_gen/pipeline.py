@@ -2011,8 +2011,12 @@ class ComicGenPipeline:
         
         task_id = str(uuid.uuid4())
         
-        # If R2V mode is selected, use the appropriate R2V model
-        if generation_mode == "r2v":
+        # If R2V mode is selected, use the appropriate R2V model.
+        # When VIDEO_PROVIDER=openai, skip the override — the OpenAI
+        # adapter uses env VIDEO_MODEL and the provider-agnostic model
+        # mapping doesn't apply.
+        video_provider = os.environ.get("VIDEO_PROVIDER", "dashscope").lower()
+        if generation_mode == "r2v" and video_provider != "openai":
             if model and model.startswith("happyhorse-"):
                 model = "happyhorse-1.0-r2v"
             elif model and model.startswith("wan2.7-"):

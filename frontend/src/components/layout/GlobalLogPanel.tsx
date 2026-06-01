@@ -22,7 +22,8 @@ async function fetchLogs(): Promise<{ entries: OpEntry[]; total: number }> {
 }
 
 async function clearLogs(): Promise<void> {
-  await fetch(`${API_URL}/debug/operations/clear`, { method: "POST" });
+  const res = await fetch(`${API_URL}/debug/operations/clear`, { method: "POST" });
+  if (!res.ok) throw new Error(`Clear failed: HTTP ${res.status}`);
 }
 
 interface GlobalLogSidebarProps {
@@ -64,8 +65,14 @@ export default function GlobalLogSidebar({ open, onClose }: GlobalLogSidebarProp
   }, [open, onClose]);
 
   const handleClear = async () => {
-    await clearLogs();
+    try {
+      await clearLogs();
+    } catch (e) {
+      console.error("Failed to clear logs:", e);
+    }
     setEntries([]);
+    // Re-fetch to confirm cleared state
+    load();
   };
 
   const statusIcon = (status: string) => {
