@@ -809,7 +809,7 @@ function CastCard({ item, onOpenWorkbench }: { item: CastItem; onOpenWorkbench?:
         ctaLabel: string;
     }> = {
         character: {
-            aspect: "aspect-[4/3]",
+            aspect: "aspect-[3/4]",
             emptyPattern: {
                 backgroundImage:
                     "repeating-linear-gradient(0deg, transparent 0, transparent 23px, rgba(255,255,255,0.025) 23px, rgba(255,255,255,0.025) 24px)",
@@ -876,7 +876,7 @@ function CastCard({ item, onOpenWorkbench }: { item: CastItem; onOpenWorkbench?:
                 >
                     {item.referenceImageUrl ? (
                         <>
-                            <PreviewImage src={item.referenceImageUrl} alt={item.name} className="h-full w-full object-contain" noLightbox />
+                            <PreviewImage src={item.referenceImageUrl} alt={item.name} className="h-full w-full object-cover object-top" noLightbox />
                             <button
                                 onClick={(e) => {
                                     e.stopPropagation();
