@@ -147,6 +147,7 @@ _SERIES_JSON_FIELDS = (
     "episode_ids_json",
     "characters_json", "scenes_json", "props_json", "art_direction_json",
     "prompt_config_json", "model_settings_json", "mix_settings_json",
+    "custom_voices_json",
 )
 
 
@@ -390,6 +391,7 @@ class SQLiteStorageBackend(StorageBackend):
             "model_settings_json": "model_settings",
             "episode_ids_json": "episode_ids",
             "mix_settings_json": "mix_settings",
+            "custom_voices_json": "custom_voices",
         }
         for old, new in mapping.items():
             if old in d:
@@ -425,6 +427,7 @@ class SQLiteStorageBackend(StorageBackend):
         """Convert model dict → SQL row dict (JSON fields → JSON strings)."""
         d = dict(data)
         mapping = {
+            "custom_voices": "custom_voices_json",
             "mix_settings": "mix_settings_json",
             "characters": "characters_json",
             "scenes": "scenes_json",
@@ -443,6 +446,7 @@ class SQLiteStorageBackend(StorageBackend):
     def _series_to_row(self, data: Dict[str, Any]) -> Dict[str, Any]:
         d = dict(data)
         mapping = {
+            "custom_voices": "custom_voices_json",
             "mix_settings": "mix_settings_json",
             "characters": "characters_json",
             "scenes": "scenes_json",
