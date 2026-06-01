@@ -583,7 +583,16 @@ class ComicGenPipeline:
         
         target_asset = next((a for a in asset_list if a.id == asset_id), None)
         if not target_asset:
-            raise ValueError(f"{asset_type.capitalize()} {asset_id} not found")
+            # Fallback: search in parent Series shared assets
+            if script.series_id:
+                series = self.series_store.get(script.series_id)
+                if series:
+                    series_list = getattr(series, asset_type + "s", [])
+                    target_asset = next((a for a in series_list if a.id == asset_id), None)
+                    if target_asset:
+                        logger.info(f"Found {asset_type} {asset_id} in Series (fallback)")
+            if not target_asset:
+                raise ValueError(f"{asset_type.capitalize()} {asset_id} not found")
         
         target_asset.status = GenerationStatus.PROCESSING
         self._save_data()
@@ -592,13 +601,6 @@ class ComicGenPipeline:
             # Generate with Art Direction style injected
             if asset_type == "character":
                 # Pass generation_type and specific prompt if available
-                # If prompt is provided (from Workbench), use it directly. 
-                # Otherwise, asset_generator will construct it using effective_positive_prompt.
-                # Note: If prompt is provided, we might still want to append style if it's not included?
-                # For now, let's assume the Workbench passes the FULL prompt or we pass style separately.
-                # The asset_generator.generate_character expects 'prompt' as the specific prompt.
-                # If 'prompt' is None, it constructs one.
-                # We should pass effective_positive_prompt as 'positive_prompt' (style suffix) to be appended if needed.
                 self.asset_generator.generate_character(
                     target_asset, 
                     generation_type=generation_type, 
@@ -648,7 +650,16 @@ class ComicGenPipeline:
         
         target_asset = next((a for a in asset_list if a.id == asset_id), None)
         if not target_asset:
-            raise ValueError(f"{asset_type.capitalize()} {asset_id} not found")
+            # Fallback: search in parent Series shared assets
+            if script.series_id:
+                series = self.series_store.get(script.series_id)
+                if series:
+                    series_list = getattr(series, asset_type + "s", [])
+                    target_asset = next((a for a in series_list if a.id == asset_id), None)
+                    if target_asset:
+                        logger.info(f"Found {asset_type} {asset_id} in Series (fallback for task)")
+            if not target_asset:
+                raise ValueError(f"{asset_type.capitalize()} {asset_id} not found")
         
         target_asset.status = GenerationStatus.PROCESSING
         

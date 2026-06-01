@@ -152,16 +152,33 @@ export default function Cast() {
             }
             return ec;
         });
+        // Add Series-only characters not in Episode (reconciled entities)
+        const epCharIds = new Set(characterPool.map((c: any) => c.id));
+        for (const sc of seriesChars) {
+            if (!epCharIds.has(sc.id)) {
+                characterPool.push({ ...sc });
+            }
+        }
+
         const scenePool: any[] = epScenes.map((es: any) => {
             const ss = seriesScenes.find((s: any) => s.id === es.id);
             if (ss && !es.image_url && ss.image_url) return { ...es, image_url: ss.image_url, image_asset: ss.image_asset };
             return es;
         });
+        const epSceneIds = new Set(scenePool.map((s: any) => s.id));
+        for (const ss of seriesScenes) {
+            if (!epSceneIds.has(ss.id)) scenePool.push({ ...ss });
+        }
+
         const propPool: any[] = epProps.map((ep: any) => {
             const sp = seriesProps.find((s: any) => s.id === ep.id);
             if (sp && !ep.image_url && sp.image_url) return { ...ep, image_url: sp.image_url, image_asset: sp.image_asset };
             return ep;
         });
+        const epPropIds = new Set(propPool.map((p: any) => p.id));
+        for (const sp of seriesProps) {
+            if (!epPropIds.has(sp.id)) propPool.push({ ...sp });
+        }
 
         const characters: CastItem[] = characterPool.map((c: any) => {
             const imageUrl = resolveCharacterImage(c);
