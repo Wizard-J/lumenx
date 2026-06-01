@@ -1,5 +1,6 @@
 "use client";
 
+import { AnimatePresence, motion } from "framer-motion";
 import { useState, useEffect, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { Image as ImageIcon, Play, ChevronRight, Sparkles, Loader2, Terminal, RefreshCw } from "lucide-react";
