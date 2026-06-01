@@ -13,7 +13,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![Node](https://img.shields.io/badge/node-18%2B-green)](https://nodejs.org/)
-[![GitHub Stars](https://img.shields.io/github/stars/alibaba/lumenx?style=social)](https://github.com/alibaba/lumenx)
+
 
 [English](README_EN.md) | [中文](README.md) | [用户手册](USER_MANUAL.md) | [贡献指南](CONTRIBUTING.md)
 
@@ -362,22 +362,23 @@ lumenx/
 
 ## 👤 作者与联系方式
 
-本项目由 **星莲 (StarLotus)** 主导开发与维护。
+本项目由 **星莲 (StarLotus)** 主导开发与维护，基于 [阿里巴巴 LumenX](https://github.com/alibaba/lumenx) 二次开发。
 
 如果您在使用过程中遇到问题，或有任何建议，欢迎通过以下方式联系：
 
-- **反馈与交流**: [GitHub Issues](https://github.com/alibaba/lumenx/issues)
-- **技术讨论**: [GitHub Discussions](https://github.com/alibaba/lumenx/discussions)
-- **邮件联系**: [zhangjunhe.zjh@alibaba-inc.com](mailto:zhangjunhe.zjh@alibaba-inc.com)
+- **邮箱**: [maxrainbamboo@gmail.com](mailto:maxrainbamboo@gmail.com)
+- **反馈与交流**: [GitHub Issues](https://github.com/Wizard-J/lumenx/issues)
 
 ---
 
-## 📄 许可证
+## 📄 许可证与致谢
 
 本项目基于 [MIT License](LICENSE) 开源。
+
+**致谢**: 感谢 [阿里巴巴 LumenX](https://github.com/alibaba/lumenx) 的原始作者（星莲团队），本项目 Fork 自该仓库并在此基础上进行了功能扩展和定制开发。
 
 ---
 
 <div align="center">
-  Made with ❤️ by Alibaba Group
+  Made with ❤️ by <a href="https://github.com/Wizard-J">Wizard-J</a> · Forked from <a href="https://github.com/alibaba/lumenx">Alibaba LumenX</a>
 </div>
