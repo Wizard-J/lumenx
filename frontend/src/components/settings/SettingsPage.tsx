@@ -312,7 +312,7 @@ export default function SettingsPage() {
   return (
     <div className="flex h-[calc(100vh-3.5rem)]">
       {/* ── Left Sidebar ── */}
-      <nav className="w-52 shrink-0 border-r border-glass-border bg-surface/30 overflow-y-auto p-3 space-y-1">
+      <nav className="w-52 shrink-0 border-r border-glass-border bg-surface/30 overflow-y-auto p-3 space-y-1 flex flex-col">
         <div className="px-2 pb-3 mb-2 border-b border-glass-border">
           <h1 className="text-sm font-display font-bold text-foreground">{t("title")}</h1>
         </div>
@@ -337,6 +337,22 @@ export default function SettingsPage() {
             <span>{item.label}</span>
           </button>
         ))}
+        <div className="mt-auto pt-3 border-t border-glass-border">
+          <button
+            type="button"
+            onClick={() => {
+              handleSaveApiConfig();
+              handleSaveModelDefaults();
+              // save prompts too
+              localStorage.setItem("lumenx_default_prompt_config", JSON.stringify(promptConfig));
+            }}
+            disabled={saving}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            {saving ? <><Loader2 size={14} className="animate-spin" /> Saving...</> : <><Save size={14} /> Save All Settings</>}
+          </button>
+          <p className="text-[10px] text-text-muted text-center mt-1.5">Saves API, ComfyUI, Model & Prompt configs</p>
+        </div>
       </nav>
 
       {/* ── Right Content ── */}
