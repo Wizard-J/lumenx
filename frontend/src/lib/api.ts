@@ -1106,6 +1106,15 @@ export const api = {
         return res.data;
     },
 
+    syncOpenAIModels: async (type: "image" | "video"): Promise<{ status: string; models: Array<{ id: string; owned_by: string }> }> => {
+        const res = await axios.get(`${API_URL}/config/sync-models`, {
+            params: { type },
+            timeout: 20000,
+        });
+        return res.data;
+    },
+
+
     getComfyUIWorkflows: async (): Promise<Record<string, { exists: boolean; node_count: number }>> => {
         const res = await axios.get(`${API_URL}/config/comfyui/workflows`, {
             timeout: 10000,

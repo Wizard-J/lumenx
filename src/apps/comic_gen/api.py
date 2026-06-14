@@ -1168,6 +1168,48 @@ def update_env_config(config: EnvConfig):
 
 
 @app.get("/projects/{script_id}")
+
+@app.get("/config/sync-models")
+def sync_openai_models(type: str = "image"):
+    """Sync model list from configured OpenAI-compatible endpoint.
+
+    Args:
+        type: "image" or "video"
+
+    Returns list of model IDs available at the configured endpoint.
+    """
+    import requests
+    if type not in ("image", "video"):
+        raise HTTPException(status_code=400, detail="type must be image or video")
+
+    base_url = os.environ.get(f"{type.upper()}_BASE_URL") or "https://api.openai.com/v1"
+    api_key = os.environ.get(f"{type.upper()}_API_KEY", "")
+
+    if not api_key:
+        raise HTTPException(status_code=400, detail=f"No {type.upper()}_API_KEY configured. Set it in Core Cloud & Vendor Providers section first.")
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    url = base_url.rstrip("/") + "/models"
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        models = [
+            {"id": m["id"], "owned_by": m.get("owned_by", "unknown")}
+            for m in data.get("data", [])
+        ]
+        return {"status": "success", "models": models}
+    except requests.HTTPError as e:
+        logger.error(f"Failed to sync models from {url}: {e}")
+        raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
+    except requests.RequestException as e:
+        logger.exception(f"Failed to sync models: {e}")
+        raise HTTPException(status_code=502, detail=f"Connection error: {e}")
+    except Exception as e:
+        logger.exception(f"Failed to sync models")
+        raise HTTPException(status_code=500, detail=str(e))
+
 def get_project(script_id: str):
     """Retrieves a project by ID. When the project belongs to a
     Series, the response merges series-shared characters / scenes /

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Save, Loader2, Key, ChevronDown, ChevronRight, Settings, MessageSquareCode, Palette, Globe, Upload, FileJson, CheckCircle, X } from "lucide-react";
+import { Save, Loader2, Key, ChevronDown, ChevronRight, Settings, MessageSquareCode, Palette, Globe, Upload, FileJson, CheckCircle, X, RefreshCw, Search } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { api, type EnvConfigPayload, type ProviderMode } from "@/lib/api";
 import { ASPECT_RATIOS } from "@/store/projectStore";
@@ -145,6 +145,34 @@ export default function SettingsPage() {
   const [dragOver, setDragOver] = useState(false);
   const [workflowUploading, setWorkflowUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [activeSection, setActiveSection] = useState("api");
+
+  // ── OpenAI model sync ──
+  const [openaiImageModels, setOpenaiImageModels] = useState<{id: string; name: string}[]>([]);
+  const [openaiVideoModels, setOpenaiVideoModels] = useState<{id: string; name: string}[]>([]);
+  const [syncingImageModels, setSyncingImageModels] = useState(false);
+  const [syncingVideoModels, setSyncingVideoModels] = useState(false);
+  const [imageModelFilter, setImageModelFilter] = useState("");
+  const [videoModelFilter, setVideoModelFilter] = useState("");
+
+  const syncOpenaiModels = async (type: "image" | "video") => {
+    if (type === "image") setSyncingImageModels(true);
+    else setSyncingVideoModels(true);
+    try {
+      const res = await api.syncOpenAIModels(type);
+      const models = (res.models || []).map((m: {id: string; owned_by: string}) => ({
+        id: m.id,
+        name: m.id,
+      }));
+      if (type === "image") setOpenaiImageModels(models);
+      else setOpenaiVideoModels(models);
+    } catch (e: any) {
+      alert(`Failed to sync models: ${e?.message || e}`);
+    } finally {
+      if (type === "image") setSyncingImageModels(false);
+      else setSyncingVideoModels(false);
+    }
+  };
 
   // ── Default Model Settings ──
   const [modelSettings, setModelSettings] = useState<DefaultModelSettings>(() =>
@@ -439,13 +467,7 @@ export default function SettingsPage() {
                   </label>
                   <input type="text" value={config.IMAGE_BASE_URL} onChange={(e) => handleChange("IMAGE_BASE_URL", e.target.value)} placeholder="https://api.openai.com/v1" className={inputClass} />
                 </div>
-                <div>
-                  <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
-                    <span>Model</span>
-                    <span className="text-text-muted font-normal text-xs">dall-e-3</span>
-                  </label>
-                  <input type="text" value={config.IMAGE_MODEL} onChange={(e) => handleChange("IMAGE_MODEL", e.target.value)} placeholder="dall-e-3" className={inputClass} />
-                </div>
+
                 </>
                 )}
               </div>
@@ -481,13 +503,7 @@ export default function SettingsPage() {
                   </label>
                   <input type="text" value={config.VIDEO_BASE_URL} onChange={(e) => handleChange("VIDEO_BASE_URL", e.target.value)} placeholder="https://api.openai.com/v1" className={inputClass} />
                 </div>
-                <div>
-                  <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
-                    <span>Model</span>
-                    <span className="text-text-muted font-normal text-xs">dall-e-3</span>
-                  </label>
-                  <input type="text" value={config.VIDEO_MODEL} onChange={(e) => handleChange("VIDEO_MODEL", e.target.value)} placeholder="dall-e-3" className={inputClass} />
-                </div>
+
                 </>
                 )}
               </div>
@@ -764,28 +780,84 @@ export default function SettingsPage() {
           </div>
           <div>
             <h2 className="text-lg font-bold text-foreground">{t("defaultModels")}</h2>
-            <p className="text-xs text-text-secondary">Default models and aspect ratios for new projects</p>
+            <p className="text-xs text-text-secondary">
+              Default models for new projects. Models shown depend on the active provider selected above.
+            </p>
           </div>
         </div>
 
         <div className="space-y-5">
+          {/* ── Image Models ── */}
           <div className="flex items-center gap-2 text-sm font-bold text-foreground">
             <Image size={16} className="text-green-400" />
-            <span>Text-to-Image Model</span>
+            <span>Image Generation Model</span>
+            <span className="text-[10px] text-text-muted font-normal ml-1">(T2I / I2I)</span>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            {GLOBAL_IMAGE_MODELS.map((model) => (
-              <button
-                key={model.id}
-                onClick={() => setModelSettings((s) => ({ ...s, t2i_model: model.id }))}
-                className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${modelSettings.t2i_model === model.id ? "border-green-500/50 bg-green-500/10" : "border-glass-border hover:border-glass-border bg-glass"}`}
-              >
-                {modelSettings.t2i_model === model.id && <div className="absolute top-2 right-2"><Check size={14} className="text-green-400" /></div>}
-                <span className="text-sm font-medium text-foreground">{model.name}</span>
-                <span className="text-xs text-text-muted">{model.description}</span>
-              </button>
-            ))}
-          </div>
+
+          {config.IMAGE_PROVIDER === "comfyui" ? (
+            <div className="bg-surface/50 border border-glass-border rounded-lg p-4 text-center">
+              <p className="text-sm text-text-secondary">Image model is determined by the ComfyUI workflow.</p>
+              <p className="text-xs text-text-muted mt-1">Switch to DashScope or OpenAI Compatible to select a specific model.</p>
+            </div>
+          ) : (
+            <>
+              {config.IMAGE_PROVIDER === "openai" && (
+                <div className="flex items-center gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => syncOpenaiModels("image")}
+                    disabled={syncingImageModels}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-glass-border bg-surface text-text-secondary hover:text-foreground transition-colors disabled:opacity-50"
+                  >
+                    {syncingImageModels ? <RefreshCw size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                    {syncingImageModels ? "Syncing..." : "Sync from API"}
+                  </button>
+                  <span className="text-[10px] text-text-muted">{openaiImageModels.length > 0 ? `${openaiImageModels.length} loaded` : "Defaults"}</span>
+                  {openaiImageModels.length > 10 && (
+                    <div className="relative flex-1 max-w-[200px] ml-auto">
+                      <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                      <input
+                        type="text"
+                        value={imageModelFilter}
+                        onChange={(e) => setImageModelFilter(e.target.value)}
+                        placeholder="Filter models..."
+                        className="w-full pl-7 pr-2 py-1 text-[11px] bg-input-bg border border-glass-border rounded-md text-text-secondary placeholder-text-muted focus:outline-none focus:border-primary/50"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="max-h-[280px] overflow-y-auto pr-1 grid grid-cols-2 gap-2">
+                {(config.IMAGE_PROVIDER === "openai"
+                  ? (openaiImageModels.length > 0 ? openaiImageModels.filter(m => !imageModelFilter || m.id.toLowerCase().includes(imageModelFilter.toLowerCase()) || m.name.toLowerCase().includes(imageModelFilter.toLowerCase())) : [
+                      { id: "dall-e-3", name: "DALL·E 3" },
+                      { id: "gpt-image-1", name: "GPT Image 1" },
+                      { id: "gpt-image-2-pro", name: "GPT Image 2 Pro" },
+                    ])
+                  : GLOBAL_IMAGE_MODELS
+                ).map((model) => (
+                  <button
+                    key={model.id}
+                    onClick={() => {
+                      setModelSettings((s) => ({ ...s, t2i_model: model.id, i2i_model: model.id }));
+                      setConfig((prev) => ({ ...prev, IMAGE_MODEL: model.id }));
+                    }}
+                    className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${
+                      modelSettings.t2i_model === model.id
+                        ? "border-green-500/50 bg-green-500/10"
+                        : "border-glass-border hover:border-glass-border bg-glass"
+                    }`}
+                  >
+                    {modelSettings.t2i_model === model.id && (
+                      <div className="absolute top-2 right-2"><Check size={14} className="text-green-400" /></div>
+                    )}
+                    <span className="text-sm font-medium text-foreground">{model.name}</span>
+                    <span className="text-xs text-text-muted">{model.id}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
 
           <div className="grid grid-cols-3 gap-4">
             {(
@@ -808,46 +880,77 @@ export default function SettingsPage() {
             ))}
           </div>
 
-          <div className="border-t border-glass-border pt-4">
-            <div className="flex items-center gap-2 text-sm font-bold text-foreground">
-              <Layout size={16} className="text-blue-400" />
-              <span>Storyboard (Image-to-Image)</span>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              {GLOBAL_IMAGE_MODELS.map((model) => (
-                <button key={model.id} onClick={() => setModelSettings((s) => ({ ...s, i2i_model: model.id }))} className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${modelSettings.i2i_model === model.id ? "border-blue-500/50 bg-blue-500/10" : "border-glass-border hover:border-glass-border bg-glass"}`}>
-                  {modelSettings.i2i_model === model.id && <div className="absolute top-2 right-2"><Check size={14} className="text-blue-400" /></div>}
-                  <span className="text-sm font-medium text-foreground">{model.name}</span>
-                  <span className="text-xs text-text-muted">{model.description}</span>
-                </button>
-              ))}
-            </div>
-            <div className="mt-3 space-y-2">
-              <label className="text-xs text-text-secondary">Storyboard Aspect Ratio</label>
-              <div className="grid grid-cols-3 gap-2">
-                {ASPECT_RATIOS.map((ratio) => (
-                  <button key={ratio.id} onClick={() => setModelSettings((s) => ({ ...s, storyboard_aspect_ratio: ratio.id }))} className={`flex flex-col items-center p-3 rounded-lg border transition-all ${modelSettings.storyboard_aspect_ratio === ratio.id ? "border-blue-500/50 bg-blue-500/10" : "border-glass-border hover:border-glass-border bg-glass"}`}>
-                    <span className="text-sm font-medium text-foreground">{ratio.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
+          {/* ── Video Models ── */}
           <div className="border-t border-glass-border pt-4">
             <div className="flex items-center gap-2 text-sm font-bold text-foreground">
               <Video size={16} className="text-purple-400" />
-              <span>Motion (Image-to-Video)</span>
+              <span>Video Generation Model</span>
+              <span className="text-[10px] text-text-muted font-normal ml-1">(I2V / T2V / R2V)</span>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              {GLOBAL_I2V_MODELS.map((model) => (
-                <button key={model.id} onClick={() => setModelSettings((s) => ({ ...s, i2v_model: model.id }))} className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${modelSettings.i2v_model === model.id ? "border-purple-500/50 bg-purple-500/10" : "border-glass-border hover:border-glass-border bg-glass"}`}>
-                  {modelSettings.i2v_model === model.id && <div className="absolute top-2 right-2"><Check size={14} className="text-purple-400" /></div>}
-                  <span className="text-sm font-medium text-foreground">{model.name}</span>
-                  <span className="text-xs text-text-muted">{model.description}</span>
-                </button>
-              ))}
-            </div>
+
+            {config.VIDEO_PROVIDER === "comfyui" ? (
+              <div className="mt-3 bg-surface/50 border border-glass-border rounded-lg p-4 text-center">
+                <p className="text-sm text-text-secondary">Video model is determined by the ComfyUI workflow.</p>
+                <p className="text-xs text-text-muted mt-1">Switch to DashScope or OpenAI Compatible to select a specific model.</p>
+              </div>
+            ) : (
+              <>
+                {config.VIDEO_PROVIDER === "openai" && (
+                  <div className="flex items-center gap-2 mt-3 mb-2">
+                    <button
+                      type="button"
+                      onClick={() => syncOpenaiModels("video")}
+                      disabled={syncingVideoModels}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-glass-border bg-surface text-text-secondary hover:text-foreground transition-colors disabled:opacity-50"
+                    >
+                      {syncingVideoModels ? <RefreshCw size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                      {syncingVideoModels ? "Syncing..." : "Sync from API"}
+                    </button>
+                    <span className="text-[10px] text-text-muted">{openaiVideoModels.length > 0 ? `${openaiVideoModels.length} loaded` : "Defaults"}</span>
+                    {openaiVideoModels.length > 10 && (
+                      <div className="relative flex-1 max-w-[200px] ml-auto">
+                        <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                        <input
+                          type="text"
+                          value={videoModelFilter}
+                          onChange={(e) => setVideoModelFilter(e.target.value)}
+                          placeholder="Filter models..."
+                          className="w-full pl-7 pr-2 py-1 text-[11px] bg-input-bg border border-glass-border rounded-md text-text-secondary placeholder-text-muted focus:outline-none focus:border-primary/50"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="mt-3 max-h-[280px] overflow-y-auto pr-1 grid grid-cols-2 gap-2">
+                  {(config.VIDEO_PROVIDER === "openai"
+                    ? (openaiVideoModels.length > 0 ? openaiVideoModels.filter(m => !videoModelFilter || m.id.toLowerCase().includes(videoModelFilter.toLowerCase()) || m.name.toLowerCase().includes(videoModelFilter.toLowerCase())) : [
+                        { id: "sora-2", name: "Sora 2" },
+                        { id: "veo-3.1", name: "Veo 3.1" },
+                      ])
+                    : GLOBAL_I2V_MODELS
+                  ).map((model) => (
+                    <button
+                      key={model.id}
+                      onClick={() => {
+                        setModelSettings((s) => ({ ...s, i2v_model: model.id }));
+                        setConfig((prev) => ({ ...prev, VIDEO_MODEL: model.id }));
+                      }}
+                      className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${
+                        modelSettings.i2v_model === model.id
+                          ? "border-purple-500/50 bg-purple-500/10"
+                          : "border-glass-border hover:border-glass-border bg-glass"
+                      }`}
+                    >
+                      {modelSettings.i2v_model === model.id && (
+                        <div className="absolute top-2 right-2"><Check size={14} className="text-purple-400" /></div>
+                      )}
+                      <span className="text-sm font-medium text-foreground">{model.name}</span>
+                      <span className="text-xs text-text-muted">{model.id}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
