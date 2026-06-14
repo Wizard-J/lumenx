@@ -48,6 +48,32 @@ def _get_setting(*keys: str, default: str = "") -> str:
     return default
 
 
+
+# ── Blank Placeholder Image ─────────────────────────────────────────
+
+_BLANK_PNG: Optional[bytes] = None
+
+def _blank_image_bytes() -> bytes:
+    """Return a minimal 1×1 black PNG as placeholder for unused inputs."""
+    global _BLANK_PNG
+    if _BLANK_PNG is None:
+        import struct, zlib
+        def chunk(ctype: bytes, data: bytes) -> bytes:
+            c = ctype + data
+            return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+        raw = b'\x00'  # single black pixel (R=0,G=0,B=0)
+        def filter_none(scanline: bytes) -> bytes:
+            return b'\x00' + scanline
+        filtered = filter_none(raw)
+        compressed = zlib.compress(filtered)
+        _BLANK_PNG = (
+            b'\x89PNG\r\n\x1a\n' +
+            chunk(b'IHDR', struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)) +
+            chunk(b'IDAT', compressed) +
+            chunk(b'IEND', b'')
+        )
+    return _BLANK_PNG
+
 # ── Workflow Loader ─────────────────────────────────────────────────
 
 def _load_workflow(mode: str) -> dict:
@@ -73,7 +99,8 @@ def _inject_params(workflow: dict, params: Dict[str, Any]) -> dict:
       {{seed}}             — random seed (int, -1 = random)
       {{steps}}            — sampling steps (int)
       {{cfg}}              — CFG scale (float)
-      {{input_image}}      — uploaded image filename in ComfyUI
+      {{input_image}}      — uploaded image filename in ComfyUI (single ref, legacy)
+      {{input_image_N}}    — N-th reference image (1-indexed: input_image_1, input_image_2, …)
     """
     def _replace(value):
         if isinstance(value, str):
@@ -260,6 +287,79 @@ def _extract_output_media(history_entry: dict) -> Optional[dict]:
             }
     return None
 
+
+
+MAX_REF_IMAGES = 9  # practical upper bound for ComfyUI workflows
+
+def _collect_all_refs(
+    ref_image_path: Optional[str] = None,
+    ref_image_paths: Optional[List[str]] = None,
+) -> List[str]:
+    """Merge single + list ref paths, de-duplicate, return ordered list."""
+    all_refs: List[str] = []
+    if ref_image_path:
+        all_refs.append(ref_image_path)
+    if ref_image_paths:
+        all_refs.extend(ref_image_paths)
+    # de-duplicate while preserving order
+    seen = set()
+    ordered = []
+    for r in all_refs:
+        if r and r not in seen:
+            seen.add(r)
+            ordered.append(r)
+    return ordered
+
+
+def _upload_ref_images(
+    client: "ComfyUIClient",
+    ref_paths: List[str],
+    mode: str,
+) -> Dict[str, str]:
+    """Upload up to MAX_REF_IMAGES images to ComfyUI and return param dict.
+
+    Populates ``input_image_1`` through ``input_image_N``. Slots without a
+    corresponding reference image are filled with a blank placeholder PNG
+    so ComfyUI LoadImage nodes always pass validation.
+    """
+    params: Dict[str, str] = {}
+    blank_data = _blank_image_bytes()
+
+    # Create temp placeholder if we don't have enough refs
+    blank_path = None
+    needs_blank = len(ref_paths) < MAX_REF_IMAGES
+    if needs_blank:
+        blank_dir = os.path.join("output", "comfyui_temp")
+        os.makedirs(blank_dir, exist_ok=True)
+        blank_path = os.path.join(blank_dir, "_blank_placeholder.png")
+        if not os.path.exists(blank_path):
+            with open(blank_path, "wb") as bf:
+                bf.write(blank_data)
+
+    for i in range(1, MAX_REF_IMAGES + 1):
+        key = f"input_image_{i}"
+        # Use real ref if available, otherwise blank placeholder
+        if i <= len(ref_paths) and ref_paths[i - 1] and os.path.exists(ref_paths[i - 1]):
+            try:
+                uploaded = client.upload_image(ref_paths[i - 1])
+                params[key] = uploaded.get("name", os.path.basename(ref_paths[i - 1]))
+                logger.info(f"[ComfyUI] {mode} ref {i}/{len(ref_paths)}: {params[key]}")
+            except Exception as e:
+                logger.warning(f"[ComfyUI] Failed to upload ref {i}: {e}, using placeholder")
+                if blank_path:
+                    uploaded = client.upload_image(blank_path)
+                    params[key] = uploaded.get("name", os.path.basename(blank_path))
+        elif blank_path:
+            uploaded = client.upload_image(blank_path)
+            params[key] = uploaded.get("name", os.path.basename(blank_path))
+        else:
+            params[key] = ""
+
+    # Backward compat: set legacy "input_image" to the first one
+    if len(ref_paths) >= 1:
+        params["input_image"] = params.get("input_image_1", "")
+
+    return params
 
 # ── Image Generation Model ──────────────────────────────────────────
 
@@ -455,36 +555,56 @@ class ComfyUIVideoModel(VideoGenModel):
                 "width": width,
                 "height": height,
                 "duration": duration,
-                "input_image": "",
             }
 
-            # Handle input image
-            resolved = None
+            # Multi-reference support for video (I2V mode)
+            ref_paths: List[str] = []
+            # Collect local paths from img_path / img_url
             if img_path and os.path.exists(img_path):
-                resolved = img_path
+                ref_paths.append(img_path)
             elif img_url:
                 if img_url.startswith("data:"):
-                    # Base64 data URL — decode and save temp file
                     _, b64 = img_url.split(",", 1)
                     tmp_path = os.path.join("output", "video_inputs", f"comfyui_input_{uuid.uuid4().hex[:8]}.png")
                     os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
                     with open(tmp_path, "wb") as f:
                         f.write(base64.b64decode(b64))
-                    resolved = tmp_path
+                    ref_paths.append(tmp_path)
                 elif img_url.startswith("http"):
                     resp = requests.get(img_url, timeout=30)
                     tmp_path = os.path.join("output", "video_inputs", f"comfyui_input_{uuid.uuid4().hex[:8]}.png")
                     os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
                     with open(tmp_path, "wb") as f:
                         f.write(resp.content)
-                    resolved = tmp_path
+                    ref_paths.append(tmp_path)
                 elif os.path.exists(os.path.join("output", img_url)):
-                    resolved = os.path.join("output", img_url)
+                    ref_paths.append(os.path.join("output", img_url))
 
-            if resolved:
-                uploaded = client.upload_image(resolved)
-                params["input_image"] = uploaded.get("name", os.path.basename(resolved))
-                logger.info(f"[ComfyUI] Uploaded input image: {params['input_image']}")
+            # Also collect R2V reference_image_urls
+            ref_image_urls = kwargs.get("reference_image_urls") or kwargs.get("ref_image_urls") or []
+            for riu in ref_image_urls:
+                if isinstance(riu, str):
+                    if riu.startswith("http"):
+                        try:
+                            resp = requests.get(riu, timeout=30)
+                            tmp_path = os.path.join("output", "video_inputs", f"comfyui_ref_{uuid.uuid4().hex[:8]}.png")
+                            os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
+                            with open(tmp_path, "wb") as f:
+                                f.write(resp.content)
+                            ref_paths.append(tmp_path)
+                        except Exception as e:
+                            logger.warning(f"[ComfyUI] Failed to download ref URL {riu[:60]}: {e}")
+                    elif os.path.exists(os.path.join("output", riu)):
+                        ref_paths.append(os.path.join("output", riu))
+
+            # De-duplicate
+            seen = set()
+            ref_paths = [p for p in ref_paths if p and not (p in seen or seen.add(p))]
+
+            if mode == "i2v" and ref_paths:
+                logger.info(f"[ComfyUI] I2V with {len(ref_paths)} reference images")
+                ref_params = _upload_ref_images(client, ref_paths, "I2V")
+                params.update(ref_params)
 
             workflow = _inject_params(workflow, params)
 
