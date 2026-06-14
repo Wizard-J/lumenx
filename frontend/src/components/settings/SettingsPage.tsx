@@ -311,9 +311,40 @@ export default function SettingsPage() {
     `px-3 py-1.5 text-xs rounded-md border transition-colors font-medium ${active ? "bg-amber-500 text-white border-amber-500 shadow-sm" : "border-glass-border bg-surface text-text-secondary hover:text-foreground"}`;
 
   return (
-    <div className="container mx-auto px-6 py-8 max-w-4xl space-y-8">
-      <h1 className="text-2xl font-display font-bold text-foreground">{t("title")}</h1>
+    <div className="flex h-[calc(100vh-3.5rem)]">
+      {/* ── Left Sidebar ── */}
+      <nav className="w-52 shrink-0 border-r border-glass-border bg-surface/30 overflow-y-auto p-3 space-y-1">
+        <div className="px-2 pb-3 mb-2 border-b border-glass-border">
+          <h1 className="text-sm font-display font-bold text-foreground">{t("title")}</h1>
+        </div>
+        {([
+          { id: "appearance", label: "Appearance", icon: Palette },
+          { id: "api", label: "API Configuration", icon: Key },
+          { id: "comfyui", label: "ComfyUI", icon: Upload },
+          { id: "legacy", label: "Legacy Providers", icon: ChevronDown },
+          { id: "models", label: "Default Models", icon: Settings },
+          { id: "prompts", label: "Default Prompts", icon: MessageSquareCode },
+        ] as const).map((item) => (
+          <button
+            key={item.id}
+            onClick={() => setActiveSection(item.id)}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all text-left ${
+              activeSection === item.id
+                ? "bg-primary/15 text-primary font-medium"
+                : "text-text-secondary hover:text-foreground hover:bg-glass"
+            }`}
+          >
+            <item.icon size={16} />
+            <span>{item.label}</span>
+          </button>
+        ))}
+      </nav>
 
+      {/* ── Right Content ── */}
+      <main className="flex-1 overflow-y-auto p-6">
+        <div className="max-w-3xl mx-auto space-y-8">
+          {activeSection === "appearance" && (
+            <>
       {/* ── Section 0: Appearance ── */}
       <section className="glass-panel rounded-xl p-6 space-y-6">
         <div className="flex items-center gap-3">
@@ -373,7 +404,10 @@ export default function SettingsPage() {
           </div>
         </div>
       </section>
-
+            </>
+          )}
+          {activeSection === "api" && (
+            <>
       {/* ── Section 1: API Configuration ── */}
       <section className="glass-panel rounded-xl p-6 space-y-6">
         <div className="flex items-center gap-3">
@@ -543,7 +577,10 @@ export default function SettingsPage() {
           </>
         )}
       </section>
-
+            </>
+          )}
+          {activeSection === "comfyui" && (
+            <>
       {/* ── Section 2: ComfyUI Provider ── */}
       <section className="glass-panel rounded-xl p-6 space-y-6">
         <div className="flex items-center gap-3">
@@ -661,7 +698,10 @@ export default function SettingsPage() {
           </div>
         </div>
       </section>
-
+            </>
+          )}
+          {activeSection === "legacy" && (
+            <>
       {/* ── Section 3: Cloud & Vendor Providers ── */}
       <section className="glass-panel rounded-xl p-6 space-y-6">
         <button
@@ -771,7 +811,10 @@ export default function SettingsPage() {
           </div>
         )}
       </section>
-
+            </>
+          )}
+          {activeSection === "models" && (
+            <>
       {/* ── Section 4: Default Model Settings ── */}
       <section className="glass-panel rounded-xl p-6 space-y-6">
         <div className="flex items-center gap-3">
@@ -961,7 +1004,10 @@ export default function SettingsPage() {
           </button>
         </div>
       </section>
-
+            </>
+          )}
+          {activeSection === "prompts" && (
+            <>
       {/* ── Section 5: Default Prompt Config ── */}
       <section className="glass-panel rounded-xl p-6 space-y-6">
         <div className="flex items-center gap-3">
@@ -1000,8 +1046,10 @@ export default function SettingsPage() {
           </button>
         </div>
       </section>
-
-      <div className="pb-8" />
+            </>
+          )}
+        </div>
+      </main>
     </div>
   );
 }
