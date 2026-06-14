@@ -337,22 +337,7 @@ export default function SettingsPage() {
             <span>{item.label}</span>
           </button>
         ))}
-        <div className="mt-auto pt-3 border-t border-glass-border">
-          <button
-            type="button"
-            onClick={() => {
-              handleSaveApiConfig();
-              handleSaveModelDefaults();
-              // save prompts too
-              localStorage.setItem("lumenx_default_prompt_config", JSON.stringify(promptConfig));
-            }}
-            disabled={saving}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-          >
-            {saving ? <><Loader2 size={14} className="animate-spin" /> Saving...</> : <><Save size={14} /> Save All Settings</>}
-          </button>
-          <p className="text-[10px] text-text-muted text-center mt-1.5">Saves API, ComfyUI, Model & Prompt configs</p>
-        </div>
+
       </nav>
 
       {/* ── Right Content ── */}
@@ -1057,6 +1042,36 @@ export default function SettingsPage() {
       </section>
             </>
           )}
+        </div>
+        {/* ── Global Save Bar ── */}
+        <div className="sticky bottom-0 -mx-6 -mb-6 mt-8 px-6 py-3 bg-background/95 backdrop-blur-sm border-t border-glass-border flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+              <span className="text-xs text-text-secondary">
+                Unsaved changes in <span className="text-foreground font-medium">{activeSection === "appearance" ? "Appearance" : activeSection === "api" ? "API" : activeSection === "comfyui" ? "ComfyUI" : activeSection === "legacy" ? "Legacy Providers" : activeSection === "models" ? "Models" : "Prompts"}</span>
+              </span>
+            </div>
+            <span className="text-[10px] text-text-muted hidden sm:inline">
+              Saves across all tabs — API keys, providers, models, and prompts
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              handleSaveApiConfig();
+              handleSaveModelDefaults();
+              localStorage.setItem("lumenx_default_prompt_config", JSON.stringify(promptConfig));
+            }}
+            disabled={saving}
+            className="flex items-center gap-2 px-5 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-all disabled:opacity-50 shadow-lg shadow-primary/20"
+          >
+            {saving ? (
+              <><Loader2 size={15} className="animate-spin" /> Saving...</>
+            ) : (
+              <><Save size={15} /> Save All Settings</>
+            )}
+          </button>
         </div>
       </main>
     </div>
