@@ -1,26 +1,26 @@
 ---
 name: lumenx-git-publish
-description: LumenX GitHub publish workflow for safe commits, sensitive-data scans, and PR-based pushes to the GitHub mirror.
+description: LumenX personal-fork publish workflow for safe commits, sensitive-data scans, and direct pushes to the user's GitHub fork.
 ---
 
-# LumenX GitHub Publish Workflow
+# LumenX Personal Fork Publish Workflow
 
-Use this workflow when working in this repository and the user asks to publish work to the LumenX GitHub mirror, prepare a GitHub-ready branch, or follow the LumenX GitHub release process.
+Use this workflow when working in this personal fork and the user asks to publish, sync, or push work to GitHub.
 
 ## Core Rules
 
-- Never push directly to `main`. Use a feature, fix, or docs branch and open a PR.
-- Push to the `github` remote only. Ignore `origin` for publishing.
+- Direct pushes to `main` are allowed in this personal fork when the user asks to publish or sync work.
+- Push to the personal GitHub fork. Prefer the `github` remote when present; `origin` may also point to the same fork.
 - Run sensitive-data checks before any push.
 - Commit messages must follow Conventional Commits.
-- Use `Mike4Ellis <1007062267@qq.com>` as the git commit author for GitHub mirror submissions in this repo.
-- Open GitHub PRs with the `Star-Lotus` GitHub account. If `Mike4Ellis` lacks `createPullRequest` permission, switch `gh` to `Star-Lotus` before running `gh pr create`.
+- Use `Wizard-J <79328210@qq.com>` as the git commit author for this fork.
+- Pull requests are optional. Do not create a PR unless the user explicitly asks for one.
 
 Repository-specific constraints:
 
 - GitHub remote: `github`
-- GitHub repository: `https://github.com/alibaba/lumenx.git`
-- Allowed branch prefixes: `feature/`, `fix/`, `docs/`
+- GitHub repository: `git@github.com:Wizard-J/lumenx.git`
+- Default branch: `main`
 
 ## Step 1: Confirm Branch
 
@@ -30,10 +30,10 @@ Check the current branch:
 git branch --show-current
 ```
 
-If the branch is `main`, create a safe branch first:
+If the branch is not `main` and the user asked to publish to `main`, merge or fast-forward the intended commits onto `main` before pushing. If the user asks for an experiment branch or PR, use a descriptive `feature/`, `fix/`, or `docs/` branch.
 
 ```bash
-git checkout -b feature/<your-feature-name>
+git checkout main
 ```
 
 ## Step 2: Sensitive-Data Checks
@@ -118,9 +118,9 @@ Before committing, confirm the author identity matches the project convention:
 git log -1 --format='%an <%ae>'
 ```
 
-Expected author for GitHub-bound commits in this repo:
+Expected author for this fork:
 
-- `Mike4Ellis <1007062267@qq.com>`
+- `Wizard-J <79328210@qq.com>`
 
 Common prefixes:
 
@@ -134,35 +134,21 @@ Common prefixes:
 
 ## Step 7: Push to GitHub
 
-Push the current branch to the `github` remote:
+Push `main` to the personal GitHub fork when the user asks to publish/sync:
 
 ```bash
+git push github main
+```
+
+If working on a non-main branch by explicit request:
+
+```
 git push -u github <branch-name>
 ```
 
-## Step 8: Create a Pull Request
+## Step 8: Post-Push Verification
 
-Use GitHub CLI to open the PR:
-
-```bash
-gh auth switch --hostname github.com --user Star-Lotus
-```
-
-```bash
-gh pr create --repo alibaba/lumenx --title "feat: your PR title" --body "$(cat <<'EOF'
-## Summary
-- <change description>
-
-## Test plan
-- [ ] <test checklist>
-
-EOF
-)"
-```
-
-## Step 9: Post-Push Verification
-
-- Confirm the branch and PR are visible on GitHub.
+- Confirm the pushed branch is visible on GitHub.
 - Check README rendering if docs changed.
 - Confirm no sensitive information leaked in the diff.
 

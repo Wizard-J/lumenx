@@ -6,7 +6,10 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 - Git author is already configured for this repo, do not modify git config
 - **NEVER** add `Co-Authored-By` lines in commit messages
-- Push to GitHub remote (`github`) only, ignore `origin` (deprecated GitLab)
+- This checkout is a personal fork maintained by `Wizard-J <79328210@qq.com>`.
+- Push to the personal GitHub fork (`git@github.com:Wizard-J/lumenx.git`).
+- Direct pushes to `main` are allowed for this fork when the user asks to publish or sync work.
+- The `github` and `origin` remotes may both point to the same fork; prefer `github` when present.
 
 ## Project Workflow Triggers
 

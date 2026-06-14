@@ -1,19 +1,19 @@
 ---
-description: LumenX GitHub 发布流程 - 安全提交、敏感数据扫描、推送到 GitHub 公开仓库
+description: LumenX 个人 fork 发布流程 - 安全提交、敏感数据扫描、推送到个人 GitHub 仓库
 ---
 
-# LumenX GitHub 发布流程
+# LumenX 个人 Fork 发布流程
 
-此 skill 整合了从本地开发到 GitHub 公开仓库的完整发布流程，包含安全检查和规范约束。
+此 workflow 整合了从本地开发到个人 GitHub fork 的发布流程，包含安全检查和规范约束。
 
 ## 核心规则
 
-- **禁止直接推送 `main` 分支** — 必须通过 feature 分支 + PR
+- **允许直接推送 `main` 分支** — 本仓库是个人 fork，用户要求发布/同步时可直接推送 main
 - **推送前必须执行敏感数据扫描**
 - **Commit Message 遵循 Conventional Commits** (`feat:` / `fix:` / `docs:` / `refactor:` / `chore:`)
-- **GitHub remote 名称为 `github`**，仓库地址：`https://github.com/alibaba/lumenx.git`
-- **GitHub 镜像提交的作者固定为** `Mike4Ellis <1007062267@qq.com>`
-- **GitHub PR 统一由** `Star-Lotus` **账号发起**；如果 `Mike4Ellis` 无法创建 PR，需要先切换 `gh` 活跃账号再执行 `gh pr create`
+- **GitHub remote 优先使用 `github`**，仓库地址：`git@github.com:Wizard-J/lumenx.git`
+- **提交作者使用** `Wizard-J <79328210@qq.com>`
+- **PR 是可选流程**；除非用户明确要求，否则不要创建 PR
 
 ## 阶段一：提交前检查
 
@@ -23,10 +23,10 @@ description: LumenX GitHub 发布流程 - 安全提交、敏感数据扫描、�
 git branch --show-current
 ```
 
-**必须**在 `feature/*`、`fix/*`、`docs/*` 分支上工作。如果在 main 上：
+如果用户要求发布到主分支，确保当前工作位于 `main`。如果用户明确要求实验分支或 PR，再使用 `feature/*`、`fix/*`、`docs/*` 分支。
 
 ```bash
-git checkout -b feature/<your-feature-name>
+git checkout main
 ```
 
 ### 2. 敏感数据扫描
@@ -98,7 +98,7 @@ git log -1 --format='%an <%ae>'
 
 期望作者：
 
-- `Mike4Ellis <1007062267@qq.com>`
+- `Wizard-J <79328210@qq.com>`
 
 Commit 类型：
 - `feat:` 新功能
@@ -112,32 +112,18 @@ Commit 类型：
 ### 3. 推送到 GitHub
 
 ```bash
+git push github main
+```
+
+如果用户明确要求推送非主分支：
+
+```
 git push -u github <branch-name>
-```
-
-### 4. 创建 Pull Request
-
-先切换到有 PR 创建权限的账号：
-
-```bash
-gh auth switch --hostname github.com --user Star-Lotus
-```
-
-```bash
-gh pr create --repo alibaba/lumenx --title "feat: your PR title" --body "$(cat <<'EOF'
-## Summary
-- <change description>
-
-## Test plan
-- [ ] <test checklist>
-
-EOF
-)"
 ```
 
 ## 阶段四：推送后验证
 
-- 访问 https://github.com/alibaba/lumenx 确认内容正确
+- 访问 https://github.com/Wizard-J/lumenx 确认内容正确
 - 检查 README 格式渲染
 - 确认无敏感信息泄露
 
