@@ -139,7 +139,6 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [endpointsOpen, setEndpointsOpen] = useState(false);
-  const [showLegacyProviders, setShowLegacyProviders] = useState(false);
   const [workflowModes, setWorkflowModes] = useState<Record<string, boolean>>({});
   const [uploadMode, setUploadMode] = useState("t2i");
   const [dragOver, setDragOver] = useState(false);
@@ -704,21 +703,16 @@ export default function SettingsPage() {
             <>
       {/* ── Section 3: Cloud & Vendor Providers ── */}
       <section className="glass-panel rounded-xl p-6 space-y-6">
-        <button
-          type="button"
-          onClick={() => setShowLegacyProviders(!showLegacyProviders)}
-          className="flex items-center gap-3 w-full text-left"
-        >
+        <div className="flex items-center gap-3">
           <div className="p-2 bg-gradient-to-br from-slate-500/20 to-slate-600/20 rounded-lg">
-            {showLegacyProviders ? <ChevronDown size={20} className="text-slate-400" /> : <ChevronRight size={20} className="text-slate-400" />}
+            <Key size={20} className="text-slate-400" />
           </div>
           <div>
             <h2 className="text-lg font-bold text-foreground">Cloud & Vendor Providers</h2>
             <p className="text-xs text-text-secondary">DashScope, OSS storage, and legacy vendor-direct routing</p>
           </div>
-        </button>
-        {showLegacyProviders && (
-          <div className="space-y-4">
+        </div>
+        <div className="space-y-4">
             <div>
               <h3 className="text-sm font-bold text-foreground mb-4">DashScope API Key</h3>
               <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
@@ -808,8 +802,7 @@ export default function SettingsPage() {
                 )}
               </div>
             </div>
-          </div>
-        )}
+        </div>
       </section>
             </>
           )}
