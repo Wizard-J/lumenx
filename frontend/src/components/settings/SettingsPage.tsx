@@ -119,6 +119,8 @@ interface DefaultPromptConfig {
   r2v_polish: string;
 }
 
+type SettingsSection = "appearance" | "api" | "comfyui" | "legacy" | "models" | "prompts";
+
 function loadFromLS<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
   try {
@@ -144,7 +146,7 @@ export default function SettingsPage() {
   const [dragOver, setDragOver] = useState(false);
   const [workflowUploading, setWorkflowUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [activeSection, setActiveSection] = useState("api");
+  const [activeSection, setActiveSection] = useState<SettingsSection>("api");
 
   // ── OpenAI model sync ──
   const [openaiImageModels, setOpenaiImageModels] = useState<{id: string; name: string}[]>([]);
@@ -308,6 +310,15 @@ export default function SettingsPage() {
     "w-full bg-input-bg border border-glass-border rounded-lg px-4 py-2 text-foreground placeholder-text-muted focus:outline-none focus:border-primary/50 transition-colors";
   const modeButtonClass = (active: boolean) =>
     `px-3 py-1.5 text-xs rounded-md border transition-colors font-medium ${active ? "bg-amber-500 text-white border-amber-500 shadow-sm" : "border-glass-border bg-surface text-text-secondary hover:text-foreground"}`;
+  const sectionMeta: Record<SettingsSection, { title: string; description: string }> = {
+    appearance: { title: "Appearance", description: "Language and theme preferences" },
+    api: { title: "API Configuration", description: "Primary LLM, image, and video provider settings" },
+    comfyui: { title: "ComfyUI", description: "Remote workflow server and workflow templates" },
+    legacy: { title: "Legacy Providers", description: "DashScope, OSS mirror, and vendor-direct fallbacks" },
+    models: { title: "Default Models", description: "Provider-aware defaults for new projects" },
+    prompts: { title: "Default Prompts", description: "Reusable prompt defaults for generation workflows" },
+  };
+  const activeSectionMeta = sectionMeta[activeSection];
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)]">
@@ -341,8 +352,34 @@ export default function SettingsPage() {
       </nav>
 
       {/* ── Right Content ── */}
-      <main className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-3xl mx-auto space-y-8">
+      <main className="flex-1 overflow-y-auto px-8 py-6">
+        <div className="max-w-5xl mx-auto">
+          <div className="sticky top-0 z-20 -mx-8 -mt-6 mb-6 px-8 py-5 bg-background/90 backdrop-blur-md border-b border-glass-border">
+            <div className="max-w-5xl mx-auto flex items-center justify-between gap-6">
+              <div>
+                <h1 className="text-xl font-display font-bold text-foreground">{activeSectionMeta.title}</h1>
+                <p className="mt-1 text-xs text-text-secondary">{activeSectionMeta.description}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  handleSaveApiConfig();
+                  handleSaveModelDefaults();
+                  localStorage.setItem("lumenx_default_prompt_config", JSON.stringify(promptConfig));
+                }}
+                disabled={saving}
+                className="shrink-0 flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-all disabled:opacity-50 shadow-lg shadow-primary/20"
+              >
+                {saving ? (
+                  <><Loader2 size={15} className="animate-spin" /> Saving...</>
+                ) : (
+                  <><Save size={15} /> Save All Settings</>
+                )}
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-8 pb-10">
           {activeSection === "appearance" && (
             <>
       {/* ── Section 0: Appearance ── */}
@@ -1042,36 +1079,7 @@ export default function SettingsPage() {
       </section>
             </>
           )}
-        </div>
-        {/* ── Global Save Bar ── */}
-        <div className="sticky bottom-0 -mx-6 -mb-6 mt-8 px-6 py-3 bg-background/95 backdrop-blur-sm border-t border-glass-border flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-              <span className="text-xs text-text-secondary">
-                Unsaved changes in <span className="text-foreground font-medium">{activeSection === "appearance" ? "Appearance" : activeSection === "api" ? "API" : activeSection === "comfyui" ? "ComfyUI" : activeSection === "legacy" ? "Legacy Providers" : activeSection === "models" ? "Models" : "Prompts"}</span>
-              </span>
-            </div>
-            <span className="text-[10px] text-text-muted hidden sm:inline">
-              Saves across all tabs — API keys, providers, models, and prompts
-            </span>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              handleSaveApiConfig();
-              handleSaveModelDefaults();
-              localStorage.setItem("lumenx_default_prompt_config", JSON.stringify(promptConfig));
-            }}
-            disabled={saving}
-            className="flex items-center gap-2 px-5 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-all disabled:opacity-50 shadow-lg shadow-primary/20"
-          >
-            {saving ? (
-              <><Loader2 size={15} className="animate-spin" /> Saving...</>
-            ) : (
-              <><Save size={15} /> Save All Settings</>
-            )}
-          </button>
         </div>
       </main>
     </div>
