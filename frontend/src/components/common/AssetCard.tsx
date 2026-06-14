@@ -10,6 +10,7 @@ type AssetTab = "characters" | "scenes" | "props";
 interface AssetCardProps {
   asset: Character | Scene | Prop;
   type: AssetTab;
+  variant?: "compact" | "gallery";
 }
 
 function getImageUrl(asset: Character | Scene | Prop, type: AssetTab): string | undefined {
@@ -43,7 +44,7 @@ function getImageUrl(asset: Character | Scene | Prop, type: AssetTab): string | 
   return prop.image_url;
 }
 
-export default function AssetCard({ asset, type }: AssetCardProps) {
+export default function AssetCard({ asset, type, variant = "compact" }: AssetCardProps) {
   const imageUrl = getImageUrl(asset, type);
   const t = useTranslations("assetCard");
   // Series-shared assets get a subtle top-right badge so the user
@@ -51,8 +52,10 @@ export default function AssetCard({ asset, type }: AssetCardProps) {
   // decision). Episode-local stays unbadged — the more common case.
   const isShared = (asset as Character | Scene | Prop).source === "series";
 
+  const isGallery = variant === "gallery";
+
   return (
-    <div className="glass-panel rounded-xl overflow-hidden relative">
+    <div className={`glass-panel overflow-hidden relative transition-all duration-200 hover:border-white/15 hover:shadow-lg hover:shadow-black/20 ${isGallery ? "rounded-2xl" : "rounded-xl"}`}>
       {isShared ? (
         <span
           className="absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-full border border-status-starred-border bg-status-starred-bg px-2 py-[2px] font-mono text-[10px] font-medium uppercase tracking-[0.18em] text-status-starred-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-[2px]"
@@ -62,17 +65,21 @@ export default function AssetCard({ asset, type }: AssetCardProps) {
           {t("seriesSharedBadge")}
         </span>
       ) : null}
-      <div className="aspect-square bg-elevated/50 flex items-center justify-center overflow-hidden">
+      <div className={`${isGallery ? "aspect-[4/3]" : "aspect-square"} bg-elevated/50 flex items-center justify-center overflow-hidden`}>
         {imageUrl ? (
-          <img src={getAssetUrl(imageUrl || "")} alt={asset.name} className="w-full h-full object-cover object-top" />
+          <img
+            src={getAssetUrl(imageUrl || "")}
+            alt={asset.name}
+            className="w-full h-full object-cover object-top transition-transform duration-300 group-hover/card:scale-[1.03]"
+          />
         ) : (
-          <ImageIcon size={32} className="text-text-muted" />
+          <ImageIcon size={isGallery ? 38 : 32} className="text-text-muted" />
         )}
       </div>
-      <div className="p-3">
-        <h4 className="text-sm font-medium text-foreground truncate">{asset.name}</h4>
+      <div className={isGallery ? "px-4 py-3" : "p-3"}>
+        <h4 className={`${isGallery ? "text-[15px]" : "text-sm"} font-medium text-foreground truncate`}>{asset.name}</h4>
         {asset.description && (
-          <p className="text-xs text-text-secondary mt-1 line-clamp-2">{asset.description}</p>
+          <p className={`${isGallery ? "text-[12px] leading-5" : "text-xs"} text-text-secondary mt-1 line-clamp-2`}>{asset.description}</p>
         )}
       </div>
     </div>

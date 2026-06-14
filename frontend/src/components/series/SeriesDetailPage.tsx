@@ -373,7 +373,7 @@ function AssetContentPanel({
           </div>
         ) : (
           <motion.div
-            className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6"
+            className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-5"
             initial="hidden"
             animate="visible"
             variants={{
@@ -397,7 +397,7 @@ function AssetContentPanel({
                   className="relative group/card cursor-pointer"
                   onClick={() => setWorkbenchEntity({ id: asset.id, kind: tab === "characters" ? "character" : tab === "scenes" ? "scene" : "prop" })}
                 >
-                  <AssetCard asset={asset} type={tab} />
+                  <AssetCard asset={asset} type={tab} variant="gallery" />
                   <button
                     onClick={(e) => { e.stopPropagation(); handleGenerateSingle(asset.id); }}
                     disabled={generatingIds.has(asset.id)}

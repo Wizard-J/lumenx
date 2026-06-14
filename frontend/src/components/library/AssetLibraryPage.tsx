@@ -181,9 +181,9 @@ export default function AssetLibraryPage() {
                     </span>
                   </button>
                   {!isCollapsed && (
-                    <div className="grid grid-cols-2 gap-4 pl-6 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 min-[1800px]:grid-cols-7">
+                    <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-5 pl-6">
                       {assets.map((asset) => (
-                        <AssetCard key={asset.id} asset={asset} type={activeTab} />
+                        <AssetCard key={asset.id} asset={asset} type={activeTab} variant="gallery" />
                       ))}
                     </div>
                   )}
