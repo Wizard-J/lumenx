@@ -112,10 +112,13 @@ export default function AssetLibraryPage() {
   };
 
   return (
-    <div className="container mx-auto px-6 py-8 max-w-6xl">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-display font-bold text-foreground">{t("title")}</h1>
-        <div className="relative w-72">
+    <div className="w-full px-8 py-8">
+      <div className="mx-auto max-w-[1500px]">
+        <div className="flex items-center justify-between gap-6 mb-6">
+          <div>
+            <h1 className="text-2xl font-display font-bold text-foreground">{t("title")}</h1>
+          </div>
+          <div className="relative w-80">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
           <input
             type="text"
@@ -124,11 +127,11 @@ export default function AssetLibraryPage() {
             placeholder={t("searchPlaceholder")}
             className="w-full bg-glass border border-glass-border rounded-lg pl-9 pr-4 py-2 text-sm text-foreground placeholder-text-muted focus:outline-none focus:border-primary/50 transition-colors"
           />
+          </div>
         </div>
-      </div>
 
-      {/* Tabs */}
-      <div className="flex border-b border-glass-border mb-6">
+        {/* Tabs */}
+        <div className="flex border-b border-glass-border mb-6">
         {tabs.map((tab) => (
           <button
             key={tab.id}
@@ -145,50 +148,51 @@ export default function AssetLibraryPage() {
         ))}
         <div className="flex-1" />
         <span className="self-center text-xs text-text-muted">{t("assetCount", { count: totalCount })}</span>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-20">
+            <div className="text-text-secondary">{tc("loading")}</div>
+          </div>
+        ) : filteredSources.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-text-muted">
+            <ImageIcon size={48} className="mb-3 text-text-muted" />
+            <p className="text-sm">{t("noAssets")}</p>
+            <p className="text-xs text-text-muted mt-1">{t("noAssetsHint")}</p>
+          </div>
+        ) : (
+          <div className="space-y-7">
+            {filteredSources.map((source) => {
+              const assets: (Character | Scene | Prop)[] =
+                activeTab === "characters" ? source.characters : activeTab === "scenes" ? source.scenes : source.props;
+              if (assets.length === 0) return null;
+              const isCollapsed = collapsedSources.has(source.id);
+
+              return (
+                <div key={source.id}>
+                  <button
+                    onClick={() => toggleCollapse(source.id)}
+                    className="flex items-center gap-2 mb-3 text-sm text-text-secondary hover:text-foreground transition-colors"
+                  >
+                    {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                    <span className="font-medium">{source.name}</span>
+                    <span className="text-xs px-2 py-0.5 rounded bg-glass text-text-muted">
+                      {source.type === "series" ? t("series") : t("project")} · {assets.length}
+                    </span>
+                  </button>
+                  {!isCollapsed && (
+                    <div className="grid grid-cols-2 gap-4 pl-6 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 min-[1800px]:grid-cols-7">
+                      {assets.map((asset) => (
+                        <AssetCard key={asset.id} asset={asset} type={activeTab} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
-
-      {loading ? (
-        <div className="flex items-center justify-center py-20">
-          <div className="text-text-secondary">{tc("loading")}</div>
-        </div>
-      ) : filteredSources.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 text-text-muted">
-          <ImageIcon size={48} className="mb-3 text-text-muted" />
-          <p className="text-sm">{t("noAssets")}</p>
-          <p className="text-xs text-text-muted mt-1">{t("noAssetsHint")}</p>
-        </div>
-      ) : (
-        <div className="space-y-6">
-          {filteredSources.map((source) => {
-            const assets: (Character | Scene | Prop)[] =
-              activeTab === "characters" ? source.characters : activeTab === "scenes" ? source.scenes : source.props;
-            if (assets.length === 0) return null;
-            const isCollapsed = collapsedSources.has(source.id);
-
-            return (
-              <div key={source.id}>
-                <button
-                  onClick={() => toggleCollapse(source.id)}
-                  className="flex items-center gap-2 mb-3 text-sm text-text-secondary hover:text-foreground transition-colors"
-                >
-                  {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-                  <span className="font-medium">{source.name}</span>
-                  <span className="text-xs px-2 py-0.5 rounded bg-glass text-text-muted">
-                    {source.type === "series" ? t("series") : t("project")} · {assets.length}
-                  </span>
-                </button>
-                {!isCollapsed && (
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pl-6">
-                    {assets.map((asset) => (
-                      <AssetCard key={asset.id} asset={asset} type={activeTab} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }
