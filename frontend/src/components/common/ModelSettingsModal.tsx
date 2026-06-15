@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, X, Image, Video, Film, Check, Layout, User, Building, Box, RefreshCw, Search } from 'lucide-react';
+import { Settings, X, Image, Video, Film, Check, Layout, User, Building, Box, RefreshCw, Search, MessageSquareCode } from 'lucide-react';
 import { useProjectStore, ASPECT_RATIOS } from '@/store/projectStore';
 import { resolveModelSettings, DEFAULT_MODEL_SETTINGS, VIDEO_R2V_MODELS, DEFAULT_R2V_MODEL_ID, PROJECT_IMAGE_MODELS, PROJECT_I2V_MODELS } from '@/lib/modelCatalog';
 import { api } from '@/lib/api';
@@ -49,12 +49,16 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
     const [isSaving, setIsSaving] = useState(false);
 
     // ── Provider-aware model selection ──
+    const [llmModel, setLlmModel] = useState("");
     const [imageProvider, setImageProvider] = useState<string>("dashscope");
     const [videoProvider, setVideoProvider] = useState<string>("dashscope");
+    const [openaiLLMModels, setOpenaiLLMModels] = useState<{id: string; name: string}[]>([]);
     const [openaiImageModels, setOpenaiImageModels] = useState<{id: string; name: string}[]>([]);
     const [openaiVideoModels, setOpenaiVideoModels] = useState<{id: string; name: string}[]>([]);
+    const [syncingLLMModels, setSyncingLLMModels] = useState(false);
     const [syncingImageModels, setSyncingImageModels] = useState(false);
     const [syncingVideoModels, setSyncingVideoModels] = useState(false);
+    const [llmModelFilter, setLlmModelFilter] = useState("");
     const [imageModelFilter, setImageModelFilter] = useState("");
     const [videoModelFilter, setVideoModelFilter] = useState("");
 
@@ -62,13 +66,15 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
     useEffect(() => {
         if (!isOpen) return;
         api.getEnvConfig().then((cfg) => {
+            setLlmModel(String(cfg.LLM_MODEL || ""));
             setImageProvider(String(cfg.IMAGE_PROVIDER || "dashscope"));
             setVideoProvider(String(cfg.VIDEO_PROVIDER || "dashscope"));
         }).catch(() => {});
     }, [isOpen]);
 
-    const syncModels = async (type: "image" | "video") => {
-        if (type === "image") setSyncingImageModels(true);
+    const syncModels = async (type: "llm" | "image" | "video") => {
+        if (type === "llm") setSyncingLLMModels(true);
+        else if (type === "image") setSyncingImageModels(true);
         else setSyncingVideoModels(true);
         try {
             const res = await api.syncOpenAIModels(type);
@@ -76,12 +82,14 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                 id: m.id,
                 name: m.id,
             }));
-            if (type === "image") setOpenaiImageModels(models);
+            if (type === "llm") setOpenaiLLMModels(models);
+            else if (type === "image") setOpenaiImageModels(models);
             else setOpenaiVideoModels(models);
         } catch (e: any) {
             alert(`Failed to sync models: ${e?.message || e}`);
         } finally {
-            if (type === "image") setSyncingImageModels(false);
+            if (type === "llm") setSyncingLLMModels(false);
+            else if (type === "image") setSyncingImageModels(false);
             else setSyncingVideoModels(false);
         }
     };
@@ -115,6 +123,7 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                 undefined,
                 r2vModel,
             );
+            await api.saveEnvConfig({ LLM_MODEL: llmModel });
             updateProject(currentProject.id, updated);
             onClose();
         } catch (error) {
@@ -128,6 +137,15 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
     if (!isOpen) return null;
 
     // ── Resolve model lists per provider ──
+    const resolveLLMModels = () => {
+        return openaiLLMModels.length > 0 ? openaiLLMModels : [
+            { id: "gpt-4o", name: "GPT-4o" },
+            { id: "gpt-4o-mini", name: "GPT-4o Mini" },
+            { id: "deepseek-chat", name: "DeepSeek Chat" },
+            { id: "deepseek-reasoner", name: "DeepSeek Reasoner" },
+        ];
+    };
+
     const resolveImageModels = () => {
         if (imageProvider === "openai") {
             return openaiImageModels.length > 0 ? openaiImageModels : [
@@ -152,6 +170,16 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
     const showVideoSync = videoProvider === "openai";
     const showImageComfyUI = imageProvider === "comfyui";
     const showVideoComfyUI = videoProvider === "comfyui";
+
+    const filteredLLMModels = (() => {
+        let models = resolveLLMModels().filter(m =>
+            !llmModelFilter || m.id.toLowerCase().includes(llmModelFilter.toLowerCase()) || m.name.toLowerCase().includes(llmModelFilter.toLowerCase())
+        );
+        if (llmModel && !models.some(m => m.id === llmModel)) {
+            models.unshift({ id: llmModel, name: llmModel });
+        }
+        return models;
+    })();
 
     const filteredImageModels = (() => {
         let models = resolveImageModels().filter(m =>
@@ -217,6 +245,71 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
 
                     {/* Content — scrollable */}
                     <div className="flex-1 overflow-y-auto p-5 space-y-6">
+                        {/* LLM Section */}
+                        <div className="space-y-4">
+                            <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+                                <MessageSquareCode size={16} className="text-amber-400" />
+                                <span>LLM · 语言模型</span>
+                            </div>
+                            <p className="text-xs text-text-muted">
+                                全局语言模型默认值，用于脚本分析、分镜润色、视频提示词润色等文本任务。
+                            </p>
+                            <div className="space-y-2">
+                                <label className="text-xs text-text-secondary">{t("model")}</label>
+                                <div className="flex items-center gap-2 mb-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => syncModels("llm")}
+                                        disabled={syncingLLMModels}
+                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-glass-border bg-surface text-text-secondary hover:text-foreground transition-colors disabled:opacity-50"
+                                    >
+                                        {syncingLLMModels ? (
+                                            <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-current" />
+                                        ) : (
+                                            <RefreshCw size={12} />
+                                        )}
+                                        {syncingLLMModels ? "Syncing..." : "Sync from API"}
+                                    </button>
+                                    <span className="text-[10px] text-text-muted">{openaiLLMModels.length > 0 ? `${openaiLLMModels.length} loaded` : "Defaults"}</span>
+                                    {resolveLLMModels().length > 10 && (
+                                        <div className="relative flex-1 max-w-[200px] ml-auto">
+                                            <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                                            <input
+                                                type="text"
+                                                value={llmModelFilter}
+                                                onChange={(e) => setLlmModelFilter(e.target.value)}
+                                                placeholder="Filter models..."
+                                                className="w-full pl-7 pr-2 py-1 text-[11px] bg-input-bg border border-glass-border rounded-md text-text-secondary placeholder-text-muted focus:outline-none focus:border-primary/50"
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {filteredLLMModels.map((model) => (
+                                        <button
+                                            key={model.id}
+                                            onClick={() => setLlmModel(model.id)}
+                                            className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${
+                                                llmModel === model.id
+                                                    ? 'border-amber-500/50 bg-amber-500/10'
+                                                    : 'border-glass-border hover:border-glass-border bg-glass'
+                                            }`}
+                                        >
+                                            {llmModel === model.id && (
+                                                <div className="absolute top-2 right-2">
+                                                    <Check size={14} className="text-amber-400" />
+                                                </div>
+                                            )}
+                                            <span className="text-sm font-medium text-foreground">{model.name}</span>
+                                            <span className="text-xs text-text-muted">{model.id}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="border-t border-glass-border" />
+
                         {/* T2I Section */}
                         <div className="space-y-4">
                             <div className="flex items-center gap-2 text-sm font-bold text-foreground">
