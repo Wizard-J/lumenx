@@ -125,7 +125,7 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
                 { id: "dall-e-2", name: "DALL·E 2" },
             ];
         }
-        return SERIES_IMAGE_MODELS.map(m => ({ id: m.id, name: m.name }));
+        return SERIES_IMAGE_MODELS.map(m => ({ id: m.id, name: m.name, description: (m as any).description || "" }));
     };
     const resolveI2VModels = () => {
         if (videoProvider === "openai") {
@@ -134,7 +134,7 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
                 { id: "veo-3.1", name: "Veo 3.1" },
             ];
         }
-        return SERIES_I2V_MODELS.map(m => ({ id: m.id, name: m.name }));
+        return SERIES_I2V_MODELS.map(m => ({ id: m.id, name: m.name, description: (m as any).description || "" }));
     };
 
     const showImageSync = imageProvider === "openai";
@@ -147,7 +147,7 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
             !imageFilter || m.id.toLowerCase().includes(imageFilter.toLowerCase()) || m.name.toLowerCase().includes(imageFilter.toLowerCase())
         );
         if (t2iModel && !models.some(m => m.id === t2iModel)) {
-            models.unshift({ id: t2iModel, name: t2iModel });
+            models.unshift({ id: t2iModel, name: t2iModel, description: "" });
         }
         return models;
     })();
@@ -156,7 +156,7 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
             !videoFilter || m.id.toLowerCase().includes(videoFilter.toLowerCase()) || m.name.toLowerCase().includes(videoFilter.toLowerCase())
         );
         if (i2vModel && !models.some(m => m.id === i2vModel)) {
-            models.unshift({ id: i2vModel, name: i2vModel });
+            models.unshift({ id: i2vModel, name: i2vModel, description: "" });
         }
         return models;
     })();
@@ -243,7 +243,7 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
                                                             className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${t2iModel === model.id ? 'border-blue-500/50 bg-blue-500/10' : 'border-glass-border hover:border-glass-border bg-glass'}`}>
                                                             {t2iModel === model.id && (<div className="absolute top-2 right-2"><Check size={14} className="text-blue-400" /></div>)}
                                                             <span className="text-sm font-medium text-foreground">{model.name}</span>
-                                                            <span className="text-xs text-text-muted">{model.id}</span>
+                                                            <span className="text-xs text-text-muted">{(model as any).description || model.id}</span>
                                                         </button>
                                                     ))}
                                                 </div>
@@ -291,7 +291,7 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
                                                             className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${i2vModel === model.id ? 'border-purple-500/50 bg-purple-500/10' : 'border-glass-border hover:border-glass-border bg-glass'}`}>
                                                             {i2vModel === model.id && (<div className="absolute top-2 right-2"><Check size={14} className="text-purple-400" /></div>)}
                                                             <span className="text-sm font-medium text-foreground">{model.name}</span>
-                                                            <span className="text-xs text-text-muted">{model.id}</span>
+                                                            <span className="text-xs text-text-muted">{(model as any).description || model.id}</span>
                                                         </button>
                                                     ))}
                                                 </div>
