@@ -570,6 +570,14 @@ class ScriptProcessor:
         IMPORTANT: 
         - All descriptive content (names, descriptions) MUST be in CHINESE (Simplified Chinese).
         - Extract ONLY characters, scenes, and props.
+        - All visual descriptions MUST be safe for AI image generation APIs. Absolutely avoid:
+          * Blood, gore, exposed organs, wounds, dismemberment, or any graphic violence.
+          * Sexual content, nudity, or suggestive descriptions.
+          * If a character has injuries or mutations, describe them abstractly (e.g. "scarred skin",
+            "cracked carapace", "battle marks", "twisted form") — never with graphic detail.
+          * For creatures/monsters, describe their shape, texture, color, and silhouette rather
+            than injuries or visceral states.
+          * Keep all descriptions within mainstream AI generation safety guidelines.
         
         Output strictly in valid JSON format with the following structure:
         {{
@@ -577,7 +585,7 @@ class ScriptProcessor:
                 {{
                     "id": "char_001",
                     "name": "Character Name (e.g. '叶墨', '叶墨 (古装)')",
-                    "description": "Visual description (hair, eyes, build, distinct features). DO NOT include specific facial expressions (e.g. sad, angry) or temporary actions (e.g. running, crying). Focus on permanent physical traits.",
+                    "description": "Visual description (hair, eyes, build, distinct features). DO NOT include specific facial expressions (e.g. sad, angry) or temporary actions (e.g. running, crying). Focus on permanent physical traits. Keep content safe: no gore, blood, organs, or graphic violence. Describe scars/injuries abstractly.",
                     "age": "Age estimate (e.g. '25')",
                     "gender": "Gender",
                     "clothing": "Default outfit description. If a character changes outfits significantly (e.g. from casual to wedding dress), create a separate character entry for each outfit variant with a distinct name (e.g. 'Name (Outfit)').",
