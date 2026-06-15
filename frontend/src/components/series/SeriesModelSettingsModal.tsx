@@ -59,7 +59,12 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
                 if (String(cfg.IMAGE_PROVIDER || "") === "openai") syncModels("image");
                 if (String(cfg.VIDEO_PROVIDER || "") === "openai") syncModels("video");
                 
-                const resolvedSettings = resolveModelSettings(data, 'series_settings');
+                // Merge global settings from localStorage as base, series overrides on top
+                const stored = typeof window !== 'undefined' ? localStorage.getItem("lumenx_default_model_settings") : null;
+                let globalSettings: any = {};
+                if (stored) { try { globalSettings = JSON.parse(stored); } catch {} }
+                const mergedData = { ...globalSettings, ...data };
+                const resolvedSettings = resolveModelSettings(mergedData, 'series_settings');
                 setT2iModel(resolvedSettings.t2i_model);
                 setI2iModel(resolvedSettings.i2i_model);
                 setI2vModel(resolvedSettings.i2v_model);
@@ -237,7 +242,7 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
                                                         )}
                                                     </div>
                                                 )}
-                                                <div className="grid grid-cols-2 gap-2">
+                                                <div className="max-h-[280px] overflow-y-auto pr-1 grid grid-cols-2 gap-2">
                                                     {filteredImageModels.map((model) => (
                                                         <button key={model.id} onClick={() => { setT2iModel(model.id); setI2iModel(model.id); }}
                                                             className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${t2iModel === model.id ? 'border-blue-500/50 bg-blue-500/10' : 'border-glass-border hover:border-glass-border bg-glass'}`}>
@@ -285,7 +290,7 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
                                                         )}
                                                     </div>
                                                 )}
-                                                <div className="grid grid-cols-2 gap-2">
+                                                <div className="max-h-[280px] overflow-y-auto pr-1 grid grid-cols-2 gap-2">
                                                     {filteredI2VModels.map((model) => (
                                                         <button key={model.id} onClick={() => setI2vModel(model.id)}
                                                             className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${i2vModel === model.id ? 'border-purple-500/50 bg-purple-500/10' : 'border-glass-border hover:border-glass-border bg-glass'}`}>
@@ -322,9 +327,9 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
                                                 </div>
                                                 <div className="flex flex-wrap gap-1">
                                                     {ASPECT_RATIOS.map((ratio) => (
-                                                        <button key={ratio.value} onClick={() => item.setter(ratio.value)}
-                                                            className={`px-2.5 py-1 text-xs rounded-md border transition-all ${item.value === ratio.value ? 'border-emerald-500/50 bg-emerald-500/10 text-foreground' : 'border-glass-border hover:border-glass-border text-text-secondary'}`}>
-                                                            {ratio.label}
+                                                        <button key={ratio.id} onClick={() => item.setter(ratio.id)}
+                                                            className={`px-2.5 py-1 text-xs rounded-md border transition-all ${item.value === ratio.id ? 'border-emerald-500/50 bg-emerald-500/10 text-foreground' : 'border-glass-border hover:border-glass-border text-text-secondary'}`}>
+                                                            {ratio.name}
                                                         </button>
                                                     ))}
                                                 </div>
