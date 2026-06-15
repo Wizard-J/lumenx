@@ -901,15 +901,10 @@ export default function SettingsPage() {
                         { id: "deepseek-reasoner", name: "DeepSeek Reasoner" },
                     ];
                     const baseModels = openaiLLMModels.length > 0 ? openaiLLMModels : defaults;
-                    // Move selected model to front for easy access
-                    if (config.LLM_MODEL) {
-                      const idx = baseModels.findIndex(m => m.id === config.LLM_MODEL);
-                      if (idx > 0) {
-                        const [selected] = baseModels.splice(idx, 1);
-                        baseModels.unshift(selected);
-                      } else if (idx === -1) {
-                        baseModels.unshift({ id: config.LLM_MODEL, name: config.LLM_MODEL });
-                      }
+                    // On initial load, move saved model to front. On subsequent
+                    // clicks the list stays stable so the UI doesn't jump.
+                    if (config.LLM_MODEL && !baseModels.some(m => m.id === config.LLM_MODEL)) {
+                      baseModels.unshift({ id: config.LLM_MODEL, name: config.LLM_MODEL });
                     }
                     return baseModels.filter(m => !llmModelFilter || m.id.toLowerCase().includes(llmModelFilter.toLowerCase()) || m.name.toLowerCase().includes(llmModelFilter.toLowerCase()));
                   })().map((model) => (
@@ -988,15 +983,9 @@ export default function SettingsPage() {
                     const baseModels = config.IMAGE_PROVIDER === "openai"
                       ? (openaiImageModels.length > 0 ? openaiImageModels : defaults)
                       : GLOBAL_IMAGE_MODELS;
-                    // Move selected model to front for easy access
-                    if (modelSettings.t2i_model) {
-                      const idx = baseModels.findIndex(m => m.id === modelSettings.t2i_model);
-                      if (idx > 0) {
-                        const [selected] = baseModels.splice(idx, 1);
-                        baseModels.unshift(selected);
-                      } else if (idx === -1) {
-                        baseModels.unshift({ id: modelSettings.t2i_model, name: modelSettings.t2i_model });
-                      }
+                    // On initial load, if saved model not in list, prepend it.
+                    if (modelSettings.t2i_model && !baseModels.some(m => m.id === modelSettings.t2i_model)) {
+                      baseModels.unshift({ id: modelSettings.t2i_model, name: modelSettings.t2i_model });
                     }
                     return baseModels.filter(m => !imageModelFilter || m.id.toLowerCase().includes(imageModelFilter.toLowerCase()) || m.name.toLowerCase().includes(imageModelFilter.toLowerCase()));
                   })().map((model) => (
@@ -1096,15 +1085,9 @@ export default function SettingsPage() {
                     const baseModels = config.VIDEO_PROVIDER === "openai"
                       ? (openaiVideoModels.length > 0 ? openaiVideoModels : defaults)
                       : GLOBAL_I2V_MODELS;
-                    // Move selected model to front for easy access
-                    if (modelSettings.i2v_model) {
-                      const idx = baseModels.findIndex(m => m.id === modelSettings.i2v_model);
-                      if (idx > 0) {
-                        const [selected] = baseModels.splice(idx, 1);
-                        baseModels.unshift(selected);
-                      } else if (idx === -1) {
-                        baseModels.unshift({ id: modelSettings.i2v_model, name: modelSettings.i2v_model });
-                      }
+                    // On initial load, if saved model not in list, prepend it.
+                    if (modelSettings.i2v_model && !baseModels.some(m => m.id === modelSettings.i2v_model)) {
+                      baseModels.unshift({ id: modelSettings.i2v_model, name: modelSettings.i2v_model });
                     }
                     return baseModels.filter(m => !videoModelFilter || m.id.toLowerCase().includes(videoModelFilter.toLowerCase()) || m.name.toLowerCase().includes(videoModelFilter.toLowerCase()));
                   })().map((model) => (

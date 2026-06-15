@@ -139,10 +139,10 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
         let models = resolveImageModels().filter(m =>
             !imageModelFilter || m.id.toLowerCase().includes(imageModelFilter.toLowerCase()) || m.name.toLowerCase().includes(imageModelFilter.toLowerCase())
         );
-        if (t2iModel) {
-            const idx = models.findIndex(m => m.id === t2iModel);
-            if (idx > 0) { const [s] = models.splice(idx, 1); models.unshift(s); }
-            else if (idx === -1) models.unshift({ id: t2iModel, name: t2iModel });
+        // Only prepend if the selected model is missing from the list (e.g. OpenAI API model).
+        // Don't reorder on click — that causes a jarring UI jump.
+        if (t2iModel && !models.some(m => m.id === t2iModel)) {
+            models.unshift({ id: t2iModel, name: t2iModel });
         }
         return models;
     })();
@@ -150,10 +150,10 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
         let models = resolveI2VModels().filter(m =>
             !videoModelFilter || m.id.toLowerCase().includes(videoModelFilter.toLowerCase()) || m.name.toLowerCase().includes(videoModelFilter.toLowerCase())
         );
-        if (i2vModel) {
-            const idx = models.findIndex(m => m.id === i2vModel);
-            if (idx > 0) { const [s] = models.splice(idx, 1); models.unshift(s); }
-            else if (idx === -1) models.unshift({ id: i2vModel, name: i2vModel });
+        // Only prepend if the selected model is missing from the list (e.g. OpenAI API model).
+        // Don't reorder on click — that causes a jarring UI jump.
+        if (i2vModel && !models.some(m => m.id === i2vModel)) {
+            models.unshift({ id: i2vModel, name: i2vModel });
         }
         return models;
     })();
