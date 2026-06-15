@@ -78,8 +78,20 @@ export interface EnvConfigPayload {
     KLING_ACCESS_KEY?: string;
     KLING_SECRET_KEY?: string;
     VIDU_API_KEY?: string;
+    LLM_PROVIDER?: string;
+    LLM_API_KEY?: string;
+    LLM_MODEL?: string;
+    IMAGE_PROVIDER?: string;
+    IMAGE_API_KEY?: string;
+    IMAGE_BASE_URL?: string;
+    IMAGE_MODEL?: string;
+    VIDEO_PROVIDER?: string;
+    VIDEO_API_KEY?: string;
+    VIDEO_BASE_URL?: string;
+    VIDEO_MODEL?: string;
+    COMFYUI_BASE_URL?: string;
+    COMFYUI_API_KEY?: string;
     endpoint_overrides?: Record<string, string>;
-    [key: string]: string | Record<string, string> | undefined;
 }
 
 // R2V v2 Phase 4 — Cross-episode reconcile types

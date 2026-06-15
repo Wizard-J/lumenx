@@ -202,7 +202,7 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                 <h2 className="text-lg font-bold text-foreground">{t("genSettings")}</h2>
                                 <p className="text-xs text-text-muted">
                                     {currentProject
-                                        ? `Project: ${currentProject.name}`
+                                        ? `Project: ${currentProject.title}`
                                         : t("noProjectSelected")}
                                 </p>
                             </div>

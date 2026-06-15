@@ -278,6 +278,12 @@ function AssetContentPanel({
   const [workbenchEntity, setWorkbenchEntity] = useState<{ id: string; kind: "character" | "scene" | "prop" } | null>(null);
 
   const assetTypeSingular = tab === "characters" ? "character" : tab === "scenes" ? "scene" : "prop";
+  const hasGeneratedImage = (asset: Character | Scene | Prop) => {
+    if (tab === "characters") {
+      return ((asset as Character).full_body_asset?.variants?.length ?? 0) > 0;
+    }
+    return ((asset as Scene | Prop).image_asset?.variants?.length ?? 0) > 0;
+  };
 
 
 
@@ -380,7 +386,9 @@ function AssetContentPanel({
               visible: { transition: { staggerChildren: 0.04 } },
             }}
           >
-            {assets.map((asset) => (
+            {assets.map((asset) => {
+              const generated = hasGeneratedImage(asset);
+              return (
               <motion.div
                 key={asset.id}
                 variants={{
@@ -402,7 +410,7 @@ function AssetContentPanel({
                     onClick={(e) => { e.stopPropagation(); handleGenerateSingle(asset.id); }}
                     disabled={generatingIds.has(asset.id)}
                     className={`absolute top-2 right-2 p-1.5 rounded-lg opacity-0 group-hover/card:opacity-100 transition-all ${
-                      (asset.full_body_asset?.variants?.length > 0 || asset.image_asset?.variants?.length > 0)
+                      generated
                         ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
                         : 'bg-black/60 text-amber-400 hover:bg-black/80'
                     } ${generatingIds.has(asset.id) ? 'opacity-100' : ''}`}
@@ -410,7 +418,7 @@ function AssetContentPanel({
                   >
                     {generatingIds.has(asset.id) ? (
                       <Loader2 size={14} className="animate-spin" />
-                    ) : (asset.full_body_asset?.variants?.length > 0 || asset.image_asset?.variants?.length > 0) ? (
+                    ) : generated ? (
                       <RefreshCw size={14} />
                     ) : (
                       <Sparkles size={14} />
@@ -418,7 +426,8 @@ function AssetContentPanel({
                   </button>
                 </div>
               </motion.div>
-            ))}
+              );
+            })}
           </motion.div>
         )}
       </div>
@@ -431,7 +440,6 @@ function AssetContentPanel({
         seriesId={seriesId}
         onSeriesUpdated={(updated: Series) => {
           onSeriesUpdate(updated);
-          setSeries(updated);
         }}
         onClose={() => setWorkbenchEntity(null)}
       />
