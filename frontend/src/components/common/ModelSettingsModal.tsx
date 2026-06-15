@@ -79,7 +79,7 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
         setSceneAspectRatio(normalizedSettings.scene_aspect_ratio);
         setPropAspectRatio(normalizedSettings.prop_aspect_ratio);
         setStoryboardAspectRatio(normalizedSettings.storyboard_aspect_ratio);
-    }, [currentProject?.model_settings]);
+    }, [isOpen, currentProject?.model_settings]);
 
     const handleSave = async () => {
         if (!currentProject) return;
