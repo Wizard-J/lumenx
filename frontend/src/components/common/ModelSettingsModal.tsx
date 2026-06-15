@@ -135,12 +135,28 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
     const showImageComfyUI = imageProvider === "comfyui";
     const showVideoComfyUI = videoProvider === "comfyui";
 
-    const filteredImageModels = resolveImageModels().filter(m =>
-        !imageModelFilter || m.id.toLowerCase().includes(imageModelFilter.toLowerCase()) || m.name.toLowerCase().includes(imageModelFilter.toLowerCase())
-    );
-    const filteredI2VModels = resolveI2VModels().filter(m =>
-        !videoModelFilter || m.id.toLowerCase().includes(videoModelFilter.toLowerCase()) || m.name.toLowerCase().includes(videoModelFilter.toLowerCase())
-    );
+    const filteredImageModels = (() => {
+        let models = resolveImageModels().filter(m =>
+            !imageModelFilter || m.id.toLowerCase().includes(imageModelFilter.toLowerCase()) || m.name.toLowerCase().includes(imageModelFilter.toLowerCase())
+        );
+        if (t2iModel) {
+            const idx = models.findIndex(m => m.id === t2iModel);
+            if (idx > 0) { const [s] = models.splice(idx, 1); models.unshift(s); }
+            else if (idx === -1) models.unshift({ id: t2iModel, name: t2iModel });
+        }
+        return models;
+    })();
+    const filteredI2VModels = (() => {
+        let models = resolveI2VModels().filter(m =>
+            !videoModelFilter || m.id.toLowerCase().includes(videoModelFilter.toLowerCase()) || m.name.toLowerCase().includes(videoModelFilter.toLowerCase())
+        );
+        if (i2vModel) {
+            const idx = models.findIndex(m => m.id === i2vModel);
+            if (idx > 0) { const [s] = models.splice(idx, 1); models.unshift(s); }
+            else if (idx === -1) models.unshift({ id: i2vModel, name: i2vModel });
+        }
+        return models;
+    })();
 
     return (
         <AnimatePresence>
