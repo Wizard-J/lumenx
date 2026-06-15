@@ -109,7 +109,7 @@ class LLMAdapter:
 
     def _get_default_model(self) -> str:
         if self.provider == "openai":
-            return os.getenv("OPENAI_MODEL", "gpt-4o")
+            return _get_llm_setting("LLM_MODEL", "OPENAI_MODEL", default="gpt-4o")
         return self._DASHSCOPE_MODEL_FALLBACK_CHAIN[0]
 
     def chat(
@@ -142,6 +142,7 @@ class LLMAdapter:
                 is_model_unavailable = any(k in msg for k in (
                     "model not found", "invalidmodel", "model_not_found",
                     "no such model", "not supported", "modelnotfound", "404",
+                    "does not exist",
                 ))
                 last_err = e
                 if is_model_unavailable and idx < len(self._DASHSCOPE_MODEL_FALLBACK_CHAIN) - 1:
