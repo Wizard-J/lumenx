@@ -132,7 +132,8 @@ You must refer to these assets by their Image ID (e.g., "Image 1", "Image 2") wh
 2.  **Natural Flow**: Do not just concatenate. Write a coherent sentence or paragraph describing the visual scene.
 3.  **Strict Adherence**: DO NOT hallucinate emotions, actions, or plot details not present in the draft. If the draft says "sitting", do NOT add "sadly" or "happily" unless specified. Keep the narrative neutral and accurate.
 4.  **Enhance Detail**: Add visual details (lighting, atmosphere, emotion) based on the draft prompt, but keep the asset references clear.
-5.  **No Explanations**: Return ONLY the polished prompt text.
+5.  **Content Safety**: Absolutely no blood, gore, organs, wounds, or graphic violence. Describe combat/fighting abstractly (e.g. "clash of forces", "dynamic battle poses", "energy sparks").
+6.  **No Explanations**: Return ONLY the polished prompt text.
 6.  **Bilingual Output**:
     - **Prompt CN**: Fluent Chinese, strictly following the content of the draft.
     - **Prompt EN**: Natural English description, prioritizing visual atmosphere.
@@ -163,6 +164,7 @@ GUIDELINES:
 2.  **Motion Description**: Describe the dynamic action of elements (characters, objects) in the image. Use adjectives to control speed and intensity (e.g., "slowly", "rapidly", "subtle").
 3.  **Camera Movement**: Explicitly state camera moves if needed (e.g., "Zoom in", "Pan left", "Static camera").
 4.  **Clarity**: Be concise but descriptive. Focus on visual movement.
+5.  **Content Safety**: Absolutely no blood, gore, organs, wounds, or graphic violence.
 
 EXAMPLES:
 
@@ -198,6 +200,7 @@ Rewrite the user's input prompt into a structured format strictly following thes
 3. **DIALOGUE FORMAT**: If the prompt includes dialogue, format it as: 'character1 says: "dialogue content"'
 4. **PRESERVE**: Keep the original intent and emotional tone.
 5. **ENHANCE**: Add visual details for dramatic effect (lighting, speed descriptors like "slowly", "rapidly").
+6. **CONTENT SAFETY**: Absolutely no blood, gore, organs, wounds, dismemberment, or graphic violence. Describe conflict abstractly.
 
 # Output Format
 Return STRICTLY a JSON object:
@@ -835,6 +838,7 @@ CRITICAL STYLE GUIDELINES:
 6. **角度枚举**: 必须从以下选项中选择: 平视 | 俯视 | 仰视 | 鸟瞰 | 蚁视 | 过肩 | 荷兰角 | 主观视角
 7. **时长**: 基于动作复杂度估算整数秒（范围 3-10 秒）。简单静态 3-4s，标准动作 5-6s，复杂/情绪镜头 7-10s。
 8. **对白**: 如果帧中有角色说话，dialogue 和 speaker 必须填写。一帧只能有一个说话人——多人对话必须拆为多帧。
+9. **内容安全**: action_summary 必须避免血腥/暴力/裸露描述。战斗场景用抽象措辞（如"激烈交锋""身影交错""被击退"），不描述伤口、流血、器官等画面。
 
 # 剧本格式说明
 - **场景标题行**: `1-1 地点名称 [时间] [内/外]`
@@ -1039,7 +1043,8 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
 
 # Rules
 1. visual_description must be fluent Chinese, covering environment + performance + action + lighting feel.
-2. dialogue_structured is null if this frame has no dialogue.
+2. Keep visual_description content-safe for AI image generation: no blood, gore, wounds, organs, or graphic violence. Describe combat abstractly (e.g. "身影交错", "能量碰撞", "激烈的战斗").
+3. dialogue_structured is null if this frame has no dialogue.
 3. audio_note can be null.
 4. blocking.stage should cover all visible characters and key props.
 5. Maintain continuity with adjacent frames.
