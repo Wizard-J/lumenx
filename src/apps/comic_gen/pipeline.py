@@ -1368,8 +1368,8 @@ class ComicGenPipeline:
         self._save_data()
         return script
 
-    def refine_frame(self, script_id: str, frame_id: str) -> Optional[StoryboardFrame]:
-        """Phase 2: Refine a single coarse frame into a rich frame."""
+    def _refine_frame_inner(self, script_id: str, frame_id: str) -> Optional[StoryboardFrame]:
+        """Core refinement logic (no DB save). Thread-safe for batch parallelism."""
         from .prompt_assembly import assemble_prompt, sync_dialogue_to_tts
         from .models import DialogueStructured, CameraMovementData, Blocking, AudioNote, LightingData, StageSubject
 
@@ -1505,20 +1505,28 @@ class ComicGenPipeline:
         sync_dialogue_to_tts(frame)
         frame.assembled_prompt = assemble_prompt(frame, all_characters)
         frame.updated_at = time.time()
-
-        self._save_data()
         return frame
 
+    def refine_frame(self, script_id: str, frame_id: str) -> Optional[StoryboardFrame]:
+        """Phase 2: Refine a single coarse frame into a rich frame (with DB save)."""
+        result = self._refine_frame_inner(script_id, frame_id)
+        self._save_data()
+        return result
+
     def refine_batch_generator(self, script_id: str):
-        """Phase 2: Generator that yields SSE events while refining all frames."""
+        """Phase 2: Generator that yields SSE events while refining all frames.
+        Frames are refined in parallel (max 3 concurrent) to reduce wait time."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         script = self.scripts.get(script_id)
         if not script:
             raise ValueError("Script not found")
 
         total = len(script.frames)
-        success = 0
-        failed = 0
+        if total == 0:
+            yield ("batch_complete", {"total": 0, "success": 0, "failed": 0})
+            return
 
+        # Signal all starts first so UI can show progress bar
         for idx, frame in enumerate(script.frames):
             yield ("frame_refine_start", {
                 "frame_id": frame.id,
@@ -1526,23 +1534,42 @@ class ComicGenPipeline:
                 "total": total,
                 "label": frame.action_description[:40] if frame.action_description else f"Frame {idx+1}",
             })
-            try:
-                self.refine_frame(script_id, frame.id)
-                success += 1
-                yield ("frame_refine_complete", {
-                    "frame_id": frame.id,
-                    "frame_index": idx,
-                    "total": total,
-                })
-            except Exception as exc:
-                failed += 1
-                logger.error(f"[refine_batch] frame={frame.id} error={exc}")
-                yield ("frame_refine_error", {
-                    "frame_id": frame.id,
-                    "frame_index": idx,
-                    "error": str(exc),
-                })
 
+        # Refine frames in parallel (max 3 concurrent LLM calls)
+        success = 0
+        failed = 0
+        max_workers = min(3, total)
+
+        def _refine_one(entry):
+            idx, frame = entry
+            try:
+                self._refine_frame_inner(script_id, frame.id)
+                return ("ok", idx, frame.id)
+            except Exception as exc:
+                logger.error(f"[refine_batch] frame={frame.id} error={exc}")
+                return ("err", idx, frame.id, str(exc))
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_refine_one, (idx, frame)): (idx, frame)
+                for idx, frame in enumerate(script.frames)
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                if result[0] == "ok":
+                    _, idx, fid = result
+                    success += 1
+                    yield ("frame_refine_complete", {
+                        "frame_id": fid, "frame_index": idx, "total": total,
+                    })
+                else:
+                    _, idx, fid, err = result
+                    failed += 1
+                    yield ("frame_refine_error", {
+                        "frame_id": fid, "frame_index": idx, "error": err,
+                    })
+
+        self._save_data()
         yield ("batch_complete", {"total": total, "success": success, "failed": failed})
 
     def refine_frame_prompt(self, script_id: str, frame_id: str, raw_prompt: str, assets: List[Dict[str, Any]], feedback: str = "") -> Dict[str, Any]:
