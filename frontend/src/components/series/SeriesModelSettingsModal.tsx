@@ -59,11 +59,22 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
                 if (String(cfg.IMAGE_PROVIDER || "") === "openai") syncModels("image");
                 if (String(cfg.VIDEO_PROVIDER || "") === "openai") syncModels("video");
                 
-                // Merge global settings from localStorage as base, series overrides on top
+                // Merge global settings from localStorage as base, series overrides on top.
+                // The backend Pydantic ModelSettings always fills hardcoded defaults for new series,
+                // so we strip values that match DEFAULT_MODEL_SETTINGS to avoid overriding global prefs.
                 const stored = typeof window !== 'undefined' ? localStorage.getItem("lumenx_default_model_settings") : null;
                 let globalSettings: any = {};
                 if (stored) { try { globalSettings = JSON.parse(stored); } catch {} }
-                const mergedData = { ...globalSettings, ...data };
+                // Strip series settings that match hardcoded defaults (never explicitly saved)
+                const cleaned: any = {};
+                if (data) {
+                    for (const key of Object.keys(data)) {
+                        if (data[key] !== (DEFAULT_MODEL_SETTINGS as any)[key]) {
+                            cleaned[key] = data[key];
+                        }
+                    }
+                }
+                const mergedData = { ...globalSettings, ...cleaned };
                 const resolvedSettings = resolveModelSettings(mergedData, 'series_settings');
                 setT2iModel(resolvedSettings.t2i_model);
                 setI2iModel(resolvedSettings.i2i_model);

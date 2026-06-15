@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Settings, X, Image, Video, Film, Check, Layout, User, Building, Box, RefreshCw, Search } from 'lucide-react';
 import { useProjectStore, ASPECT_RATIOS } from '@/store/projectStore';
-import { resolveModelSettings, VIDEO_R2V_MODELS, DEFAULT_R2V_MODEL_ID, PROJECT_IMAGE_MODELS, PROJECT_I2V_MODELS } from '@/lib/modelCatalog';
+import { resolveModelSettings, DEFAULT_MODEL_SETTINGS, VIDEO_R2V_MODELS, DEFAULT_R2V_MODEL_ID, PROJECT_IMAGE_MODELS, PROJECT_I2V_MODELS } from '@/lib/modelCatalog';
 import { api } from '@/lib/api';
 import { useTranslations } from "next-intl";
 
@@ -18,7 +18,25 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
     const t = useTranslations("models");
     const tc = useTranslations("common");
     const updateProject = useProjectStore((state) => state.updateProject);
-    const resolvedSettings = resolveModelSettings(currentProject?.model_settings, 'project_settings');
+    // Merge global settings from localStorage as base, project overrides on top.
+    // The backend Pydantic ModelSettings always fills hardcoded defaults for new projects,
+    // so we strip values that match DEFAULT_MODEL_SETTINGS to avoid overriding global prefs.
+    const resolveWithGlobal = (projectSettings: any) => {
+        const stored = typeof window !== 'undefined' ? localStorage.getItem("lumenx_default_model_settings") : null;
+        let globalSettings: any = {};
+        if (stored) { try { globalSettings = JSON.parse(stored); } catch {} }
+        // Strip project settings that match hardcoded defaults (never explicitly saved)
+        const cleaned: any = {};
+        if (projectSettings) {
+            for (const key of Object.keys(projectSettings)) {
+                if (projectSettings[key] !== (DEFAULT_MODEL_SETTINGS as any)[key]) {
+                    cleaned[key] = projectSettings[key];
+                }
+            }
+        }
+        return resolveModelSettings({ ...globalSettings, ...cleaned }, 'project_settings');
+    };
+    const resolvedSettings = resolveWithGlobal(currentProject?.model_settings);
 
     const [t2iModel, setT2iModel] = useState(resolvedSettings.t2i_model);
     const [i2iModel, setI2iModel] = useState(resolvedSettings.i2i_model);
@@ -70,7 +88,7 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
 
     // Sync state when project changes
     useEffect(() => {
-        const normalizedSettings = resolveModelSettings(currentProject?.model_settings, 'project_settings');
+        const normalizedSettings = resolveWithGlobal(currentProject?.model_settings);
         setT2iModel(normalizedSettings.t2i_model);
         setI2iModel(normalizedSettings.i2i_model);
         setI2vModel(normalizedSettings.i2v_model);
