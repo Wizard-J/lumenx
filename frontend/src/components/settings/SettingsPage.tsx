@@ -221,6 +221,10 @@ export default function SettingsPage() {
     try {
       const data = await api.getEnvConfig();
       setConfig((prev) => normalizeEnvConfig(prev, data));
+      // Auto-sync models for openai-compatible providers
+      if (data.LLM_PROVIDER === "openai") syncOpenaiModels("llm");
+      if (data.IMAGE_PROVIDER === "openai") syncOpenaiModels("image");
+      if (data.VIDEO_PROVIDER === "openai") syncOpenaiModels("video");
     } catch {
       setLoadError("Failed to load configuration. Is the backend running?");
     } finally {
@@ -889,15 +893,20 @@ export default function SettingsPage() {
                   )}
                 </div>
                 <div className="max-h-[280px] overflow-y-auto pr-1 grid grid-cols-2 gap-2">
-                  {(openaiLLMModels.length > 0
-                    ? openaiLLMModels.filter(m => !llmModelFilter || m.id.toLowerCase().includes(llmModelFilter.toLowerCase()) || m.name.toLowerCase().includes(llmModelFilter.toLowerCase()))
-                    : [
+                  {(() => {
+                    const defaults = [
                         { id: "gpt-4o", name: "GPT-4o" },
                         { id: "gpt-4o-mini", name: "GPT-4o Mini" },
                         { id: "deepseek-chat", name: "DeepSeek Chat" },
                         { id: "deepseek-reasoner", name: "DeepSeek Reasoner" },
-                      ]
-                  ).map((model) => (
+                    ];
+                    const baseModels = openaiLLMModels.length > 0 ? openaiLLMModels : defaults;
+                    // Always include the currently configured model
+                    if (config.LLM_MODEL && !baseModels.some(m => m.id === config.LLM_MODEL)) {
+                      baseModels.unshift({ id: config.LLM_MODEL, name: config.LLM_MODEL });
+                    }
+                    return baseModels.filter(m => !llmModelFilter || m.id.toLowerCase().includes(llmModelFilter.toLowerCase()) || m.name.toLowerCase().includes(llmModelFilter.toLowerCase()));
+                  })().map((model) => (
                     <button
                       key={model.id}
                       onClick={() => {
@@ -964,14 +973,21 @@ export default function SettingsPage() {
                 </div>
               )}
               <div className="max-h-[280px] overflow-y-auto pr-1 grid grid-cols-2 gap-2">
-                {(config.IMAGE_PROVIDER === "openai"
-                  ? (openaiImageModels.length > 0 ? openaiImageModels.filter(m => !imageModelFilter || m.id.toLowerCase().includes(imageModelFilter.toLowerCase()) || m.name.toLowerCase().includes(imageModelFilter.toLowerCase())) : [
+                {(() => {
+                    const defaults = [
                       { id: "dall-e-3", name: "DALL·E 3" },
                       { id: "gpt-image-1", name: "GPT Image 1" },
                       { id: "gpt-image-2-pro", name: "GPT Image 2 Pro" },
-                    ])
-                  : GLOBAL_IMAGE_MODELS
-                ).map((model) => (
+                    ];
+                    const baseModels = config.IMAGE_PROVIDER === "openai"
+                      ? (openaiImageModels.length > 0 ? openaiImageModels : defaults)
+                      : GLOBAL_IMAGE_MODELS;
+                    // Always include the currently configured model
+                    if (config.IMAGE_MODEL && !baseModels.some(m => m.id === config.IMAGE_MODEL)) {
+                      baseModels.unshift({ id: config.IMAGE_MODEL, name: config.IMAGE_MODEL });
+                    }
+                    return baseModels.filter(m => !imageModelFilter || m.id.toLowerCase().includes(imageModelFilter.toLowerCase()) || m.name.toLowerCase().includes(imageModelFilter.toLowerCase()));
+                  })().map((model) => (
                   <button
                     key={model.id}
                     onClick={() => {
@@ -1060,13 +1076,20 @@ export default function SettingsPage() {
                   </div>
                 )}
                 <div className="mt-3 max-h-[280px] overflow-y-auto pr-1 grid grid-cols-2 gap-2">
-                  {(config.VIDEO_PROVIDER === "openai"
-                    ? (openaiVideoModels.length > 0 ? openaiVideoModels.filter(m => !videoModelFilter || m.id.toLowerCase().includes(videoModelFilter.toLowerCase()) || m.name.toLowerCase().includes(videoModelFilter.toLowerCase())) : [
+                  {(() => {
+                    const defaults = [
                         { id: "sora-2", name: "Sora 2" },
                         { id: "veo-3.1", name: "Veo 3.1" },
-                      ])
-                    : GLOBAL_I2V_MODELS
-                  ).map((model) => (
+                    ];
+                    const baseModels = config.VIDEO_PROVIDER === "openai"
+                      ? (openaiVideoModels.length > 0 ? openaiVideoModels : defaults)
+                      : GLOBAL_I2V_MODELS;
+                    // Always include the currently configured model
+                    if (config.VIDEO_MODEL && !baseModels.some(m => m.id === config.VIDEO_MODEL)) {
+                      baseModels.unshift({ id: config.VIDEO_MODEL, name: config.VIDEO_MODEL });
+                    }
+                    return baseModels.filter(m => !videoModelFilter || m.id.toLowerCase().includes(videoModelFilter.toLowerCase()) || m.name.toLowerCase().includes(videoModelFilter.toLowerCase()));
+                  })().map((model) => (
                     <button
                       key={model.id}
                       onClick={() => {
