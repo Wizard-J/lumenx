@@ -396,15 +396,15 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                         <div className="flex flex-wrap gap-1">
                                             {ASPECT_RATIOS.map((ratio) => (
                                                 <button
-                                                    key={ratio.value}
-                                                    onClick={() => item.setter(ratio.value)}
+                                                    key={ratio.id}
+                                                    onClick={() => item.setter(ratio.id)}
                                                     className={`px-2.5 py-1 text-xs rounded-md border transition-all ${
-                                                        item.value === ratio.value
+                                                        item.value === ratio.id
                                                             ? 'border-emerald-500/50 bg-emerald-500/10 text-foreground'
                                                             : 'border-glass-border hover:border-glass-border text-text-secondary'
                                                     }`}
                                                 >
-                                                    {ratio.label}
+                                                    {ratio.name}
                                                 </button>
                                             ))}
                                         </div>
