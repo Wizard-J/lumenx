@@ -453,7 +453,7 @@ export const useProjectStore = create<ProjectStore>()(
                         }
                     }
                 } catch (error) {
-                    console.error('Failed to fetch latest project data:', error);
+                    console.error("Failed to fetch latest project data:", error);
                     // Keep using cached version if fetch fails
                 }
             },

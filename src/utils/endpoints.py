@@ -6,6 +6,7 @@ PROVIDER_DEFAULTS = {
     "KLING": "https://api-beijing.klingai.com/v1",
     "VIDU": "https://api.vidu.cn/ent/v2",
     "COMFYUI": "http://localhost:8188",
+    "LLM": "https://api.openai.com/v1",
 }
 
 

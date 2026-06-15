@@ -1168,6 +1168,60 @@ def update_env_config(config: EnvConfig):
 
 
 @app.get("/projects/{script_id}")
+def get_project(script_id: str):
+    """Retrieves a project by ID. When the project belongs to a
+    Series, the response merges series-shared characters / scenes /
+    props on top of the episode-local lists. Each item carries a
+    `source` field ("series" | "episode") so the frontend can
+    visually distinguish where the asset lives and route writes
+    appropriately (per A2 design decision — shared writes default to
+    the series side; local writes stay episode-side; the helper
+    `_find_asset_with_source` in pipeline routes mutations correctly).
+
+    Response model dropped from `Script` because the `source` field
+    is a presentation-layer concern (never persisted, derived from
+    container membership at read time)."""
+    script = pipeline.get_script(script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    payload = script.model_dump()
+
+    # Episode-local entries always carry source="episode".
+    for asset_list in (payload.get("characters", []),
+                      payload.get("scenes", []),
+                      payload.get("props", [])):
+        for item in asset_list:
+            item["source"] = "episode"
+
+    # Merge series-shared assets on top (any id not already present
+    # locally — episode-local overrides series). Without this step
+    # the user "loses" characters when switching between episodes of
+    # the same series, because the series shared pool isn't
+    # reflected on each episode's response.
+    if script.series_id:
+        series = pipeline.get_series(script.series_id)
+        if series:
+            ep_char_ids = {c.id for c in script.characters}
+            ep_scene_ids = {s.id for s in script.scenes}
+            ep_prop_ids = {p.id for p in script.props}
+            for ch in series.characters:
+                if ch.id not in ep_char_ids:
+                    d = ch.model_dump()
+                    d["source"] = "series"
+                    payload["characters"].append(d)
+            for sc in series.scenes:
+                if sc.id not in ep_scene_ids:
+                    d = sc.model_dump()
+                    d["source"] = "series"
+                    payload["scenes"].append(d)
+            for pr in series.props:
+                if pr.id not in ep_prop_ids:
+                    d = pr.model_dump()
+                    d["source"] = "series"
+                    payload["props"].append(d)
+    return signed_response(payload)
+
 
 @app.get("/config/sync-models")
 def sync_openai_models(type: str = "image"):
@@ -1179,7 +1233,7 @@ def sync_openai_models(type: str = "image"):
     Returns list of model IDs available at the configured endpoint.
     """
     import requests
-    if type not in ("image", "video"):
+    if type not in ("image", "video", "llm"):
         raise HTTPException(status_code=400, detail="type must be image or video")
 
     base_url = os.environ.get(f"{type.upper()}_BASE_URL") or "https://api.openai.com/v1"

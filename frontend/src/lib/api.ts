@@ -1106,7 +1106,7 @@ export const api = {
         return res.data;
     },
 
-    syncOpenAIModels: async (type: "image" | "video"): Promise<{ status: string; models: Array<{ id: string; owned_by: string }> }> => {
+    syncOpenAIModels: async (type: "image" | "video" | "llm"): Promise<{ status: string; models: Array<{ id: string; owned_by: string }> }> => {
         const res = await axios.get(`${API_URL}/config/sync-models`, {
             params: { type },
             timeout: 20000,

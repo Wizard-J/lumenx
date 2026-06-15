@@ -155,10 +155,14 @@ export default function SettingsPage() {
   const [syncingVideoModels, setSyncingVideoModels] = useState(false);
   const [imageModelFilter, setImageModelFilter] = useState("");
   const [videoModelFilter, setVideoModelFilter] = useState("");
+  const [openaiLLMModels, setOpenaiLLMModels] = useState<{id: string; name: string}[]>([]);
+  const [syncingLLMModels, setSyncingLLMModels] = useState(false);
+  const [llmModelFilter, setLLmModelFilter] = useState("");
 
-  const syncOpenaiModels = async (type: "image" | "video") => {
+  const syncOpenaiModels = async (type: "image" | "video" | "llm") => {
     if (type === "image") setSyncingImageModels(true);
-    else setSyncingVideoModels(true);
+    else if (type === "video") setSyncingVideoModels(true);
+    else setSyncingLLMModels(true);
     try {
       const res = await api.syncOpenAIModels(type);
       const models = (res.models || []).map((m: {id: string; owned_by: string}) => ({
@@ -166,12 +170,14 @@ export default function SettingsPage() {
         name: m.id,
       }));
       if (type === "image") setOpenaiImageModels(models);
-      else setOpenaiVideoModels(models);
+      else if (type === "video") setOpenaiVideoModels(models);
+      else setOpenaiLLMModels(models);
     } catch (e: any) {
       alert(`Failed to sync models: ${e?.message || e}`);
     } finally {
       if (type === "image") setSyncingImageModels(false);
-      else setSyncingVideoModels(false);
+      else if (type === "video") setSyncingVideoModels(false);
+      else setSyncingLLMModels(false);
     }
   };
 
@@ -315,7 +321,7 @@ export default function SettingsPage() {
     api: { title: "API Configuration", description: "Primary LLM, image, and video provider settings" },
     comfyui: { title: "ComfyUI", description: "Remote workflow server and workflow templates" },
     legacy: { title: "Legacy Providers", description: "DashScope, OSS mirror, and vendor-direct fallbacks" },
-    models: { title: "Default Models", description: "Provider-aware defaults for new projects" },
+    models: { title: "Default Models", description: "Provider-aware defaults for LLM, image, and video models" },
     prompts: { title: "Default Prompts", description: "Reusable prompt defaults for generation workflows" },
   };
   const activeSectionMeta = sectionMeta[activeSection];
@@ -496,13 +502,6 @@ export default function SettingsPage() {
                       </label>
                       <input type="text" value={config.endpoint_overrides?.LLM_BASE_URL ?? ""} onChange={(e) => handleEndpointChange("LLM_BASE_URL", e.target.value)} placeholder="https://api.openai.com/v1" className={inputClass} />
                     </div>
-                    <div>
-                      <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
-                        <span>Model</span>
-                        <span className="text-text-muted font-normal text-xs">default: gpt-4o</span>
-                      </label>
-                      <input type="text" value={config.LLM_MODEL} onChange={(e) => handleChange("LLM_MODEL", e.target.value)} placeholder="gpt-4o" className={inputClass} />
-                    </div>
                   </>
                 )}
               </div>
@@ -601,16 +600,6 @@ export default function SettingsPage() {
               )}
             </div>
 
-            <div className="flex justify-end">
-              <button
-                onClick={handleSaveApiConfig}
-                disabled={saving || loading}
-                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-foreground text-sm font-medium rounded-lg transition-all disabled:opacity-50"
-              >
-                {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                {saving ? "Saving..." : "Save Configuration"}
-              </button>
-            </div>
           </>
         )}
       </section>
@@ -855,18 +844,91 @@ export default function SettingsPage() {
           <div>
             <h2 className="text-lg font-bold text-foreground">{t("defaultModels")}</h2>
             <p className="text-xs text-text-secondary">
-              Default models for new projects. Models shown depend on the active provider selected above.
+              Default models for LLM, image, and video. Models shown depend on the active provider selected above.
             </p>
           </div>
         </div>
 
         <div className="space-y-5">
-          {/* ── Image Models ── */}
-          <div className="flex items-center gap-2 text-sm font-bold text-foreground">
-            <Image size={16} className="text-green-400" />
-            <span>Image Generation Model</span>
-            <span className="text-[10px] text-text-muted font-normal ml-1">(T2I / I2I)</span>
+          {/* ── LLM Models ── */}
+          <div>
+            <div className="flex items-center gap-2 text-sm font-bold text-foreground mb-3">
+              <MessageSquareCode size={16} className="text-amber-400" />
+              <span>Language Model</span>
+              <span className="text-[10px] text-text-muted font-normal ml-1">(LLM)</span>
+            </div>
+            {config.LLM_PROVIDER === "dashscope" ? (
+              <div className="bg-surface/50 border border-glass-border rounded-lg p-4 text-center">
+                <p className="text-sm text-text-secondary">DashScope LLM model is auto-selected by the backend.</p>
+                <p className="text-xs text-text-muted mt-1">Switch to OpenAI Compatible to select a specific model.</p>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => syncOpenaiModels("llm")}
+                    disabled={syncingLLMModels}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-glass-border bg-surface text-text-secondary hover:text-foreground transition-colors disabled:opacity-50"
+                  >
+                    {syncingLLMModels ? <RefreshCw size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                    {syncingLLMModels ? "Syncing..." : "Sync from API"}
+                  </button>
+                  <span className="text-[10px] text-text-muted">{openaiLLMModels.length > 0 ? `${openaiLLMModels.length} loaded` : "Defaults"}</span>
+                  {openaiLLMModels.length > 10 && (
+                    <div className="relative flex-1 max-w-[200px] ml-auto">
+                      <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" />
+                      <input
+                        type="text"
+                        value={llmModelFilter}
+                        onChange={(e) => setLLmModelFilter(e.target.value)}
+                        placeholder="Filter models..."
+                        className="w-full pl-7 pr-2 py-1 text-[11px] bg-input-bg border border-glass-border rounded-md text-text-secondary placeholder-text-muted focus:outline-none focus:border-primary/50"
+                      />
+                    </div>
+                  )}
+                </div>
+                <div className="max-h-[280px] overflow-y-auto pr-1 grid grid-cols-2 gap-2">
+                  {(openaiLLMModels.length > 0
+                    ? openaiLLMModels.filter(m => !llmModelFilter || m.id.toLowerCase().includes(llmModelFilter.toLowerCase()) || m.name.toLowerCase().includes(llmModelFilter.toLowerCase()))
+                    : [
+                        { id: "gpt-4o", name: "GPT-4o" },
+                        { id: "gpt-4o-mini", name: "GPT-4o Mini" },
+                        { id: "deepseek-chat", name: "DeepSeek Chat" },
+                        { id: "deepseek-reasoner", name: "DeepSeek Reasoner" },
+                      ]
+                  ).map((model) => (
+                    <button
+                      key={model.id}
+                      onClick={() => {
+                        // Update both modelSettings and env config
+                        setConfig((prev) => ({ ...prev, LLM_MODEL: model.id }));
+                      }}
+                      className={`relative flex flex-col items-start p-3 rounded-lg border transition-all text-left ${
+                        config.LLM_MODEL === model.id
+                          ? "border-amber-500/50 bg-amber-500/10"
+                          : "border-glass-border hover:border-glass-border bg-glass"
+                      }`}
+                    >
+                      {config.LLM_MODEL === model.id && (
+                        <div className="absolute top-2 right-2"><Check size={14} className="text-amber-400" /></div>
+                      )}
+                      <span className="text-sm font-medium text-foreground">{model.name}</span>
+                      <span className="text-xs text-text-muted">{model.id}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
+
+          {/* ── Image Models ── */}
+          <div className="border-t border-glass-border pt-4">
+            <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+              <Image size={16} className="text-green-400" />
+              <span>Image Generation Model</span>
+              <span className="text-[10px] text-text-muted font-normal ml-1">(T2I / I2I)</span>
+            </div>
 
           {config.IMAGE_PROVIDER === "comfyui" ? (
             <div className="bg-surface/50 border border-glass-border rounded-lg p-4 text-center">
@@ -932,6 +994,8 @@ export default function SettingsPage() {
               </div>
             </>
           )}
+
+          </div>
 
           <div className="grid grid-cols-3 gap-4">
             {(
@@ -1028,12 +1092,6 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        <div className="flex justify-end">
-          <button onClick={handleSaveModelDefaults} className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-foreground text-sm font-medium rounded-lg transition-all">
-            <Save size={16} />
-            Save Defaults
-          </button>
-        </div>
       </section>
             </>
           )}
@@ -1070,12 +1128,6 @@ export default function SettingsPage() {
           </div>
         ))}
 
-        <div className="flex justify-end">
-          <button onClick={handleSavePromptDefaults} className="px-6 py-2 text-sm font-medium bg-purple-600 hover:bg-purple-500 text-foreground rounded-lg transition-colors flex items-center gap-2">
-            <Save size={16} />
-            Save Defaults
-          </button>
-        </div>
       </section>
             </>
           )}

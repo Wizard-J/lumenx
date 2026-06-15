@@ -93,6 +93,9 @@ CREATE TABLE IF NOT EXISTS series (
     model_settings_json TEXT NOT NULL DEFAULT '{}',
     workflow_mode     TEXT NOT NULL DEFAULT 'i2v_legacy',
     episode_ids_json  TEXT NOT NULL DEFAULT '[]',
+    default_generation_mode TEXT NOT NULL DEFAULT 'r2v',
+    content_mode      TEXT NOT NULL DEFAULT 'scripted',
+    custom_voices_json TEXT NOT NULL DEFAULT '[]',
     created_at        REAL NOT NULL,
     updated_at        REAL NOT NULL
 );
@@ -115,6 +118,13 @@ CREATE TABLE IF NOT EXISTS scripts (
     merged_video_url  TEXT,
     series_id         TEXT,
     episode_number    INTEGER,
+    default_generation_mode TEXT NOT NULL DEFAULT 'r2v',
+    bgm_url           TEXT,
+    mix_settings_json  TEXT NOT NULL DEFAULT '{"dialogue": 100, "bgm": 35, "sfx": 60}',
+    last_episode_summary_cache TEXT,
+    last_episode_summary_revision TEXT,
+    next_hook_cache    TEXT,
+    next_hook_revision  TEXT,
     created_at        REAL NOT NULL,
     updated_at        REAL NOT NULL
 );
@@ -195,6 +205,23 @@ class SQLiteStorageBackend(StorageBackend):
             self._conn.execute("PRAGMA journal_mode=WAL")
             
             self._conn.executescript(SCHEMA_SQL)
+            # Migration: add columns for existing databases
+            for table, col, col_def in [
+                ("series", "default_generation_mode", "TEXT NOT NULL DEFAULT 'r2v'"),
+                ("series", "content_mode", "TEXT NOT NULL DEFAULT 'scripted'"),
+                ("series", "custom_voices_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("scripts", "default_generation_mode", "TEXT NOT NULL DEFAULT 'r2v'"),
+                ("scripts", "bgm_url", "TEXT"),
+                ("scripts", "mix_settings_json", "TEXT NOT NULL DEFAULT '{\"dialogue\": 100, \"bgm\": 35, \"sfx\": 60}'"),
+                ("scripts", "last_episode_summary_cache", "TEXT"),
+                ("scripts", "last_episode_summary_revision", "TEXT"),
+                ("scripts", "next_hook_cache", "TEXT"),
+                ("scripts", "next_hook_revision", "TEXT"),
+            ]:
+                try:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+                except sqlite3.OperationalError:
+                    pass  # column already exists
             self._conn.commit()
         return self._conn
 
@@ -390,7 +417,6 @@ class SQLiteStorageBackend(StorageBackend):
             "prompt_config_json": "prompt_config",
             "model_settings_json": "model_settings",
             "episode_ids_json": "episode_ids",
-            "mix_settings_json": "mix_settings",
             "custom_voices_json": "custom_voices",
         }
         for old, new in mapping.items():
@@ -447,7 +473,6 @@ class SQLiteStorageBackend(StorageBackend):
         d = dict(data)
         mapping = {
             "custom_voices": "custom_voices_json",
-            "mix_settings": "mix_settings_json",
             "characters": "characters_json",
             "scenes": "scenes_json",
             "props": "props_json",
