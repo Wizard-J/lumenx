@@ -327,6 +327,12 @@ export function resolveModelId(
         return normalizedRequestedId;
     }
 
+    // Preserve non-catalog model IDs (e.g. OpenAI API-fetched models like "nex-agi/Nex-N2-Pro")
+    // instead of falling back to a catalog default that was never selected by the user.
+    if (normalizedRequestedId) {
+        return normalizedRequestedId;
+    }
+
     const fallbackId = getFallbackVisibleModelId(group, surface);
     if (requestedId && normalizedRequestedId !== fallbackId) {
         warnModelFallback(group, requestedId, surface, fallbackId);

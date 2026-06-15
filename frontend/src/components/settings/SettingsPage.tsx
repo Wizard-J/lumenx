@@ -284,7 +284,6 @@ export default function SettingsPage() {
     setSaving(true);
     try {
       await api.saveEnvConfig(config);
-      alert("Configuration saved successfully!");
     } catch {
       alert("Failed to save configuration.");
     } finally {
@@ -308,7 +307,7 @@ export default function SettingsPage() {
       LS_KEY_MODEL,
       JSON.stringify(normalizeModelSettings(modelSettings, "global_settings"))
     );
-    alert("Default model settings saved!");
+    // alert consolidated in "Save All Settings" button
   };
 
   const handleSavePromptDefaults = () => {
@@ -376,6 +375,7 @@ export default function SettingsPage() {
                   handleSaveApiConfig();
                   handleSaveModelDefaults();
                   localStorage.setItem("lumenx_default_prompt_config", JSON.stringify(promptConfig));
+                  alert("All settings saved!");
                 }}
                 disabled={saving}
                 className="shrink-0 flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-all disabled:opacity-50 shadow-lg shadow-primary/20"
