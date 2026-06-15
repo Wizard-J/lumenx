@@ -5,12 +5,15 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Settings, X, Image, Video, Layout, Check, User, Building, Box, Loader2, RefreshCw, Search } from 'lucide-react';
 import { ASPECT_RATIOS } from '@/store/projectStore';
 import {
+    DEFAULT_MODEL_SETTINGS,
     SERIES_IMAGE_MODELS,
     SERIES_I2V_MODELS,
     resolveModelSettings,
 } from '@/lib/modelCatalog';
-import { api } from '@/lib/api';
+import { api, type EnvConfigPayload } from '@/lib/api';
 import { useTranslations } from "next-intl";
+
+type ModelOption = { id: string; name: string; description?: string };
 
 interface SeriesModelSettingsModalProps {
     isOpen: boolean;
@@ -37,8 +40,8 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
     // ── Provider-aware model selection ──
     const [imageProvider, setImageProvider] = useState<string>("dashscope");
     const [videoProvider, setVideoProvider] = useState<string>("dashscope");
-    const [openaiImageModels, setOpenaiImageModels] = useState<{id: string; name: string}[]>([]);
-    const [openaiVideoModels, setOpenaiVideoModels] = useState<{id: string; name: string}[]>([]);
+    const [openaiImageModels, setOpenaiImageModels] = useState<ModelOption[]>([]);
+    const [openaiVideoModels, setOpenaiVideoModels] = useState<ModelOption[]>([]);
     const [syncingImage, setSyncingImage] = useState(false);
     const [syncingVideo, setSyncingVideo] = useState(false);
     const [imageFilter, setImageFilter] = useState("");
@@ -53,11 +56,12 @@ export default function SeriesModelSettingsModal({ isOpen, onClose, seriesId, on
                 api.getEnvConfig().catch(() => ({})),
                 api.getSeriesModelSettings(seriesId),
             ]).then(([cfg, data]) => {
-                setImageProvider(String(cfg.IMAGE_PROVIDER || "dashscope"));
-                setVideoProvider(String(cfg.VIDEO_PROVIDER || "dashscope"));
+                const envConfig = cfg as EnvConfigPayload;
+                setImageProvider(String(envConfig.IMAGE_PROVIDER || "dashscope"));
+                setVideoProvider(String(envConfig.VIDEO_PROVIDER || "dashscope"));
                 // Auto-sync if openai
-                if (String(cfg.IMAGE_PROVIDER || "") === "openai") syncModels("image");
-                if (String(cfg.VIDEO_PROVIDER || "") === "openai") syncModels("video");
+                if (String(envConfig.IMAGE_PROVIDER || "") === "openai") syncModels("image");
+                if (String(envConfig.VIDEO_PROVIDER || "") === "openai") syncModels("video");
                 
                 // Merge global settings from localStorage as base, series overrides on top.
                 // The backend Pydantic ModelSettings always fills hardcoded defaults for new series,

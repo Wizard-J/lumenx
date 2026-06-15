@@ -11,7 +11,7 @@ import { api, crudApi, type VideoTask, type RefineSSEEvent } from "@/lib/api";
 import { getAssetUrl } from "@/lib/utils";
 import { debugLog } from "@/lib/debugLog";
 import type { BatchSummary } from "./storyboard-r2v/shot-panel/CandidatesSection";
-import { getR2vRouteModelId, isR2vImageBased, VIDEO_I2V_MODELS, VIDEO_R2V_MODELS, DEFAULT_I2V_MODEL_ID, DEFAULT_R2V_MODEL_ID } from "@/lib/modelCatalog";
+import { getR2vRouteModelId, isR2vImageBased, VIDEO_I2V_MODELS, VIDEO_R2V_MODELS, DEFAULT_I2V_MODEL_ID, DEFAULT_R2V_MODEL_ID, DEFAULT_MODEL_SETTINGS, type I2VModelConfig } from "@/lib/modelCatalog";
 import ShotCard, { type ShotNode } from "./storyboard-r2v/ShotCard";
 import { buildAssembledPrompt } from "./storyboard-r2v/buildAssembledPrompt";
 import DialogueAudioRow from "./storyboard-r2v/DialogueAudioRow";
@@ -35,6 +35,127 @@ import CompareModal from "./storyboard-r2v/shot-panel/CompareModal";
 import TaskQueueButton from "./storyboard-r2v/shot-panel/TaskQueueButton";
 import TaskQueuePanel from "./storyboard-r2v/shot-panel/TaskQueuePanel";
 import { GenerationBanner, type BannerState } from "./storyboard-r2v/GenerationBanner";
+
+type StoredModelSettings = Partial<typeof DEFAULT_MODEL_SETTINGS>;
+
+type VideoProviderConfig = {
+    VIDEO_PROVIDER?: string;
+    VIDEO_MODEL?: string;
+};
+
+const EXTERNAL_VIDEO_MODEL_PARAMS = {
+    duration: { type: "buttons" as const, options: [4, 6, 8], default: 8 },
+    params: {
+        ratio: { options: ["16:9", "9:16", "1:1"], default: "16:9" },
+        seed: true,
+        promptExtend: true,
+    },
+};
+
+function readStoredGlobalModelSettings(ls: Storage | null): StoredModelSettings {
+    if (!ls) return {};
+    const stored = ls.getItem("lumenx_default_model_settings");
+    if (!stored) return {};
+    try {
+        return JSON.parse(stored) as StoredModelSettings;
+    } catch {
+        return {};
+    }
+}
+
+function isExplicitModelSetting(key: keyof StoredModelSettings, value?: string | null): value is string {
+    return !!value && value !== (DEFAULT_MODEL_SETTINGS as any)[key];
+}
+
+function getVisibleI2vModelId(candidate?: string | null): string {
+    return VIDEO_I2V_MODELS.some((model) => model.id === candidate)
+        ? candidate as string
+        : DEFAULT_I2V_MODEL_ID;
+}
+
+function getVisibleR2vModelId(candidate?: string | null): string {
+    return VIDEO_R2V_MODELS.some((model) => model.id === candidate)
+        ? candidate as string
+        : (VIDEO_R2V_MODELS[0]?.id ?? DEFAULT_R2V_MODEL_ID);
+}
+
+function isExternalVideoProvider(env?: VideoProviderConfig | null): boolean {
+    const provider = env?.VIDEO_PROVIDER?.toLowerCase();
+    return provider === "openai" || provider === "comfyui";
+}
+
+function getExternalVideoModelId(env?: VideoProviderConfig | null): string | null {
+    return isExternalVideoProvider(env) && env?.VIDEO_MODEL ? env.VIDEO_MODEL : null;
+}
+
+function buildExternalVideoModelOption(modelId: string): I2VModelConfig {
+    return {
+        id: modelId,
+        name: modelId,
+        description: "Global video model from Settings",
+        badges: ["Global"],
+        family: "external",
+        duration: EXTERNAL_VIDEO_MODEL_PARAMS.duration,
+        params: EXTERNAL_VIDEO_MODEL_PARAMS.params,
+    };
+}
+
+function mergeExternalModel(modelList: I2VModelConfig[], modelId?: string | null): I2VModelConfig[] {
+    if (!modelId || modelList.some((model) => model.id === modelId)) return modelList;
+    return [buildExternalVideoModelOption(modelId), ...modelList];
+}
+
+function resolveStoryboardVideoDefaults(
+    currentProject: any,
+    ls: Storage | null,
+    env?: VideoProviderConfig | null,
+): VideoConfig {
+    const savedI2v = ls?.getItem("storyboard-r2v-model") ?? null;
+    const savedR2v = ls?.getItem("storyboard-r2v-r2v-model") ?? null;
+    const globalSettings = readStoredGlobalModelSettings(ls);
+    const externalVideoModelId = getExternalVideoModelId(env);
+
+    const projectI2v = currentProject?.model_settings?.i2v_model;
+    const i2vModelId = getVisibleI2vModelId(
+        isExplicitModelSetting("i2v_model", projectI2v)
+            ? projectI2v
+            : globalSettings.i2v_model || savedI2v || DEFAULT_I2V_MODEL_ID,
+    );
+
+    if (savedI2v && savedI2v !== i2vModelId && !VIDEO_I2V_MODELS.some((model) => model.id === savedI2v)) {
+        ls?.removeItem("storyboard-r2v-model");
+        debugLog.warn("Studio", `Removed stale cached I2V model "${savedI2v}".`);
+    }
+
+    const projectR2v = currentProject?.model_settings?.r2v_model;
+    const derivedR2v = getR2vRouteModelId(i2vModelId);
+    const staleDefaultR2v = savedR2v === (DEFAULT_MODEL_SETTINGS as any).r2v_model;
+    const savedR2vCandidate = staleDefaultR2v ? null : savedR2v;
+    const globalR2v = isExplicitModelSetting("r2v_model", globalSettings.r2v_model)
+        ? globalSettings.r2v_model
+        : null;
+    const r2vCandidate = isExplicitModelSetting("r2v_model", projectR2v)
+        ? projectR2v
+        : externalVideoModelId || globalR2v || savedR2vCandidate || derivedR2v || DEFAULT_R2V_MODEL_ID;
+    const r2vModelId = r2vCandidate === externalVideoModelId
+        ? r2vCandidate
+        : getVisibleR2vModelId(r2vCandidate);
+
+    if (savedR2v && (staleDefaultR2v || !VIDEO_R2V_MODELS.some((model) => model.id === savedR2v))) {
+        ls?.removeItem("storyboard-r2v-r2v-model");
+        debugLog.warn("Studio", `Removed stale cached R2V model "${savedR2v}".`);
+    }
+
+    const finalConfig = VIDEO_I2V_MODELS.find((model) => model.id === i2vModelId);
+    const dc = finalConfig?.duration;
+    const defaultDuration = dc ? (dc.type === "fixed" ? dc.value : dc.default) : 5;
+    return {
+        ...DEFAULT_VIDEO_CONFIG,
+        model: i2vModelId,
+        r2vModel: r2vModelId,
+        duration: defaultDuration,
+    };
+}
 
 export default function StoryboardR2V() {
     const currentProject = useProjectStore((state) => state.currentProject);
@@ -100,56 +221,10 @@ export default function StoryboardR2V() {
 
     // Global video config (with localStorage persistence for model selection)
     const [envModelName, setEnvModelName] = useState<string>("");
-  const [videoConfig, setVideoConfig] = useState<VideoConfig>(() => {
-        const ls = typeof window !== 'undefined' ? window.localStorage : null;
-        const savedI2v = ls?.getItem('storyboard-r2v-model') ?? null;
-        const savedR2v = ls?.getItem('storyboard-r2v-r2v-model') ?? null;
-        const projectI2v = currentProject?.model_settings?.i2v_model || DEFAULT_I2V_MODEL_ID;
-
-        // I2V — defensive: a cached localStorage model id may have been
-        // hidden or removed from the I2V list since it was last
-        // selected (e.g. the user once picked `wan2.7-r2v` while it was
-        // visible, the catalog later marked it hidden, and now the ID
-        // lingers in their browser). Falling back to the default avoids
-        // silently shipping the wrong model into the I2V flow.
-        const i2vCandidate = savedI2v || projectI2v;
-        const i2vOk = VIDEO_I2V_MODELS.find(m => m.id === i2vCandidate);
-        const i2vModelId = i2vOk ? i2vCandidate : DEFAULT_I2V_MODEL_ID;
-        if (!i2vOk && ls && savedI2v) {
-            ls.removeItem('storyboard-r2v-model');
-            debugLog.warn(
-                "Studio",
-                `Cached I2V model "${i2vCandidate}" is no longer in the visible I2V list; ` +
-                `falling back to "${DEFAULT_I2V_MODEL_ID}".`,
-            );
-        }
-
-        // R2V preference order:
-        //   1. localStorage (user's last explicit pick — survives reloads)
-        //   2. project.model_settings.r2v_model (project-level default,
-        //      set in 生成设置 — Plan B "specialize" hierarchy)
-        //   3. derived from i2v family (initial coherence on first mount)
-        //   4. catalog DEFAULT_R2V_MODEL_ID
-        // Each candidate is validated against VIDEO_R2V_MODELS so a
-        // hidden id from any layer falls through cleanly.
-        const projectR2v = currentProject?.model_settings?.r2v_model;
-        const r2vDerived = getR2vRouteModelId(i2vModelId);
-        const r2vCandidate = savedR2v || projectR2v || r2vDerived || DEFAULT_R2V_MODEL_ID;
-        const r2vOk = VIDEO_R2V_MODELS.find(m => m.id === r2vCandidate);
-        const r2vModelId = r2vOk ? r2vCandidate : (VIDEO_R2V_MODELS[0]?.id ?? DEFAULT_R2V_MODEL_ID);
-        if (!r2vOk && ls && savedR2v) {
-            ls.removeItem('storyboard-r2v-r2v-model');
-        }
-
-        const finalConfig = VIDEO_I2V_MODELS.find(m => m.id === i2vModelId);
-        const dc = finalConfig?.duration;
-        const defaultDuration = dc ? (dc.type === 'fixed' ? dc.value : dc.default) : 5;
-        return {
-            ...DEFAULT_VIDEO_CONFIG,
-            model: i2vModelId,
-            r2vModel: r2vModelId,
-            duration: defaultDuration,
-        };
+    const [videoEnvConfig, setVideoEnvConfig] = useState<VideoProviderConfig | null>(null);
+    const [videoConfig, setVideoConfig] = useState<VideoConfig>(() => {
+        const ls = typeof window !== "undefined" ? window.localStorage : null;
+        return resolveStoryboardVideoDefaults(currentProject, ls);
     });
 
     // Modal & drawer state (configModalOpen retired with the gear; the
@@ -157,9 +232,25 @@ export default function StoryboardR2V() {
     // ParamsSection panels under each ShotCard. handleConfigChange is
     // also gone — model writes now flow through handleShotParamsChange
     // below, which mirrors them to localStorage.)
+    // Sync videoConfig when currentProject loads (may be null on initial mount)
+    useEffect(() => {
+        if (!currentProject) return;
+        const ls = typeof window !== "undefined" ? window.localStorage : null;
+        const resolved = resolveStoryboardVideoDefaults(currentProject, ls, videoEnvConfig);
+        setVideoConfig(prev => {
+            // Only update if the resolved model differs from current
+            if (prev.model === resolved.model && prev.r2vModel === resolved.r2vModel) return prev;
+            return resolved;
+        });
+    }, [currentProject, videoEnvConfig]);
+
     // Fetch env video model name for display
   useEffect(() => {
     api.getEnvConfig().then(cfg => {
+      setVideoEnvConfig({
+        VIDEO_PROVIDER: cfg.VIDEO_PROVIDER ? String(cfg.VIDEO_PROVIDER) : undefined,
+        VIDEO_MODEL: cfg.VIDEO_MODEL ? String(cfg.VIDEO_MODEL) : undefined,
+      });
       if (cfg.VIDEO_PROVIDER === "openai" && cfg.VIDEO_MODEL) {
         setEnvModelName(cfg.VIDEO_MODEL as string);
       }
@@ -200,6 +291,25 @@ export default function StoryboardR2V() {
     // backend, so the user gets immediate feedback instead of a
     // task that queues, fails, and shows up only in the diagnose log.
     const [shotErrors, setShotErrors] = useState<Record<string, string>>({});
+    const externalVideoModelId = getExternalVideoModelId(videoEnvConfig);
+    const r2vModelList = useMemo(
+        () => mergeExternalModel(VIDEO_R2V_MODELS, externalVideoModelId || videoConfig.r2vModel),
+        [externalVideoModelId, videoConfig.r2vModel],
+    );
+    const i2vModelList = useMemo(
+        () => mergeExternalModel(VIDEO_I2V_MODELS, externalVideoModelId && videoConfig.model === externalVideoModelId ? externalVideoModelId : null),
+        [externalVideoModelId, videoConfig.model],
+    );
+
+    const isExternalVideoModel = useCallback(
+        (modelId?: string | null) => !!modelId && !!externalVideoModelId && modelId === externalVideoModelId,
+        [externalVideoModelId],
+    );
+
+    const findR2vModel = useCallback(
+        (modelId?: string | null) => r2vModelList.find((model) => model.id === modelId),
+        [r2vModelList],
+    );
     const missingRefsMessage = useCallback(
         (modelLabel: string) =>
             t("missingRefs", { model: modelLabel }),
@@ -840,13 +950,13 @@ export default function StoryboardR2V() {
 
     // Duration editor config — derived from active R2V model's catalog entry
     const durationEditorCfg = useMemo(() => {
-        const r2vModel = VIDEO_R2V_MODELS.find(m => m.id === videoConfig.r2vModel);
+        const r2vModel = findR2vModel(videoConfig.r2vModel);
         const dc = r2vModel?.duration;
         if (!dc) return { min: 3, max: 15, step: 1 };
         if (dc.type === "slider") return { min: dc.min, max: dc.max, step: dc.step };
         if (dc.type === "buttons") return { min: Math.min(...dc.options), max: Math.max(...dc.options), step: 1 };
         return { min: dc.value, max: dc.value, step: 1 };
-    }, [videoConfig.r2vModel]);
+    }, [findR2vModel, videoConfig.r2vModel]);
 
     // Cached Series asset data (loaded on demand) - fallback when Episode assets lack variants
     const [seriesAssets, setSeriesAssets] = useState<{ characters: any[]; scenes: any[]; props: any[] } | null>(null);
@@ -1028,11 +1138,11 @@ export default function StoryboardR2V() {
                 // catalog flipped under our feet).
                 const referenceUrls = parseAssetTags(shot.prompt);
                 const explicitR2v = videoConfig.r2vModel;
-                const explicitOk = VIDEO_R2V_MODELS.some(m => m.id === explicitR2v);
+                const explicitOk = !!findR2vModel(explicitR2v) || isExternalVideoModel(explicitR2v);
                 const routeModelId = explicitOk
                     ? explicitR2v
                     : getR2vRouteModelId(videoConfig.model);
-                const imageBased = isR2vImageBased(routeModelId);
+                const imageBased = isExternalVideoModel(routeModelId) || isR2vImageBased(routeModelId);
 
                 const tasks = await api.createVideoTask(
                     currentProject.id,
@@ -1185,7 +1295,7 @@ export default function StoryboardR2V() {
                     errMsg = `引用的「${unresolved.join("、")}」尚未生成图片，请先到素材步骤生成。`;
                 } else {
                     const r2vModelId = params?.model ?? videoConfig.r2vModel;
-                    const r2vModel = VIDEO_R2V_MODELS.find(m => m.id === r2vModelId);
+                    const r2vModel = findR2vModel(r2vModelId);
                     const modelLabel = r2vModel?.name ?? r2vModelId;
                     errMsg = missingRefsMessage(modelLabel);
                 }
@@ -1238,11 +1348,11 @@ export default function StoryboardR2V() {
                 if (tabMode === "direct_r2v") {
                     const referenceUrls = parseAssetTags(shot.prompt);
                     const explicitR2v = params?.model ?? videoConfig.r2vModel;
-                    const explicitOk = VIDEO_R2V_MODELS.some(m => m.id === explicitR2v);
+                    const explicitOk = !!findR2vModel(explicitR2v) || isExternalVideoModel(explicitR2v);
                     const routeModelId = explicitOk
                         ? explicitR2v
                         : getR2vRouteModelId(videoConfig.model);
-                    const imageBased = isR2vImageBased(routeModelId);
+                    const imageBased = isExternalVideoModel(routeModelId) || isR2vImageBased(routeModelId);
                     const tasks = await api.createVideoTask(
                         currentProject.id,
                         "",
@@ -1352,7 +1462,7 @@ export default function StoryboardR2V() {
                 i === index ? { ...s, videoStatus: "failed" as const } : s
             ));
         }
-    }, [shots, currentProject, videoConfig, parseAssetTags, missingRefsMessage]);
+    }, [shots, currentProject, videoConfig, parseAssetTags, missingRefsMessage, findR2vModel, isExternalVideoModel]);
 
     // Project-level task refresh: when any task on any shot is in
     // flight, refetch the whole project every 5s. The candidates
@@ -1481,7 +1591,7 @@ export default function StoryboardR2V() {
     const currentModelName = envModelName
         ? envModelName
         : isR2VWorkflow
-        ? (VIDEO_R2V_MODELS.find(m => m.id === videoConfig.r2vModel)?.name ?? videoConfig.r2vModel)
+        ? (findR2vModel(videoConfig.r2vModel)?.name ?? videoConfig.r2vModel)
         : (VIDEO_I2V_MODELS.find(m => m.id === videoConfig.model)?.name ?? videoConfig.model);
 
     // ---- Project-level task derivations (drive Queue + Candidates) ----
@@ -1741,7 +1851,7 @@ export default function StoryboardR2V() {
         setVideoConfig(prev => {
             const updated = { ...prev };
             // Decide which slot the batch's model lives in (I2V or R2V).
-            if (VIDEO_R2V_MODELS.some(m => m.id === first.model)) {
+            if (findR2vModel(first.model) || isExternalVideoModel(first.model)) {
                 updated.r2vModel = first.model!;
             } else if (VIDEO_I2V_MODELS.some(m => m.id === first.model)) {
                 updated.model = first.model!;
@@ -1751,7 +1861,7 @@ export default function StoryboardR2V() {
             if (first.negative_prompt !== undefined) updated.negativePrompt = first.negative_prompt;
             return updated;
         });
-    }, []);
+    }, [findR2vModel, isExternalVideoModel]);
 
     // Queue's jump-to-shot: scroll the shot's wrapper into view AND
     // expand the shot panel + its sections (otherwise jumping to a
@@ -1938,7 +2048,7 @@ export default function StoryboardR2V() {
                     ).length;
                     const paramsState = paramsStateForShot(shot);
                     const isI2vTab = shot.tabMode === "t2i_i2v";
-                    const modelList = shot.tabMode === "direct_r2v" ? VIDEO_R2V_MODELS : VIDEO_I2V_MODELS;
+                    const modelList = shot.tabMode === "direct_r2v" ? r2vModelList : i2vModelList;
                     return (
                     /* Plain div (was motion.div) — staggered enter
                        animation re-fired every time the user switched
@@ -2331,4 +2441,3 @@ export default function StoryboardR2V() {
         </div>
     );
 }
-

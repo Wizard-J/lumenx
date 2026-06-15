@@ -204,6 +204,7 @@ const DEFAULT_ASPECT_RATIOS = Object.freeze({
 
 export const DEFAULT_MODEL_SETTINGS: FrontendModelSettings = Object.freeze({
     ...MODEL_CATALOG.defaults.model_settings,
+    r2v_model: "wan2.7-r2v",
     ...DEFAULT_ASPECT_RATIOS,
 });
 
