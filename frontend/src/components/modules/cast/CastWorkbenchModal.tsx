@@ -34,6 +34,14 @@ const LS_KEY_MODEL = "lumenx_default_model_settings";
 // Module-level poll registry — survives modal close/reopen.
 export const activePolls = new Map<string, ReturnType<typeof setInterval>>();
 
+function pollKey(scope: "project" | "series", ownerId: string, entityId: string, generationType: string) {
+    return `${scope}:${ownerId}:${entityId}:${generationType}`;
+}
+
+export function hasActivePoll(entityId: string, generationType: string) {
+    return Array.from(activePolls.keys()).some((key) => key.endsWith(`:${entityId}:${generationType}`));
+}
+
 function startSeriesAssetPoll(
     entityId: string,
     taskId: string,
@@ -42,34 +50,36 @@ function startSeriesAssetPoll(
     onUpdated: () => void,
     progressToastId?: string,
 ) {
-    if (activePolls.has(entityId)) return;
+    const generationType = "all";
+    const key = pollKey("series", seriesId, entityId, generationType);
+    if (activePolls.has(key)) return;
     const interval = setInterval(async () => {
         try {
             const status = await api.getTaskStatus(taskId);
             if (status?.status === "completed") {
                 clearInterval(interval);
-                activePolls.delete(entityId);
+                activePolls.delete(key);
                 if (progressToastId) toast.dismiss(progressToastId);
                 // Remove generating state so button re-enables
-                useProjectStore.getState().removeGeneratingTask(entityId, "all");
+                useProjectStore.getState().removeGeneratingTask(entityId, generationType);
                 onUpdated();
                 toast.success(`生成完成`);
             } else if (status?.status === "failed") {
                 clearInterval(interval);
-                activePolls.delete(entityId);
+                activePolls.delete(key);
                 if (progressToastId) toast.dismiss(progressToastId);
-                useProjectStore.getState().removeGeneratingTask(entityId, "all");
+                useProjectStore.getState().removeGeneratingTask(entityId, generationType);
                 toast.error("生成失败", { body: status?.error?.slice(0, 200) || "未知错误" });
             }
         } catch (err) {
             clearInterval(interval);
-            activePolls.delete(entityId);
+            activePolls.delete(key);
             if (progressToastId) toast.dismiss(progressToastId);
-            useProjectStore.getState().removeGeneratingTask(entityId, "all");
+            useProjectStore.getState().removeGeneratingTask(entityId, generationType);
             toast.error("轮询异常", { body: "请刷新页面查看结果" });
         }
     }, 2500);
-    activePolls.set(entityId, interval);
+    activePolls.set(key, interval);
 }
 
 function startAssetPoll(
@@ -84,13 +94,14 @@ function startAssetPoll(
     },
     progressToastId?: string,
 ) {
-    if (activePolls.has(entityId)) return;
+    const key = pollKey("project", projectId, entityId, generationType);
+    if (activePolls.has(key)) return;
     const interval = setInterval(async () => {
         try {
             const status = await api.getTaskStatus(taskId);
             if (status?.status === "completed") {
                 clearInterval(interval);
-                activePolls.delete(entityId);
+                activePolls.delete(key);
                 if (progressToastId) toast.dismiss(progressToastId);
                 const fresh = await api.getProject(projectId);
                 const { updateProject, removeGeneratingTask } = getStore();
@@ -102,7 +113,7 @@ function startAssetPoll(
                 toast.success(`生成完成`, { body: `已生成 ${count} 张变体` });
             } else if (status?.status === "failed") {
                 clearInterval(interval);
-                activePolls.delete(entityId);
+                activePolls.delete(key);
                 if (progressToastId) toast.dismiss(progressToastId);
                 const { removeGeneratingTask } = getStore();
                 removeGeneratingTask(entityId, generationType);
@@ -110,14 +121,14 @@ function startAssetPoll(
             }
         } catch (err) {
             clearInterval(interval);
-            activePolls.delete(entityId);
+            activePolls.delete(key);
             if (progressToastId) toast.dismiss(progressToastId);
             const { removeGeneratingTask } = getStore();
             removeGeneratingTask(entityId, generationType);
             toast.error("轮询异常", { body: "请刷新页面查看结果" });
         }
     }, 2500);
-    activePolls.set(entityId, interval);
+    activePolls.set(key, interval);
 }
 
 interface CastWorkbenchModalProps {

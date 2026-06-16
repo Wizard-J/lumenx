@@ -29,7 +29,7 @@ import StepHeader from "@/components/shared/StepHeader";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
 import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
 import VoicePickerModal from "./cast/VoicePickerModal";
-import CastWorkbenchModal, { activePolls } from "./cast/CastWorkbenchModal";
+import CastWorkbenchModal, { hasActivePoll } from "./cast/CastWorkbenchModal";
 
 type AssetKind = "character" | "scene" | "prop";
 
@@ -103,7 +103,7 @@ export default function Cast() {
     useEffect(() => {
         if (generatingTasks.length === 0) return;
         for (const task of generatingTasks) {
-            if (!activePolls.has(task.assetId)) {
+            if (!hasActivePoll(task.assetId, task.generationType)) {
                 removeGeneratingTask(task.assetId, task.generationType);
             }
         }
