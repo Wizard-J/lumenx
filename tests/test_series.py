@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock
 
 from src.apps.comic_gen.models import (
     Series, Script, Character, Scene, Prop, PromptConfig, ModelSettings,
-    ImageAsset, ImageVariant,
+    ImageAsset, ImageVariant, GenerationStatus,
 )
 from src.apps.comic_gen.pipeline import ComicGenPipeline
 
@@ -273,6 +273,50 @@ class TestResolveEpisodeAssets:
         assert saved_character["image_url"] == "assets/characters/shared.png"
         assert saved_character["full_body_image_url"] == "assets/characters/shared.png"
         assert saved_character["full_body_asset"]["variants"][0]["url"] == "assets/characters/shared.png"
+
+    def test_series_asset_generation_uses_request_aspect_ratio(self, pipeline):
+        s = pipeline.create_series("S")
+        scene = _make_scene(name="Arena")
+        s.scenes = [scene]
+        pipeline._save_series_data()
+
+        def fake_generate_scene(target, **kwargs):
+            variant = ImageVariant(id="variant-1", url="assets/scenes/arena.png")
+            target.image_asset = ImageAsset(selected_id=variant.id, variants=[variant])
+            target.image_url = variant.url
+
+        pipeline.asset_generator.generate_scene.side_effect = fake_generate_scene
+
+        _, task_id = pipeline.generate_series_asset(
+            s.id,
+            scene.id,
+            "scene",
+            aspect_ratio="1:1",
+        )
+        pipeline.process_asset_generation_task(task_id)
+
+        assert pipeline.asset_generator.generate_scene.call_args.kwargs["size"] == "1024*1024"
+        assert s.scenes[0].status == GenerationStatus.COMPLETED
+
+    def test_series_asset_task_marks_processing_and_persists(self, pipeline):
+        s = pipeline.create_series("S")
+        prop = _make_prop(name="Token")
+        s.props = [prop]
+
+        pipeline.generate_series_asset(s.id, prop.id, "prop")
+
+        saved = pipeline._storage.get_series(s.id)
+        saved_prop = next(p for p in saved["props"] if p["id"] == prop.id)
+        assert saved_prop["status"] == GenerationStatus.PROCESSING.value
+
+    def test_orphan_recovery_marks_processing_series_image_asset_failed(self, pipeline):
+        s = pipeline.create_series("S")
+        char = _make_character(name="Interrupted Hero", status=GenerationStatus.PROCESSING)
+        s.characters = [char]
+
+        pipeline._recover_orphan_tasks()
+
+        assert s.characters[0].status == GenerationStatus.FAILED
 
 # ===================================================================
 # 5. PromptConfig three-level fallback tests

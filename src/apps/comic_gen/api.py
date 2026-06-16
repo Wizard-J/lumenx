@@ -686,7 +686,8 @@ def generate_series_asset(series_id: str, request: GenerateAssetRequest, backgro
             request.apply_style,
             request.negative_prompt,
             request.batch_size,
-            request.model_name
+            request.model_name,
+            request.aspect_ratio,
         )
         background_tasks.add_task(pipeline.process_asset_generation_task, task_id)
         response_data = series.dict()

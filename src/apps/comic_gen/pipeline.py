@@ -120,9 +120,9 @@ class ComicGenPipeline:
         half-run video generation may have already incurred provider
         cost and re-running could double-charge.
 
-        Asset / motion-ref tasks live in transient in-process dicts
-        (self.asset_generation_tasks etc.) and never persist, so they
-        die naturally with the process and don't need recovery.
+        Image asset tasks use the asset's persisted `status` field as the
+        recovery marker: a `processing` asset means a generation task was
+        submitted before the process died.
         """
         STUCK = ("pending", "processing")
         recovered = 0
@@ -139,17 +139,74 @@ class ComicGenPipeline:
                             pass
                     recovered += 1
 
-        if recovered > 0:
+        asset_recovered = self._recover_orphan_image_assets()
+
+        if recovered > 0 or asset_recovered > 0:
             try:
                 self._save_data()
+                self._save_series_data()
             except Exception:
                 logger.warning("Orphan recovery: failed to persist sweep")
             logger.warning(
-                "Orphan task recovery: marked %d stuck task(s) as failed.",
+                "Orphan task recovery: marked %d video task(s) and %d image asset(s) as failed.",
                 recovered,
+                asset_recovered,
             )
         else:
             logger.debug("Orphan task recovery: no stuck tasks found.")
+
+    def _asset_has_image(self, asset: Any, asset_type: str) -> bool:
+        """Return whether an asset already has at least one persisted image."""
+        if asset_type == "character":
+            containers = [
+                getattr(asset, "reference_sheet", None),
+                getattr(asset, "full_body", None),
+                getattr(asset, "full_body_asset", None),
+                getattr(asset, "three_view_asset", None),
+                getattr(asset, "headshot_asset", None),
+            ]
+            if any(getattr(c, "image_variants", None) for c in containers):
+                return True
+            if any(getattr(c, "variants", None) for c in containers):
+                return True
+            return bool(
+                getattr(asset, "full_body_image_url", None)
+                or getattr(asset, "three_view_image_url", None)
+                or getattr(asset, "headshot_image_url", None)
+                or getattr(asset, "image_url", None)
+                or getattr(asset, "avatar_url", None)
+            )
+
+        image_asset = getattr(asset, "image_asset", None)
+        return bool(getattr(image_asset, "variants", None) or getattr(asset, "image_url", None))
+
+    def _recover_orphan_image_assets(self) -> int:
+        """Mark image assets left in `processing` by a backend restart as failed."""
+        recovered = 0
+
+        def sweep_pool(pool: List[Any], asset_type: str) -> int:
+            count = 0
+            for asset in pool or []:
+                if getattr(asset, "status", None) == GenerationStatus.PROCESSING:
+                    asset.status = (
+                        GenerationStatus.COMPLETED
+                        if self._asset_has_image(asset, asset_type)
+                        else GenerationStatus.FAILED
+                    )
+                    count += 1
+            return count
+
+        for script in self.scripts.values():
+            recovered += sweep_pool(getattr(script, "characters", []), "character")
+            recovered += sweep_pool(getattr(script, "scenes", []), "scene")
+            recovered += sweep_pool(getattr(script, "props", []), "prop")
+
+        for series in self.series_store.values():
+            recovered += sweep_pool(getattr(series, "characters", []), "character")
+            recovered += sweep_pool(getattr(series, "scenes", []), "scene")
+            recovered += sweep_pool(getattr(series, "props", []), "prop")
+
+        return recovered
 
     _MAX_LABEL_LEN = 20
 
@@ -707,11 +764,49 @@ class ComicGenPipeline:
                 )
             task["status"] = "completed"
             task["progress"] = 100
+            self._set_task_asset_status(task, GenerationStatus.COMPLETED)
             logger.info(f"Task {task_id} completed successfully")
         except Exception as e:
             task["status"] = "failed"
             task["error"] = str(e)
+            self._set_task_asset_status(task, GenerationStatus.FAILED)
             logger.error(f"Task {task_id} failed: {e}")
+
+    def _set_task_asset_status(self, task: Dict[str, Any], status: GenerationStatus) -> None:
+        """Persist the visible asset status for an async image generation task."""
+        asset_id = task.get("asset_id")
+        asset_type = task.get("asset_type")
+        owner_id = task.get("script_id")
+        if not asset_id or not asset_type or not owner_id:
+            return
+
+        try:
+            if task.get("is_series"):
+                series = self.series_store.get(owner_id)
+                if not series:
+                    return
+                pool = (
+                    series.characters if asset_type == "character"
+                    else series.scenes if asset_type == "scene"
+                    else series.props if asset_type == "prop"
+                    else []
+                )
+                target = next((a for a in pool if a.id == asset_id), None)
+                if target:
+                    target.status = status
+                    series.updated_at = time.time()
+                    self._save_series_data()
+                return
+
+            script = self.scripts.get(owner_id)
+            if not script:
+                return
+            target, source = self._find_asset_with_source(script, asset_id, asset_type)
+            if target:
+                target.status = status
+                self._save_after_asset_mutation(source)
+        except Exception as exc:
+            logger.warning("Failed to persist asset task status: %s", exc)
 
     def _process_series_asset_task(self, task: Dict, params: Dict):
         """Process a Series asset generation task."""
@@ -4421,29 +4516,38 @@ class ComicGenPipeline:
                               style_prompt: str = None, generation_type: str = "all",
                               prompt: str = None, apply_style: bool = True,
                               negative_prompt: str = None, batch_size: int = 1,
-                              model_name: str = None) -> tuple:
+                              model_name: str = None, aspect_ratio: str = None) -> tuple:
         """Generate a Series asset. Creates an async task like project asset generation.
         Returns (series, task_id)."""
         series = self.series_store.get(series_id)
         if not series:
             raise ValueError("Series not found")
 
+        if asset_type not in ("character", "scene", "prop"):
+            raise ValueError(f"Invalid asset_type: {asset_type}")
+
+        pool = (
+            series.characters if asset_type == "character"
+            else series.scenes if asset_type == "scene"
+            else series.props
+        )
+        target_asset = next((a for a in pool if a.id == asset_id), None)
+        if not target_asset:
+            raise ValueError(f"{asset_type.capitalize()} {asset_id} not found in series")
+
         t2i_model = model_name or series.model_settings.t2i_model
 
         from .assets import ASPECT_RATIO_TO_SIZE
         if asset_type == "character":
-            aspect_ratio = series.model_settings.character_aspect_ratio
+            effective_aspect_ratio = aspect_ratio or series.model_settings.character_aspect_ratio
             default_size = "576*1024"
         elif asset_type == "scene":
-            aspect_ratio = series.model_settings.scene_aspect_ratio
+            effective_aspect_ratio = aspect_ratio or series.model_settings.scene_aspect_ratio
             default_size = "1024*576"
-        elif asset_type == "prop":
-            aspect_ratio = series.model_settings.prop_aspect_ratio
-            default_size = "1024*1024"
         else:
-            aspect_ratio = "9:16"
-            default_size = "576*1024"
-        effective_size = ASPECT_RATIO_TO_SIZE.get(aspect_ratio, default_size)
+            effective_aspect_ratio = aspect_ratio or series.model_settings.prop_aspect_ratio
+            default_size = "1024*1024"
+        effective_size = ASPECT_RATIO_TO_SIZE.get(effective_aspect_ratio, default_size)
 
         effective_positive_prompt = ""
         effective_negative_prompt = negative_prompt or ""
@@ -4482,8 +4586,12 @@ class ComicGenPipeline:
                 "batch_size": batch_size,
                 "t2i_model": t2i_model,
                 "effective_size": effective_size,
+                "aspect_ratio": effective_aspect_ratio,
             }
         }
+        target_asset.status = GenerationStatus.PROCESSING
+        series.updated_at = time.time()
+        self._save_series_data()
         return series, task_id
 
     def import_assets_from_series(self, target_series_id: str, source_series_id: str, asset_ids: List[str]) -> Tuple[Series, List[str], List[str]]:

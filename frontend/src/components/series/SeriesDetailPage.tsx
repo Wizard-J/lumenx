@@ -276,6 +276,7 @@ function AssetContentPanel({
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
   const [generatingAll, setGeneratingAll] = useState(false);
   const [workbenchEntity, setWorkbenchEntity] = useState<{ id: string; kind: "character" | "scene" | "prop" } | null>(null);
+  const pollTimersRef = useRef<Set<ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>>>(new Set());
   const gridClassName = tab === "characters"
     ? "grid grid-cols-[repeat(auto-fill,minmax(220px,260px))] gap-5"
     : tab === "scenes"
@@ -290,30 +291,77 @@ function AssetContentPanel({
     return ((asset as Scene | Prop).image_asset?.variants?.length ?? 0) > 0;
   };
 
+  useEffect(() => {
+    return () => {
+      pollTimersRef.current.forEach((timer) => {
+        clearInterval(timer as ReturnType<typeof setInterval>);
+        clearTimeout(timer as ReturnType<typeof setTimeout>);
+      });
+      pollTimersRef.current.clear();
+    };
+  }, []);
 
+  const refreshSeries = async () => {
+    const updatedSeries = await api.getSeries(seriesId);
+    if (updatedSeries) {
+      onSeriesUpdate(updatedSeries);
+    }
+    return updatedSeries;
+  };
+
+  const pollGenerationTask = (assetId: string, taskId: string) => {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = async (ok: boolean, error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(interval);
+        clearTimeout(timeout);
+        pollTimersRef.current.delete(interval);
+        pollTimersRef.current.delete(timeout);
+        try {
+          await refreshSeries();
+        } catch (refreshError) {
+          console.error("Failed to refresh series after generation:", refreshError);
+        }
+        setGeneratingIds(prev => { const next = new Set(prev); next.delete(assetId); return next; });
+        if (ok) resolve();
+        else reject(error);
+      };
+
+      const interval = setInterval(async () => {
+        try {
+          const status = await api.getTaskStatus(taskId);
+          if (status?.status === "completed") {
+            await finish(true);
+          } else if (status?.status === "failed") {
+            await finish(false, new Error(status?.error || "Generation failed"));
+          }
+        } catch (error) {
+          await finish(false, error);
+        }
+      }, 2500);
+
+      const timeout = setTimeout(() => {
+        finish(false, new Error("Generation polling timed out"));
+      }, 120000);
+
+      pollTimersRef.current.add(interval);
+      pollTimersRef.current.add(timeout);
+    });
+  };
 
   const handleGenerateSingle = async (assetId: string) => {
     setGeneratingIds(prev => new Set(prev).add(assetId));
     try {
-      await api.generateSeriesAsset(seriesId, assetId, assetTypeSingular);
-      const pollInterval = setInterval(async () => {
-        try {
-          const updatedSeries = await api.getSeries(seriesId);
-          if (updatedSeries) {
-            // Update local state with fresh data (no full page reload)
-            onSeriesUpdate(updatedSeries);
-            const assetList = tab === "characters" ? updatedSeries.characters
-              : tab === "scenes" ? updatedSeries.scenes : updatedSeries.props;
-            const asset = assetList.find((a: any) => a.id === assetId);
-            if (asset?.full_body_asset?.variants?.length > 0 ||
-                asset?.image_asset?.variants?.length > 0) {
-              clearInterval(pollInterval);
-              setGeneratingIds(prev => { const next = new Set(prev); next.delete(assetId); return next; });
-            }
-          }
-        } catch { }
-      }, 3000);
-      setTimeout(() => clearInterval(pollInterval), 120000);
+      const response = await api.generateSeriesAsset(seriesId, assetId, assetTypeSingular);
+      const taskId = response?._task_id;
+      if (!taskId) {
+        await refreshSeries();
+        setGeneratingIds(prev => { const next = new Set(prev); next.delete(assetId); return next; });
+        return;
+      }
+      await pollGenerationTask(assetId, taskId);
     } catch (e) {
       console.error("Failed to generate:", e);
       setGeneratingIds(prev => { const next = new Set(prev); next.delete(assetId); return next; });
@@ -322,14 +370,24 @@ function AssetContentPanel({
 
   const handleGenerateAll = async () => {
     setGeneratingAll(true);
+    const taskPromises: Promise<void>[] = [];
     for (const asset of assets) {
+      setGeneratingIds(prev => new Set(prev).add(asset.id));
       try {
-        await api.generateSeriesAsset(seriesId, asset.id, assetTypeSingular);
+        const response = await api.generateSeriesAsset(seriesId, asset.id, assetTypeSingular);
+        const taskId = response?._task_id;
+        if (taskId) {
+          taskPromises.push(pollGenerationTask(asset.id, taskId));
+        } else {
+          setGeneratingIds(prev => { const next = new Set(prev); next.delete(asset.id); return next; });
+        }
         await new Promise(r => setTimeout(r, 500));
       } catch (e) {
         console.error(`Failed to generate ${asset.id}:`, e);
+        setGeneratingIds(prev => { const next = new Set(prev); next.delete(asset.id); return next; });
       }
     }
+    await Promise.allSettled(taskPromises);
     setGeneratingAll(false);
   };
 
