@@ -276,6 +276,11 @@ function AssetContentPanel({
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
   const [generatingAll, setGeneratingAll] = useState(false);
   const [workbenchEntity, setWorkbenchEntity] = useState<{ id: string; kind: "character" | "scene" | "prop" } | null>(null);
+  const gridClassName = tab === "characters"
+    ? "grid grid-cols-[repeat(auto-fill,minmax(220px,260px))] gap-5"
+    : tab === "scenes"
+      ? "grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-5"
+      : "grid grid-cols-[repeat(auto-fill,minmax(200px,240px))] gap-5";
 
   const assetTypeSingular = tab === "characters" ? "character" : tab === "scenes" ? "scene" : "prop";
   const hasGeneratedImage = (asset: Character | Scene | Prop) => {
@@ -379,7 +384,7 @@ function AssetContentPanel({
           </div>
         ) : (
           <motion.div
-            className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-5"
+            className={gridClassName}
             initial="hidden"
             animate="visible"
             variants={{

@@ -22,12 +22,14 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, Sparkles, Loader2, Check, RefreshCw, Wand2, Palette, Star } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { api } from "@/lib/api";
-import { useProjectStore, IMAGE_MODELS } from "@/store/projectStore";
+import { useProjectStore } from "@/store/projectStore";
+import { DEFAULT_MODEL_SETTINGS, PROJECT_IMAGE_MODELS } from "@/lib/modelCatalog";
 import { toast } from "@/store/toastStore";
 import { getAssetUrl } from "@/lib/utils";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
 
 export type CastKind = "character" | "scene" | "prop";
+const LS_KEY_MODEL = "lumenx_default_model_settings";
 
 // Module-level poll registry — survives modal close/reopen.
 export const activePolls = new Map<string, ReturnType<typeof setInterval>>();
@@ -264,6 +266,7 @@ export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose, se
     const [negativeExpanded, setNegativeExpanded] = useState(false);
     const [finalPreviewExpanded, setFinalPreviewExpanded] = useState(true);
     const [applyStyle, setApplyStyle] = useState(true);
+    const [envImageModel, setEnvImageModel] = useState<string | null>(null);
     const [galleryFilter, setGalleryFilter] = useState<"all" | "favorited">("all");
     const generating = generatingTasks.some((t) => t.assetId === entityId);
     const [selectedTemplate, setSelectedTemplate] = useState<CharacterTemplate>("simple");
@@ -290,6 +293,13 @@ export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose, se
         api.getStylePresets().then((res: any) => setPresets(res?.presets || res || [])).catch(() => {});
     }, []);
 
+    useEffect(() => {
+        if (!isOpen) return;
+        api.getEnvConfig()
+            .then((cfg) => setEnvImageModel(cfg.IMAGE_MODEL ? String(cfg.IMAGE_MODEL) : null))
+            .catch(() => setEnvImageModel(null));
+    }, [isOpen]);
+
     if (!isOpen || !kind || !entity || !currentProject) return null;
 
     const resolvedArtDirection = currentProject.art_direction ?? currentSeries?.art_direction;
@@ -310,6 +320,33 @@ export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose, se
             ? (ms?.scene_aspect_ratio || "16:9")
             : (ms?.prop_aspect_ratio || "1:1");
     const effectiveAspectRatio = aspectRatioOverride || defaultAspectRatio;
+    const projectImageModel = (() => {
+        const selected = currentProject.model_settings?.t2i_model || currentProject.model_settings?.image_model;
+        return selected && selected !== DEFAULT_MODEL_SETTINGS.t2i_model ? selected : null;
+    })();
+    const globalImageModel = (() => {
+        if (typeof window === "undefined") return null;
+        try {
+            const raw = window.localStorage.getItem(LS_KEY_MODEL);
+            if (!raw) return null;
+            const stored = JSON.parse(raw);
+            return stored?.t2i_model || stored?.image_model || null;
+        } catch {
+            return null;
+        }
+    })();
+    const defaultGenerationModel = projectImageModel
+        || globalImageModel
+        || envImageModel
+        || DEFAULT_MODEL_SETTINGS.t2i_model;
+    const effectiveGenerationModel = modelOverride || defaultGenerationModel;
+    const imageModelOptions = (() => {
+        const base = PROJECT_IMAGE_MODELS.map((m) => ({ id: m.id, name: m.name }));
+        if (effectiveGenerationModel && !base.some((m) => m.id === effectiveGenerationModel)) {
+            base.unshift({ id: effectiveGenerationModel, name: effectiveGenerationModel });
+        }
+        return base;
+    })();
 
     const handleResetTemplate = () => {
         setPrompt(buildTemplate(kind, entity, selectedTemplate));
@@ -368,7 +405,7 @@ export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose, se
                     apply_style: applyStyle,
                     negative_prompt: [applyStyle ? styleNegative : "", getTemplateNegative(kind, selectedTemplate)].filter(Boolean).join(", "),
                     batch_size: effectiveBatchSize,
-                    model_name: modelOverride || currentProject?.model_settings?.t2i_model,
+                    model_name: effectiveGenerationModel,
                     aspect_ratio: aspectRatioOverride || undefined,
                 })
                 : await api.generateAsset(
@@ -382,7 +419,7 @@ export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose, se
                 applyStyle,
                 [applyStyle ? styleNegative : "", getTemplateNegative(kind, selectedTemplate)].filter(Boolean).join(", "),
                 effectiveBatchSize,
-                modelOverride || currentProject.model_settings?.t2i_model,
+                effectiveGenerationModel,
                 aspectRatioOverride || undefined,
             );
 
@@ -828,12 +865,12 @@ export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose, se
                                         {t("modelLabel")}
                                     </label>
                                     <div className="flex items-center gap-2 flex-wrap">
-                                        {IMAGE_MODELS.map((m) => {
-                                            const isActive = (modelOverride || currentProject.model_settings?.t2i_model || "wan2.1-t2i") === m.id;
+                                        {imageModelOptions.map((m) => {
+                                            const isActive = effectiveGenerationModel === m.id;
                                             return (
                                                 <button
                                                     key={m.id}
-                                                    onClick={() => setModelOverride(m.id === (currentProject.model_settings?.t2i_model || "wan2.1-t2i") ? null : m.id)}
+                                                    onClick={() => setModelOverride(m.id === defaultGenerationModel ? null : m.id)}
                                                     disabled={generating}
                                                     className={`px-3 py-1.5 rounded-md text-[12px] transition-colors disabled:opacity-40 ${
                                                         isActive

@@ -573,6 +573,17 @@ class ScriptProcessor:
         IMPORTANT: 
         - All descriptive content (names, descriptions) MUST be in CHINESE (Simplified Chinese).
         - Extract ONLY characters, scenes, and props.
+        - Classification rules:
+          * "characters" are any recurring or visually important acting subjects, including humans,
+            humanoids, monsters, creatures, animals, spirits, demons, robots, living plants, or
+            supernatural beings. If it can move, appear as an actor, be tracked by the camera, attack,
+            speak, guard, chase, react, or be referenced as a living/sentient entity, classify it as a
+            character even if it is non-human.
+          * "props" are non-living objects used, held, worn, placed, or collected by characters
+            (weapons, tools, books, tokens, furniture, vehicles, artifacts). Do NOT classify a monster,
+            creature, beast, spirit, or other acting subject as a prop just because it has object-like
+            parts such as claws, scales, armor, or crystals.
+          * "scenes" are locations or environments, not individual creatures or portable objects.
         - All visual descriptions MUST be safe for AI image generation APIs. Absolutely avoid:
           * Blood, gore, exposed organs, wounds, dismemberment, or any graphic violence.
           * Sexual content, nudity, or suggestive descriptions.

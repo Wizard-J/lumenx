@@ -167,6 +167,11 @@ export default function AssetLibraryPage() {
                 activeTab === "characters" ? source.characters : activeTab === "scenes" ? source.scenes : source.props;
               if (assets.length === 0) return null;
               const isCollapsed = collapsedSources.has(source.id);
+              const gridClassName = activeTab === "characters"
+                ? "grid grid-cols-[repeat(auto-fill,minmax(220px,260px))] gap-5 pl-6"
+                : activeTab === "scenes"
+                  ? "grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-5 pl-6"
+                  : "grid grid-cols-[repeat(auto-fill,minmax(200px,240px))] gap-5 pl-6";
 
               return (
                 <div key={source.id}>
@@ -181,7 +186,7 @@ export default function AssetLibraryPage() {
                     </span>
                   </button>
                   {!isCollapsed && (
-                    <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-5 pl-6">
+                    <div className={gridClassName}>
                       {assets.map((asset) => (
                         <AssetCard key={asset.id} asset={asset} type={activeTab} variant="gallery" />
                       ))}

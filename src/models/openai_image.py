@@ -17,6 +17,7 @@ import mimetypes
 import logging
 from typing import Tuple, Optional, List
 from http import HTTPStatus
+from urllib.parse import urlparse
 
 from .image import ImageGenModel  # type: ignore[attr-defined]
 from ..utils import get_logger
@@ -49,14 +50,20 @@ class OpenAIImageModel(ImageGenModel):
         # Priority: IMAGE_API_KEY only (no fallback to LLM)
         key = _get_setting("IMAGE_API_KEY", default="")
         if not key:
+            parsed = urlparse(self.base_url)
+            if parsed.hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+                return "ollama"
+        if not key:
             logger.warning("IMAGE_API_KEY not set, image generation may fail")
         return key
-        return _get_setting("IMAGE_API_KEY", "LLM_API_KEY", "OPENAI_API_KEY", default="")
 
     @property
     def base_url(self) -> str:
-        return _get_setting("IMAGE_BASE_URL",
-                            default="https://api.openai.com/v1")
+        raw = _get_setting("IMAGE_BASE_URL", default="https://api.openai.com/v1").rstrip("/")
+        parsed = urlparse(raw)
+        if parsed.hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"} and parsed.path in ("", "/"):
+            return raw + "/v1"
+        return raw
 
     @property
     def model_name(self) -> str:
@@ -129,12 +136,15 @@ class OpenAIImageModel(ImageGenModel):
 
         try:
             client = self._get_client()
-            response = client.images.generate(
-                model=model,
-                prompt=prompt,
-                n=n,
-                size=size,
-            )
+            request_kwargs = {
+                "model": model,
+                "prompt": prompt,
+                "n": n,
+                "size": size,
+            }
+            if urlparse(self.base_url).hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+                request_kwargs["response_format"] = "b64_json"
+            response = client.images.generate(**request_kwargs)
 
             api_duration = time.time() - api_start_time
 
@@ -162,12 +172,17 @@ class OpenAIImageModel(ImageGenModel):
                 _, b64_data = image_url.split(",", 1)
                 with open(output_path, "wb") as f:
                     f.write(base64.b64decode(b64_data))
-            else:
+            elif image_url.startswith("http://") or image_url.startswith("https://"):
                 resp = requests.get(image_url, timeout=60)
                 resp.raise_for_status()
                 os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
                 with open(output_path, "wb") as f:
                     f.write(resp.content)
+            else:
+                # Raw b64_json from local OpenAI-compatible providers such as Ollama.
+                os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+                with open(output_path, "wb") as f:
+                    f.write(base64.b64decode(image_url))
 
             return output_path, api_duration
 

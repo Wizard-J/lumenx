@@ -173,7 +173,8 @@ export default function SettingsPage() {
       else if (type === "video") setOpenaiVideoModels(models);
       else setOpenaiLLMModels(models);
     } catch (e: any) {
-      alert(`Failed to sync models: ${e?.message || e}`);
+      const detail = e?.response?.data?.detail || e?.message || e;
+      alert(`Failed to sync models: ${detail}`);
     } finally {
       if (type === "image") setSyncingImageModels(false);
       else if (type === "video") setSyncingVideoModels(false);

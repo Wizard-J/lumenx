@@ -573,33 +573,17 @@ class ComicGenPipeline:
                 if script.style_prompt:
                     effective_positive_prompt += f", {script.style_prompt}"
         
-        asset_list = []
-        target_asset = None
-        
-        if asset_type == "character":
-            asset_list = script.characters
-        elif asset_type == "scene":
-            asset_list = script.scenes
-        elif asset_type == "prop":
-            asset_list = script.props
-        else:
+        if asset_type not in ("character", "scene", "prop"):
             raise ValueError(f"Invalid asset_type: {asset_type}")
-        
-        target_asset = next((a for a in asset_list if a.id == asset_id), None)
+
+        target_asset, source = self._find_asset_with_source(script, asset_id, asset_type)
         if not target_asset:
-            # Fallback: search in parent Series shared assets
-            if script.series_id:
-                series = self.series_store.get(script.series_id)
-                if series:
-                    series_list = getattr(series, asset_type + "s", [])
-                    target_asset = next((a for a in series_list if a.id == asset_id), None)
-                    if target_asset:
-                        logger.info(f"Found {asset_type} {asset_id} in Series (fallback)")
-            if not target_asset:
-                raise ValueError(f"{asset_type.capitalize()} {asset_id} not found")
+            raise ValueError(f"{asset_type.capitalize()} {asset_id} not found")
+        if source == "series":
+            logger.info(f"Found {asset_type} {asset_id} in Series (fallback)")
         
         target_asset.status = GenerationStatus.PROCESSING
-        self._save_data()
+        self._save_after_asset_mutation(source)
         
         try:
             # Generate with Art Direction style injected
@@ -626,7 +610,7 @@ class ComicGenPipeline:
             target_asset.status = GenerationStatus.FAILED
             raise e
         finally:
-            self._save_data()
+            self._save_after_asset_mutation(source)
         
         return script
 
@@ -641,29 +625,16 @@ class ComicGenPipeline:
         if not script:
             raise ValueError("Script not found")
         
-        # Find the asset and set to PROCESSING
-        asset_list = []
-        if asset_type == "character":
-            asset_list = script.characters
-        elif asset_type == "scene":
-            asset_list = script.scenes
-        elif asset_type == "prop":
-            asset_list = script.props
-        else:
+        if asset_type not in ("character", "scene", "prop"):
             raise ValueError(f"Invalid asset_type: {asset_type}")
         
-        target_asset = next((a for a in asset_list if a.id == asset_id), None)
+        # Find the asset and set to PROCESSING. Assets shown in an episode can
+        # be owned by the parent Series shared pool; persist to the owner.
+        target_asset, source = self._find_asset_with_source(script, asset_id, asset_type)
         if not target_asset:
-            # Fallback: search in parent Series shared assets
-            if script.series_id:
-                series = self.series_store.get(script.series_id)
-                if series:
-                    series_list = getattr(series, asset_type + "s", [])
-                    target_asset = next((a for a in series_list if a.id == asset_id), None)
-                    if target_asset:
-                        logger.info(f"Found {asset_type} {asset_id} in Series (fallback for task)")
-            if not target_asset:
-                raise ValueError(f"{asset_type.capitalize()} {asset_id} not found")
+            raise ValueError(f"{asset_type.capitalize()} {asset_id} not found")
+        if source == "series":
+            logger.info(f"Found {asset_type} {asset_id} in Series (fallback for task)")
         
         target_asset.status = GenerationStatus.PROCESSING
         
@@ -692,7 +663,7 @@ class ComicGenPipeline:
             }
         }
         
-        self._save_data()
+        self._save_after_asset_mutation(source)
         return script, task_id
 
     def process_asset_generation_task(self, task_id: str):

@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 
 from src.apps.comic_gen.models import (
     Series, Script, Character, Scene, Prop, PromptConfig, ModelSettings,
+    ImageAsset, ImageVariant,
 )
 from src.apps.comic_gen.pipeline import ComicGenPipeline
 
@@ -244,6 +245,34 @@ class TestResolveEpisodeAssets:
         result = pipeline.resolve_episode_assets(ep)
         assert len(result["props"]) == 1
         assert result["props"][0].name == "Series Sword"
+
+    def test_project_asset_generation_persists_series_shared_character(self, pipeline):
+        s = pipeline.create_series("S")
+        shared_char = _make_character(name="Shared Hero")
+        s.characters = [shared_char]
+
+        ep = _make_script(series_id=s.id)
+        pipeline.scripts[ep.id] = ep
+        s.episode_ids = [ep.id]
+        pipeline._save_series_data()
+        pipeline._save_data()
+
+        def fake_generate_character(target, **_kwargs):
+            variant = ImageVariant(id="variant-1", url="assets/characters/shared.png")
+            target.full_body_asset = ImageAsset(selected_id=variant.id, variants=[variant])
+            target.full_body_image_url = variant.url
+            target.image_url = variant.url
+
+        pipeline.asset_generator.generate_character.side_effect = fake_generate_character
+
+        pipeline.generate_asset(ep.id, shared_char.id, "character", generation_type="full_body")
+
+        saved = pipeline._storage.get_series(s.id)
+        saved_characters = saved["characters"]
+        saved_character = next(c for c in saved_characters if c["id"] == shared_char.id)
+        assert saved_character["image_url"] == "assets/characters/shared.png"
+        assert saved_character["full_body_image_url"] == "assets/characters/shared.png"
+        assert saved_character["full_body_asset"]["variants"][0]["url"] == "assets/characters/shared.png"
 
 # ===================================================================
 # 5. PromptConfig three-level fallback tests

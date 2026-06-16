@@ -1233,20 +1233,43 @@ def sync_openai_models(type: str = "image"):
     Returns list of model IDs available at the configured endpoint.
     """
     import requests
+    from urllib.parse import urlparse
     if type not in ("image", "video", "llm"):
-        raise HTTPException(status_code=400, detail="type must be image or video")
+        raise HTTPException(status_code=400, detail="type must be image, video, or llm")
 
     base_url = os.environ.get(f"{type.upper()}_BASE_URL") or "https://api.openai.com/v1"
     api_key = os.environ.get(f"{type.upper()}_API_KEY", "")
 
-    if not api_key:
+    parsed = urlparse(base_url)
+    is_local_endpoint = parsed.hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+    if not api_key and not is_local_endpoint:
         raise HTTPException(status_code=400, detail=f"No {type.upper()}_API_KEY configured. Set it in Core Cloud & Vendor Providers section first.")
 
-    headers = {"Authorization": f"Bearer {api_key}"}
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     url = base_url.rstrip("/") + "/models"
 
     try:
         resp = requests.get(url, headers=headers, timeout=15)
+        # Ollama supports OpenAI-compatible /v1/models on recent versions, but
+        # many local setups still expose only the native /api/tags endpoint.
+        # Fallback only for local endpoints so cloud 4xx errors stay visible.
+        if is_local_endpoint and resp.status_code in (400, 404):
+            native_base = base_url.rstrip("/")
+            if native_base.endswith("/v1"):
+                native_base = native_base[:-3]
+            elif native_base.endswith("/api"):
+                native_base = native_base[:-4]
+            tags_url = native_base.rstrip("/") + "/api/tags"
+            tags_resp = requests.get(tags_url, timeout=15)
+            tags_resp.raise_for_status()
+            tags_data = tags_resp.json()
+            models = [
+                {"id": m.get("name") or m.get("model"), "owned_by": "ollama"}
+                for m in tags_data.get("models", [])
+                if m.get("name") or m.get("model")
+            ]
+            return {"status": "success", "models": models}
         resp.raise_for_status()
         data = resp.json()
         models = [

@@ -53,6 +53,17 @@ export default function AssetCard({ asset, type, variant = "compact" }: AssetCar
   const isShared = (asset as Character | Scene | Prop).source === "series";
 
   const isGallery = variant === "gallery";
+  const mediaClassName = (() => {
+    if (!isGallery) return "aspect-square";
+    if (type === "characters") return "aspect-[4/5]";
+    if (type === "scenes") return "aspect-video";
+    return "aspect-square";
+  })();
+  const imageFitClassName = type === "characters"
+    ? "object-cover object-top"
+    : type === "scenes"
+      ? "object-cover object-center"
+      : "object-contain object-center";
 
   return (
     <div className={`glass-panel overflow-hidden relative transition-all duration-200 hover:border-white/15 hover:shadow-lg hover:shadow-black/20 ${isGallery ? "rounded-2xl" : "rounded-xl"}`}>
@@ -65,12 +76,12 @@ export default function AssetCard({ asset, type, variant = "compact" }: AssetCar
           {t("seriesSharedBadge")}
         </span>
       ) : null}
-      <div className={`${isGallery ? "aspect-[4/3]" : "aspect-square"} bg-elevated/50 flex items-center justify-center overflow-hidden`}>
+      <div className={`${mediaClassName} bg-elevated/50 flex items-center justify-center overflow-hidden`}>
         {imageUrl ? (
           <img
             src={getAssetUrl(imageUrl || "")}
             alt={asset.name}
-            className="w-full h-full object-cover object-top transition-transform duration-300 group-hover/card:scale-[1.03]"
+            className={`w-full h-full ${imageFitClassName} transition-transform duration-300 group-hover/card:scale-[1.03]`}
           />
         ) : (
           <ImageIcon size={isGallery ? 38 : 32} className="text-text-muted" />
