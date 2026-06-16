@@ -72,7 +72,7 @@ describe('model catalog selectors', () => {
 });
 
 describe('model catalog fallbacks', () => {
-    it('falls back unknown and legacy-surface ids to catalog defaults', () => {
+    it('preserves non-catalog model ids loaded from API settings', () => {
         expect(
             resolveModelSettings(
                 {
@@ -83,9 +83,9 @@ describe('model catalog fallbacks', () => {
                 'global_settings'
             )
         ).toMatchObject({
-            t2i_model: 'wan2.7-image-pro',
-            i2i_model: 'wan2.7-image-pro',
-            i2v_model: 'happyhorse-1.0-i2v',
+            t2i_model: 'missing-model',
+            i2i_model: 'wan2.6-r2v',
+            i2v_model: 'missing-video-model',
         });
     });
 
@@ -168,7 +168,7 @@ describe('model catalog fallbacks', () => {
                 },
                 'global_settings'
             ).i2v_model
-        ).toBe('happyhorse-1.0-i2v');
+        ).toBe('wan2.6-r2v');
 
         expect(compatI2vModels.map((model) => model.id)).toContain('wan2.6-i2v');
         expect(compatI2vModels.some((model) => model.id === 'wan/wan2.6-video#i2v')).toBe(false);
@@ -196,15 +196,8 @@ describe('model catalog runtime helpers', () => {
     });
 
     it('reads per-model reference image limits from catalog metadata', () => {
-        // getMaxReferenceImages routes the input through resolveModelId
-        // for the 'i2i' surface — when the literal id isn't visible in
-        // that surface (post-Phase 2 the wan2.6 ids moved to the
-        // 'image' selection_group), the resolver falls back to the
-        // current default (wan2.7-image, which advertises 9 refs).
-        // The behavior is correct given how callers (PropertiesPanel)
-        // use the project's i2i_model setting.
-        expect(getMaxReferenceImages('wan2.6-image')).toBe(9);
-        expect(getMaxReferenceImages('wan2.5-i2i-preview')).toBe(9);
+        expect(getMaxReferenceImages('wan2.6-image')).toBe(4);
+        expect(getMaxReferenceImages('wan2.5-i2i-preview')).toBe(3);
     });
 });
 

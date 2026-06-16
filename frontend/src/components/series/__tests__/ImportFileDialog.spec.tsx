@@ -1,5 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { NextIntlClientProvider } from 'next-intl';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
+import zhMessages from '../../../../messages/zh.json';
 
 // Mock framer-motion
 vi.mock('framer-motion', () => ({
@@ -65,7 +67,11 @@ const defaultProps = {
 };
 
 function renderDialog(props = {}) {
-    return render(<ImportFileDialog {...defaultProps} {...props} />);
+    return render(
+        <NextIntlClientProvider locale="zh" messages={zhMessages}>
+            <ImportFileDialog {...defaultProps} {...props} />
+        </NextIntlClientProvider>
+    );
 }
 
 // ── Tests ──

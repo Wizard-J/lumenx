@@ -352,18 +352,26 @@ class ComicGenPipeline:
             )
             return "dashscope"
 
-    def _get_video_model(self):
+    def _get_video_model(self, model_name: Optional[str] = None):
         """Get video model based on current VIDEO_PROVIDER env var."""
+        if model_name:
+            try:
+                if resolve_provider_backend(model_name) == "dashscope":
+                    return self.video_generator.model
+            except (KeyError, ValueError):
+                pass
+
         video_provider = os.environ.get("VIDEO_PROVIDER", "dashscope").lower()
         has_key = bool(os.environ.get("VIDEO_API_KEY", ""))
+        video_config = getattr(self, "config", {}).get("video", {}).get("model", {})
         if video_provider == "openai" and has_key:
             from ...models.openai_video import OpenAIVideoModel
             logger.info("Using OpenAI-compatible video model")
-            return OpenAIVideoModel(self.config.get('video', {}).get('model', {}))
+            return OpenAIVideoModel(video_config)
         elif video_provider == "comfyui":
             from ...models.comfyui import ComfyUIVideoModel
             logger.info("Using ComfyUI video model")
-            return ComfyUIVideoModel(self.config.get('video', {}).get('model', {}))
+            return ComfyUIVideoModel(video_config)
         else:
             return self.video_generator.model
 
@@ -3167,7 +3175,7 @@ class ComicGenPipeline:
                         self._save_data()
                     except Exception:
                         logger.warning("Failed to persist provider IDs mid-flight; will retry at task completion")
-                video_model = self._get_video_model()
+                video_model = self._get_video_model(task.model)
                 video_path, _ = video_model.generate(
                     prompt=task.prompt,
                     output_path=output_path,

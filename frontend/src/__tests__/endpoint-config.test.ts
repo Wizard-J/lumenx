@@ -137,10 +137,10 @@ describe("ENDPOINT_PROVIDERS registry", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it("contains exactly LLM, IMG, VIDEO, DashScope, Kling, Vidu", () => {
-    expect(ENDPOINT_PROVIDERS).toHaveLength(6);
+  it("contains the provider endpoint overrides exposed by the settings UI", () => {
+    expect(ENDPOINT_PROVIDERS).toHaveLength(3);
     const labels = ENDPOINT_PROVIDERS.map((p) => p.label);
-    expect(labels).toEqual(expect.arrayContaining(["LLM", "IMG", "VIDEO", "DashScope", "Kling", "Vidu"]));
+    expect(labels).toEqual(["DashScope", "Kling", "Vidu"]);
   });
 });
 

@@ -15,6 +15,7 @@ import requests
 
 from .base import VideoGenModel
 from ..utils.endpoints import get_provider_base_url
+from ..utils.op_logger import enter_operation, update_operation
 from ..utils.oss_utils import OSSImageUploader
 from ..utils.provider_media import resolve_media_input
 

@@ -1,5 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { NextIntlClientProvider } from 'next-intl';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
+import zhMessages from '../../../../messages/zh.json';
 
 // Mock framer-motion
 vi.mock('framer-motion', () => ({
@@ -21,28 +23,47 @@ vi.mock('framer-motion', () => ({
 }));
 
 // Mock lucide-react icons
-vi.mock('lucide-react', () => ({
-    ArrowLeft: (props: any) => <span data-testid="icon-arrow-left" {...props} />,
-    Users: (props: any) => <span data-testid="icon-users" {...props} />,
-    MapPin: (props: any) => <span data-testid="icon-map-pin" {...props} />,
-    Package: (props: any) => <span data-testid="icon-package" {...props} />,
-    Plus: (props: any) => <span data-testid="icon-plus" {...props} />,
-    X: (props: any) => <span data-testid="icon-x" {...props} />,
-    Image: (props: any) => <span data-testid="icon-image" {...props} />,
-    Settings: (props: any) => <span data-testid="icon-settings" {...props} />,
-    FileText: (props: any) => <span data-testid="icon-file-text" {...props} />,
-    Download: (props: any) => <span data-testid="icon-download" {...props} />,
-    MessageSquareCode: (props: any) => <span data-testid="icon-message-square-code" {...props} />,
-    ChevronLeft: (props: any) => <span data-testid="icon-chevron-left" {...props} />,
-    ChevronRight: (props: any) => <span data-testid="icon-chevron-right" {...props} />,
-    Play: (props: any) => <span data-testid="icon-play" {...props} />,
-}));
+vi.mock('lucide-react', () => {
+    const makeIcon = (name: string) => (props: any) => (
+        <span data-testid={`icon-${name.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()}`} {...props} />
+    );
+
+    return {
+        ArrowLeft: makeIcon('ArrowLeft'),
+        Users: makeIcon('Users'),
+        MapPin: makeIcon('MapPin'),
+        Package: makeIcon('Package'),
+        Plus: makeIcon('Plus'),
+        X: makeIcon('X'),
+        Image: makeIcon('Image'),
+        Settings: makeIcon('Settings'),
+        FileText: makeIcon('FileText'),
+        Download: makeIcon('Download'),
+        MessageSquareCode: makeIcon('MessageSquareCode'),
+        ChevronLeft: makeIcon('ChevronLeft'),
+        ChevronRight: makeIcon('ChevronRight'),
+        Play: makeIcon('Play'),
+        Palette: makeIcon('Palette'),
+        Terminal: makeIcon('Terminal'),
+        Sparkles: makeIcon('Sparkles'),
+        Loader2: makeIcon('Loader2'),
+        RefreshCw: makeIcon('RefreshCw'),
+    };
+});
 
 // Mock AssetCard
 vi.mock('@/components/common/AssetCard', () => ({
     default: ({ asset, type }: any) => (
         <div data-testid={`asset-card-${asset.id}`}>{asset.name}</div>
     ),
+}));
+
+vi.mock('@/components/modules/cast/CastWorkbenchModal', () => ({
+    default: () => null,
+}));
+
+vi.mock('@/components/layout/GlobalLogPanel', () => ({
+    default: () => null,
 }));
 
 // Mock API
@@ -93,7 +114,11 @@ const mockEpisodes = [
 // ── Helpers ──
 
 function renderPage(seriesId = 'series-1') {
-    return render(<SeriesDetailPage seriesId={seriesId} />);
+    return render(
+        <NextIntlClientProvider locale="zh" messages={zhMessages}>
+            <SeriesDetailPage seriesId={seriesId} />
+        </NextIntlClientProvider>
+    );
 }
 
 // ── Tests ──
@@ -383,7 +408,7 @@ describe('SeriesDetailPage', () => {
             fireEvent.click(screen.getByText('确定'));
 
             await waitFor(() => {
-                expect(mockCreateEpisodeForSeries).toHaveBeenCalledWith('series-1', '新集数', 3);
+                expect(mockCreateEpisodeForSeries).toHaveBeenCalledWith('series-1', '新集数', 3, 'i2v_legacy');
             });
         });
 
