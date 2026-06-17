@@ -21,6 +21,7 @@ import os
 import time
 import logging
 from typing import Dict, List, Optional, Any
+from urllib.parse import urlparse
 
 from ...utils.endpoints import get_provider_base_url
 from ...utils.op_logger import enter_operation, update_operation
@@ -56,6 +57,25 @@ def _get_llm_setting(*keys: str, default: str = "") -> str:
     return default
 
 
+def _is_local_base_url(base_url: str) -> bool:
+    parsed = urlparse(base_url)
+    return parsed.hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _normalize_openai_base_url(base_url: str) -> str:
+    """Normalize OpenAI-compatible base URLs.
+
+    Ollama's native endpoint is commonly configured as http://localhost:11434,
+    while OpenAI SDK calls need http://localhost:11434/v1. Keep cloud/proxy
+    URLs unchanged and only auto-append /v1 for bare local endpoints.
+    """
+    raw = base_url.rstrip("/")
+    parsed = urlparse(raw)
+    if _is_local_base_url(raw) and parsed.path in ("", "/"):
+        return raw + "/v1"
+    return raw
+
+
 class LLMAdapter:
     """Unified LLM call interface supporting DashScope and OpenAI-compatible APIs."""
 
@@ -67,7 +87,12 @@ class LLMAdapter:
     @property
     def is_configured(self) -> bool:
         if self.provider == "openai":
-            return bool(_get_llm_setting("LLM_API_KEY", "OPENAI_API_KEY"))
+            api_key = _get_llm_setting("LLM_API_KEY", "OPENAI_API_KEY")
+            base_url = _get_llm_setting(
+                "LLM_BASE_URL", "OPENAI_BASE_URL",
+                default="https://api.openai.com/v1",
+            )
+            return bool(api_key) or _is_local_base_url(base_url)
         return bool(os.getenv("DASHSCOPE_API_KEY"))
 
     def _get_client(self):
@@ -86,9 +111,12 @@ class LLMAdapter:
                     "LLM_BASE_URL", "OPENAI_BASE_URL",
                     default="https://api.openai.com/v1",
                 )
+                normalized_base_url = _normalize_openai_base_url(base_url)
+                if not api_key and _is_local_base_url(normalized_base_url):
+                    api_key = "ollama"
                 self._client = OpenAI(
                     api_key=api_key,
-                    base_url=base_url,
+                    base_url=normalized_base_url,
                 )
             else:
                 # DashScope – support optional LLM_BASE_URL override for proxy
@@ -98,7 +126,7 @@ class LLMAdapter:
                 )
                 self._client = OpenAI(
                     api_key=os.getenv("DASHSCOPE_API_KEY"),
-                    base_url=base_url,
+                    base_url=_normalize_openai_base_url(base_url),
                 )
         return self._client
 

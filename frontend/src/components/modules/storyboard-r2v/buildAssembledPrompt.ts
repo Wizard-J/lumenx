@@ -47,3 +47,80 @@ export function buildAssembledPrompt(shot: ShotNode): string {
         : "，";
     return base + separator + suffixes.join("，");
 }
+
+export function buildReferenceTags(
+    shot: ShotNode,
+    characters: any[] = [],
+    scenes: any[] = [],
+    props: any[] = [],
+    initialSeen: Set<string> = new Set(),
+    startSlot = 1,
+): string {
+    const tags: string[] = [];
+    const seen = new Set(initialSeen);
+    let slot = Math.max(1, startSlot);
+
+    const pushByName = (name?: string | null) => {
+        if (!name || seen.has(name)) return;
+        tags.push(`[character${slot}:${name}]`);
+        seen.add(name);
+        slot += 1;
+    };
+
+    (shot.characterIds ?? []).forEach((id) => {
+        const character = characters.find((c: any) => c.id === id);
+        pushByName(character?.name);
+    });
+
+    if (shot.sceneId) {
+        const scene = scenes.find((s: any) => s.id === shot.sceneId);
+        pushByName(scene?.name);
+    }
+
+    (shot.propIds ?? []).forEach((id) => {
+        const prop = props.find((p: any) => p.id === id);
+        pushByName(prop?.name);
+    });
+
+    return tags.join(" ");
+}
+
+export function buildPromptWithReferenceTags(
+    shot: ShotNode,
+    characters: any[] = [],
+    scenes: any[] = [],
+    props: any[] = [],
+): string {
+    const prompt = buildAssembledPrompt(shot);
+    const existingMatches = Array.from((shot.prompt || "").matchAll(/\[character(\d*):([^\]]+)\]/g));
+    const existingNames = new Set(existingMatches.map((match) => match[2]));
+    const maxExistingSlot = existingMatches.reduce((max, match) => {
+        const slot = parseInt(match[1], 10);
+        return Number.isFinite(slot) ? Math.max(max, slot) : max;
+    }, 0);
+    const existingTags = existingMatches.map((match) => match[0]).join(" ");
+    const generatedTags = buildReferenceTags(shot, characters, scenes, props, existingNames, maxExistingSlot + 1);
+    const tags = [existingTags, generatedTags].filter(Boolean).join(" ").trim();
+    return [tags, prompt].filter(Boolean).join(" ").trim();
+}
+
+export function normalizeReferenceTokensForEditor(text: string, taggedPrompt: string): string {
+    const slotNames = new Map<number, string>();
+    const tagPattern = /\[character(\d+):([^\]]+)\]/g;
+    let match;
+    while ((match = tagPattern.exec(taggedPrompt)) !== null) {
+        const slot = parseInt(match[1], 10);
+        if (Number.isFinite(slot)) {
+            slotNames.set(slot, match[2]);
+        }
+    }
+
+    let next = text || "";
+    slotNames.forEach((name, slot) => {
+        next = next.replace(new RegExp(`\\bcharacter${slot}\\b`, "gi"), name);
+    });
+    return next
+        .replace(/\[character\d+:[^\]]+\]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}

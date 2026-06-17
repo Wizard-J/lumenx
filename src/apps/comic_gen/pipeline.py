@@ -77,6 +77,8 @@ class ComicGenPipeline:
         # Format: { task_id: { status: str, progress: int, error: str, script_id: str, asset_id: str, created_at: float } }
         self.asset_generation_tasks: Dict[str, Dict[str, Any]] = {}
         self.video_generation_tasks: Dict[str, Dict[str, Any]] = {}
+        self._refine_batch_lock = threading.RLock()
+        self._refine_batch_status: Dict[str, Dict[str, Any]] = {}
         # Temporary cache for file import previews (import_id -> text)
         self._import_cache: Dict[str, str] = {}
         # Cached model instances for Kling/Vidu (lazily initialized)
@@ -104,6 +106,30 @@ class ComicGenPipeline:
     _ORPHAN_RECOVERY_REASON = (
         "Backend was restarted while this task was running. Click Retry to run it again."
     )
+
+    def get_refine_batch_status(self, script_id: str) -> Dict[str, Any]:
+        """Return in-memory batch-refine progress for a project.
+
+        Batch storyboard refinement is a long synchronous SSE workflow, not a
+        persisted background task. This status gives the frontend enough truth
+        after refresh to avoid duplicate submissions and show live progress.
+        """
+        with self._refine_batch_lock:
+            status = self._refine_batch_status.get(script_id)
+            if status:
+                return dict(status)
+        script = self.scripts.get(script_id)
+        frames = script.frames if script else []
+        refined = sum(1 for f in frames if f.assembled_prompt and f.visual_description)
+        return {
+            "running": False,
+            "total": len(frames),
+            "completed": refined,
+            "success": refined,
+            "failed": 0,
+            "skipped": 0,
+            "remaining": max(0, len(frames) - refined),
+        }
 
     def _recover_orphan_tasks(self) -> None:
         """Sweep persisted state for video tasks left in pending/processing.
@@ -1569,21 +1595,42 @@ class ComicGenPipeline:
         if not script:
             raise ValueError("Script not found")
 
-        total = len(script.frames)
+        with self._refine_batch_lock:
+            existing = self._refine_batch_status.get(script_id)
+            if existing and existing.get("running"):
+                raise RuntimeError("Batch refine is already running for this project")
+
+        pending_frames = [
+            (idx, frame)
+            for idx, frame in enumerate(script.frames)
+            if not (frame.assembled_prompt and frame.visual_description)
+        ]
+        total = len(pending_frames)
         if total == 0:
-            yield ("batch_complete", {"total": 0, "success": 0, "failed": 0})
+            yield ("batch_complete", {
+                "total": 0,
+                "success": 0,
+                "failed": 0,
+                "skipped": len(script.frames),
+            })
             return
 
-        # Signal all starts first so UI can show progress bar
-        for idx, frame in enumerate(script.frames):
-            yield ("frame_refine_start", {
-                "frame_id": frame.id,
-                "frame_index": idx,
+        with self._refine_batch_lock:
+            self._refine_batch_status[script_id] = {
+                "running": True,
                 "total": total,
-                "label": frame.action_description[:40] if frame.action_description else f"Frame {idx+1}",
-            })
+                "completed": 0,
+                "success": 0,
+                "failed": 0,
+                "skipped": len(script.frames) - total,
+                "remaining": total,
+                "started_at": time.time(),
+                "updated_at": time.time(),
+            }
 
-        # Refine frames in parallel (max 3 concurrent LLM calls)
+        # Refine only frames that do not already have rich assembled prompts.
+        # This makes interrupted/refreshed batch refinement resumable enough for
+        # the UI: clicking "continue" will not spend LLM calls on completed frames.
         success = 0
         failed = 0
         max_workers = min(3, total)
@@ -1597,28 +1644,86 @@ class ComicGenPipeline:
                 logger.error(f"[refine_batch] frame={frame.id} error={exc}")
                 return ("err", idx, frame.id, str(exc))
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(_refine_one, (idx, frame)): (idx, frame)
-                for idx, frame in enumerate(script.frames)
-            }
-            for future in as_completed(futures):
-                result = future.result()
-                if result[0] == "ok":
-                    _, idx, fid = result
-                    success += 1
-                    yield ("frame_refine_complete", {
-                        "frame_id": fid, "frame_index": idx, "total": total,
-                    })
-                else:
-                    _, idx, fid, err = result
-                    failed += 1
-                    yield ("frame_refine_error", {
-                        "frame_id": fid, "frame_index": idx, "error": err,
-                    })
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(_refine_one, (idx, frame)): (idx, frame)
+                    for idx, frame in pending_frames
+                }
+                for future in as_completed(futures):
+                    result = future.result()
+                    completed = success + failed + 1
+                    if result[0] == "ok":
+                        _, idx, fid = result
+                        success += 1
+                        event_payload = {
+                            "frame_id": fid,
+                            "frame_index": idx,
+                            "total": total,
+                            "success": success,
+                            "failed": failed,
+                            "completed": completed,
+                        }
+                        event_type = "frame_refine_complete"
+                    else:
+                        _, idx, fid, err = result
+                        failed += 1
+                        event_payload = {
+                            "frame_id": fid,
+                            "frame_index": idx,
+                            "total": total,
+                            "error": err,
+                            "success": success,
+                            "failed": failed,
+                            "completed": completed,
+                        }
+                        event_type = "frame_refine_error"
 
-        self._save_data()
-        yield ("batch_complete", {"total": total, "success": success, "failed": failed})
+                    with self._refine_batch_lock:
+                        status = self._refine_batch_status.setdefault(script_id, {})
+                        status.update({
+                            "running": True,
+                            "total": total,
+                            "completed": completed,
+                            "success": success,
+                            "failed": failed,
+                            "skipped": len(script.frames) - total,
+                            "remaining": max(0, total - completed),
+                            "updated_at": time.time(),
+                        })
+                    self._save_data()
+                    yield (event_type, event_payload)
+
+            self._save_data()
+            with self._refine_batch_lock:
+                self._refine_batch_status[script_id] = {
+                    "running": False,
+                    "total": total,
+                    "completed": success + failed,
+                    "success": success,
+                    "failed": failed,
+                    "skipped": len(script.frames) - total,
+                    "remaining": 0,
+                    "updated_at": time.time(),
+                }
+            yield ("batch_complete", {
+                "total": total,
+                "success": success,
+                "failed": failed,
+                "skipped": len(script.frames) - total,
+            })
+        finally:
+            with self._refine_batch_lock:
+                status = self._refine_batch_status.get(script_id)
+                if status and status.get("running"):
+                    status.update({
+                        "running": False,
+                        "completed": success + failed,
+                        "success": success,
+                        "failed": failed,
+                        "remaining": max(0, total - success - failed),
+                        "updated_at": time.time(),
+                    })
 
     def refine_frame_prompt(self, script_id: str, frame_id: str, raw_prompt: str, assets: List[Dict[str, Any]], feedback: str = "") -> Dict[str, Any]:
         """

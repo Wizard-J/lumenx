@@ -38,6 +38,14 @@ export function migrateShotNode(shot: ShotNode): ShotNode {
         }
         next = { ...next, videoTaskIdsByTab: buckets };
     }
+    if (!Array.isArray(next.characterIds) || !Array.isArray(next.propIds) || next.sceneId === undefined) {
+        next = {
+            ...next,
+            sceneId: next.sceneId ?? null,
+            characterIds: Array.isArray(next.characterIds) ? next.characterIds : [],
+            propIds: Array.isArray(next.propIds) ? next.propIds : [],
+        };
+    }
     return next;
 }
 

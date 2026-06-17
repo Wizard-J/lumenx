@@ -65,7 +65,7 @@ export function GenerationBanner({
                 <BannerShell key="phase2">
                     <Loader2 size={13} className="animate-spin text-amber-400 shrink-0" />
                     <span className="text-xs text-text-secondary">
-                        精修第{" "}
+                        已精修{" "}
                         <span className="text-foreground font-medium">
                             {refineProgress?.current ?? 0}/{refineProgress?.total ?? 0}
                         </span>{" "}

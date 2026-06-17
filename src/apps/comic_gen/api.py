@@ -1212,11 +1212,22 @@ def sync_openai_models(type: str = "image"):
     """
     import requests
     from urllib.parse import urlparse
+    from .llm_adapter import _normalize_openai_base_url
     if type not in ("image", "video", "llm"):
         raise HTTPException(status_code=400, detail="type must be image, video, or llm")
 
-    base_url = os.environ.get(f"{type.upper()}_BASE_URL") or "https://api.openai.com/v1"
-    api_key = os.environ.get(f"{type.upper()}_API_KEY", "")
+    if type == "llm":
+        from .llm_adapter import _get_llm_setting
+        base_url = _get_llm_setting(
+            "LLM_BASE_URL",
+            "OPENAI_BASE_URL",
+            default="https://api.openai.com/v1",
+        )
+        api_key = _get_llm_setting("LLM_API_KEY", "OPENAI_API_KEY")
+        base_url = _normalize_openai_base_url(base_url)
+    else:
+        base_url = os.environ.get(f"{type.upper()}_BASE_URL") or "https://api.openai.com/v1"
+        api_key = os.environ.get(f"{type.upper()}_API_KEY", "")
 
     parsed = urlparse(base_url)
     is_local_endpoint = parsed.hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
@@ -2017,12 +2028,23 @@ def refine_storyboard_batch(script_id: str):
     script = pipeline.get_script(script_id)
     if not script:
         raise HTTPException(status_code=404, detail="Script not found")
+    status = pipeline.get_refine_batch_status(script_id)
+    if status.get("running"):
+        raise HTTPException(status_code=409, detail="Batch refine is already running")
 
     def event_stream():
         for event_type, data in pipeline.refine_batch_generator(script_id):
             yield f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/projects/{script_id}/storyboard/refine_batch/status")
+def get_storyboard_refine_batch_status(script_id: str):
+    script = pipeline.get_script(script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
+    return pipeline.get_refine_batch_status(script_id)
 
 
 @app.post("/projects/{script_id}/generate_storyboard", response_model=Script)

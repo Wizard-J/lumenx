@@ -206,7 +206,23 @@ export interface RefineSSEEvent {
     frame_id?: string;
     frame_index?: number;
     total?: number;
+    completed?: number;
+    success?: number;
+    failed?: number;
+    skipped?: number;
     error?: string;
+}
+
+export interface RefineBatchStatus {
+    running: boolean;
+    total: number;
+    completed: number;
+    success: number;
+    failed: number;
+    skipped: number;
+    remaining: number;
+    started_at?: number;
+    updated_at?: number;
 }
 
 export const api = {
@@ -1033,7 +1049,12 @@ export const api = {
         const response = await fetch(`${API_URL}/projects/${scriptId}/storyboard/refine_batch`, {
             method: "POST",
         });
-        if (!response.ok) throw new Error("Failed to start batch refine");
+        if (!response.ok) {
+            const detail = await response.json().catch(() => null);
+            const error: any = new Error(detail?.detail || "Failed to start batch refine");
+            error.status = response.status;
+            throw error;
+        }
         const reader = response.body?.getReader();
         if (!reader) return;
         const decoder = new TextDecoder();
@@ -1056,6 +1077,12 @@ export const api = {
                 }
             }
         }
+    },
+
+    getRefineBatchStatus: async (scriptId: string): Promise<RefineBatchStatus> => {
+        const response = await fetch(`${API_URL}/projects/${scriptId}/storyboard/refine_batch/status`);
+        if (!response.ok) throw new Error("Failed to get batch refine status");
+        return response.json();
     },
 
     /** PR-3k · BGM preset catalog for Assembly Mix phase. */

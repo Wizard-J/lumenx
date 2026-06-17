@@ -22,7 +22,7 @@ import AssetChipBar from "./AssetChipBar";
 import PromptExpandModal from "./PromptExpandModal";
 import PolishPanel from "./PolishPanel";
 import FieldTagChip, { AddFieldButton, type FieldType } from "./FieldTagChip";
-import { buildAssembledPrompt } from "./buildAssembledPrompt";
+import { buildPromptWithReferenceTags, normalizeReferenceTokensForEditor } from "./buildAssembledPrompt";
 import { PendingTaskAffordance } from "@/components/shared/PendingTaskAffordance";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
 import PreviewVideo from "@/components/shared/preview/PreviewVideo";
@@ -69,6 +69,13 @@ export interface ShotNode {
         direct_r2v?: string[];
     };
     imageUrl?: string;
+
+    // Structured references mirrored from backend StoryboardFrame.
+    // These drive hidden R2V reference tags even when the editable prompt is
+    // clean natural language after AI polish.
+    sceneId?: string | null;
+    characterIds?: string[];
+    propIds?: string[];
 
     // ─── Storyboard Schema v2 fields ────────────────────────────────
     duration?: number | null;
@@ -178,21 +185,73 @@ export default function ShotCard({
     // currentProjectId — needed by PolishPanel to look up the
     // project's PromptConfig override server-side.
     const currentProjectId = useProjectStore((state) => state.currentProject?.id);
+    const promptWithReferenceTags = useMemo(() => buildPromptWithReferenceTags(shot, characters, scenes, props), [
+        shot,
+        characters,
+        scenes,
+        props,
+    ]);
+    const normalizePolishedPromptForEditor = useCallback((text: string) => (
+        normalizeReferenceTokensForEditor(text, promptWithReferenceTags)
+    ), [promptWithReferenceTags]);
+
+    const resolveReferencedAsset = useCallback((name: string) => {
+        const char = characters.find((c: any) => c.name === name);
+        if (char) {
+            return {
+                id: `character:${char.id}`,
+                description: char.description ? `${name}: ${char.description}` : name,
+                imageUrl: char.headshot_image_url || char.image_url || char.full_body_image_url
+                    || char.avatar_url || (char.full_body_asset?.variants?.[0]?.url),
+                avatarUrl: char.avatar_url || char.headshot_image_url || char.image_url
+                    || char.full_body_image_url || (char.full_body_asset?.variants?.[0]?.url),
+                kind: "character" as const,
+                name: char.name,
+            };
+        }
+        const scene = scenes.find((s: any) => s.name === name);
+        if (scene) {
+            return {
+                id: `scene:${scene.id}`,
+                description: scene.description ? `${name}: ${scene.description}` : name,
+                imageUrl: scene.image_url || scene.image_asset?.variants?.[0]?.url,
+                kind: "scene" as const,
+                name: scene.name,
+            };
+        }
+        const prop = props.find((p: any) => p.name === name);
+        if (prop) {
+            return {
+                id: `prop:${prop.id}`,
+                description: prop.description ? `${name}: ${prop.description}` : name,
+                imageUrl: prop.image_url || prop.image_asset?.variants?.[0]?.url,
+                kind: "prop" as const,
+                name: prop.name,
+            };
+        }
+        return {
+            id: `missing:${name}`,
+            description: name,
+            imageUrl: undefined,
+            kind: "missing" as const,
+            name,
+        };
+    }, [characters, scenes, props]);
+
     // r2vSlots — when R2V tab is active, derive slot context from
-    // @character references in the prompt so the polish system
-    // prompt knows what character1/character2 ID maps to.
+    // structured references / prompt tags so the polish system prompt
+    // knows what character1/character2 ID maps to.
     const r2vSlots = useCallback((): { description: string }[] => {
         if (shot.tabMode !== "direct_r2v") return [];
         const out: { description: string }[] = [];
         const tagPattern = /\[character\d+:([^\]]+)\]/g;
         let match;
-        while ((match = tagPattern.exec(shot.prompt)) !== null) {
+        while ((match = tagPattern.exec(promptWithReferenceTags)) !== null) {
             const [, name] = match;
-            const char = characters.find((c: any) => c.name === name);
-            out.push({ description: char?.description ? `${name}: ${char.description}` : name });
+            out.push({ description: resolveReferencedAsset(name).description });
         }
         return out;
-    }, [shot.tabMode, shot.prompt, characters])();
+    }, [shot.tabMode, promptWithReferenceTags, resolveReferencedAsset])();
 
     // polishImageUrls — feed vision-capable polish (Issue 13) with the
     // images the polish actually needs to "see":
@@ -206,14 +265,12 @@ export default function ShotCard({
             const seen = new Set<string>();
             const tagPattern = /\[character\d*:([^\]]+)\]/g;
             let m;
-            while ((m = tagPattern.exec(shot.prompt)) !== null) {
+            while ((m = tagPattern.exec(promptWithReferenceTags)) !== null) {
                 const [, name] = m;
-                const char = characters.find((c: any) => c.name === name);
-                if (!char || seen.has(char.id)) continue;
-                seen.add(char.id);
-                const url = char.headshot_image_url || char.image_url || char.full_body_image_url
-                    || (char.full_body_asset?.variants?.[0]?.url);
-                if (url) out.push(url);
+                const asset = resolveReferencedAsset(name);
+                if (seen.has(asset.id)) continue;
+                seen.add(asset.id);
+                if (asset.imageUrl) out.push(asset.imageUrl);
             }
             return out.slice(0, 4); // cap at 4 to keep payload reasonable
         }
@@ -222,7 +279,7 @@ export default function ShotCard({
             ? shot.t2iImageUrls[Math.max(0, Math.min(shot.t2iSelectedIndex ?? 0, shot.t2iImageUrls.length - 1))]
             : (shot.t2iImageUrl || shot.imageUrl);
         return active ? [active] : [];
-    }, [shot.tabMode, shot.prompt, shot.t2iImageUrls, shot.t2iSelectedIndex, shot.t2iImageUrl, shot.imageUrl, characters])();
+    }, [shot.tabMode, promptWithReferenceTags, shot.t2iImageUrls, shot.t2iSelectedIndex, shot.t2iImageUrl, shot.imageUrl, resolveReferencedAsset])();
 
     // castAvatars — character avatar group for the "Cast:" row above
     // the prompt textarea (L5 borrow from 火山剧创's 出镜角色). De-
@@ -233,7 +290,7 @@ export default function ShotCard({
         const seen = new Set<string>();
         const tagPattern = /\[character\d*:([^\]]+)\]/g;
         let match;
-        while ((match = tagPattern.exec(shot.prompt)) !== null) {
+        while ((match = tagPattern.exec(promptWithReferenceTags)) !== null) {
             const [, name] = match;
             const char = characters.find((c: any) => c.name === name);
             if (!char || seen.has(char.id)) continue;
@@ -247,11 +304,9 @@ export default function ShotCard({
             out.push({ id: char.id, name: char.name, avatarUrl });
         }
         return out;
-    }, [shot.prompt, characters])();
+    }, [promptWithReferenceTags, characters])();
 
-    const assembledPromptPreview = useMemo(() => buildAssembledPrompt(shot), [
-        shot.prompt, shot.shotSize, shot.cameraAngle, shot.cameraMovementStructured, shot.transitionHint,
-    ]);
+    const assembledPromptPreview = promptWithReferenceTags;
 
     useEffect(() => {
         const ta = textareaRef.current;
@@ -688,8 +743,11 @@ export default function ShotCard({
                                 tabMode={shot.tabMode}
                                 scriptId={currentProjectId ?? ""}
                                 slots={r2vSlots}
-                                imageUrls={polishImageUrls}
-                                onApply={onUpdatePrompt}
+                                // R2V slots are enough for text polish. Passing reference
+                                // images forces the backend into multimodal chat schema,
+                                // which breaks local text-only LLMs such as Ollama qwen3.
+                                imageUrls={shot.tabMode === "direct_r2v" ? [] : polishImageUrls}
+                                onApply={(text) => onUpdatePrompt(normalizePolishedPromptForEditor(text))}
                                 variant="inline"
                             />
                         </div>
