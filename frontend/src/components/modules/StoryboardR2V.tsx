@@ -7,7 +7,7 @@ import StepHeader from "@/components/shared/StepHeader";
 import PreviousEpisodeFramesRail from "./storyboard-r2v/PreviousEpisodeFramesRail";
 import { useTranslations } from "next-intl";
 import { useProjectStore } from "@/store/projectStore";
-import { api, crudApi, type VideoTask, type RefineSSEEvent } from "@/lib/api";
+import { api, crudApi, type VideoTask, type RefineSSEEvent, type RenderSSEEvent } from "@/lib/api";
 import { getAssetUrl } from "@/lib/utils";
 import { debugLog } from "@/lib/debugLog";
 import type { BatchSummary } from "./storyboard-r2v/shot-panel/CandidatesSection";
@@ -105,6 +105,40 @@ function mergeExternalModel(modelList: I2VModelConfig[], modelId?: string | null
     return [buildExternalVideoModelOption(modelId), ...modelList];
 }
 
+function deriveT2IStatus(frame: any): ShotNode["t2iStatus"] {
+    if (frame?.status === "processing") return "processing";
+    if (frame?.status === "failed") return "failed";
+    if (frame?.rendered_image_url || frame?.image_url || (Array.isArray(frame?.t2i_image_urls) && frame.t2i_image_urls.length > 0)) {
+        return "completed";
+    }
+    return undefined;
+}
+
+function frameToBaseShotNode(frame: any, defaultMode: "t2i_i2v" | "direct_r2v"): ShotNode {
+    return migrateShotNode({
+        id: frame.id,
+        prompt: frame.visual_description || frame.action_description || "",
+        tabMode: (frame.workbench_tab_mode as "t2i_i2v" | "direct_r2v" | undefined) ?? defaultMode,
+        videoUrl: frame.dubbed_video_url || frame.video_url || undefined,
+        videoStatus: (frame.dubbed_video_url || frame.video_url) ? ("completed" as const) : undefined,
+        imageUrl: frame.rendered_image_url || frame.image_url || undefined,
+        sceneId: frame.scene_id ?? null,
+        characterIds: Array.isArray(frame.character_ids) ? frame.character_ids : [],
+        propIds: Array.isArray(frame.prop_ids) ? frame.prop_ids : [],
+        t2iImageUrls: Array.isArray(frame.t2i_image_urls) ? frame.t2i_image_urls : [],
+        t2iSelectedIndex: typeof frame.t2i_selected_index === "number" ? frame.t2i_selected_index : 0,
+        t2iStatus: deriveT2IStatus(frame),
+        duration: frame.duration ?? null,
+        visualDescription: frame.visual_description ?? null,
+        assembledPrompt: frame.assembled_prompt ?? null,
+        dialogueStructured: frame.dialogue_structured ?? null,
+        cameraMovementStructured: frame.camera_movement_structured ?? null,
+        shotSize: frame.shot_size ?? null,
+        cameraAngle: frame.camera_angle ?? null,
+        transitionHint: frame.transition_hint ?? null,
+    });
+}
+
 function resolveStoryboardVideoDefaults(
     currentProject: any,
     ls: Storage | null,
@@ -172,6 +206,7 @@ export default function StoryboardR2V() {
     const [shots, setShots] = useState<ShotNode[]>(() => {
         if (currentProject?.frames && currentProject.frames.length > 0) {
             const videoTasks: any[] = (currentProject as any).video_tasks ?? [];
+            const defaultMode = currentProject.default_generation_mode === "i2v" ? "t2i_i2v" : "direct_r2v";
             return currentProject.frames.map((frame: any) => {
                 const frameTasks = videoTasks.filter((t: any) => t.frame_id === frame.id);
                 const inFlightTask = frameTasks.find((t: any) =>
@@ -192,31 +227,12 @@ export default function StoryboardR2V() {
                 } else if (frameTasks.some((t: any) => t.status === "failed")) {
                     videoStatus = "failed";
                 }
-                return migrateShotNode({
-                    id: frame.id,
-                    prompt: frame.visual_description || frame.action_description || "",
-                    tabMode: (frame.workbench_tab_mode as "t2i_i2v" | "direct_r2v" | undefined)
-                        ?? "direct_r2v",
+                return {
+                    ...frameToBaseShotNode(frame, defaultMode),
                     videoUrl,
                     videoStatus,
                     videoTaskId,
-                    imageUrl: frame.rendered_image_url || frame.image_url || undefined,
-                    sceneId: frame.scene_id ?? null,
-                    characterIds: Array.isArray(frame.character_ids) ? frame.character_ids : [],
-                    propIds: Array.isArray(frame.prop_ids) ? frame.prop_ids : [],
-                    t2iImageUrls: Array.isArray(frame.t2i_image_urls) ? frame.t2i_image_urls : [],
-                    t2iSelectedIndex: typeof frame.t2i_selected_index === "number"
-                        ? frame.t2i_selected_index
-                        : 0,
-                    duration: frame.duration ?? null,
-                    visualDescription: frame.visual_description ?? null,
-                    assembledPrompt: frame.assembled_prompt ?? null,
-                    dialogueStructured: frame.dialogue_structured ?? null,
-                    cameraMovementStructured: frame.camera_movement_structured ?? null,
-                    shotSize: frame.shot_size ?? null,
-                    cameraAngle: frame.camera_angle ?? null,
-                    transitionHint: frame.transition_hint ?? null,
-                });
+                };
             });
         }
         return [migrateShotNode({ id: `shot_${Date.now()}`, prompt: "", tabMode: "direct_r2v", sceneId: null, characterIds: [], propIds: [] })];
@@ -579,10 +595,12 @@ export default function StoryboardR2V() {
     const [genDialogOpen, setGenDialogOpen] = useState(false);
     const [generating, setGenerating] = useState(false);
     const [refining, setRefining] = useState(false);
+    const [renderingFrames, setRenderingFrames] = useState(false);
     const [bannerState, setBannerState] = useState<BannerState>(
         () => (currentProject?.frames?.length ?? 0) > 0 ? "summary" : "idle"
     );
     const [refineProgress, setRefineProgress] = useState<{ current: number; total: number } | null>(null);
+    const [renderProgress, setRenderProgress] = useState<{ current: number; total: number } | null>(null);
     const [dialogueProgress, setDialogueProgress] = useState<{ current: number; total: number } | null>(null);
 
     const PHASE1_CAPTIONS = useMemo(() => [
@@ -594,29 +612,10 @@ export default function StoryboardR2V() {
         "最后润色一下…",
     ], []);
 
-    const frameToShotNode = useCallback((frame: any): ShotNode => migrateShotNode({
-        id: frame.id,
-        prompt: frame.visual_description || frame.action_description || "",
-        tabMode: (frame.workbench_tab_mode as "t2i_i2v" | "direct_r2v" | undefined)
-            ?? (currentProject?.default_generation_mode === "i2v" ? "t2i_i2v" : "direct_r2v"),
-        videoUrl: frame.dubbed_video_url || frame.video_url || undefined,
-        videoStatus: (frame.dubbed_video_url || frame.video_url) ? ("completed" as const) : undefined,
-        imageUrl: frame.rendered_image_url || frame.image_url || undefined,
-        sceneId: frame.scene_id ?? null,
-        characterIds: Array.isArray(frame.character_ids) ? frame.character_ids : [],
-        propIds: Array.isArray(frame.prop_ids) ? frame.prop_ids : [],
-        t2iImageUrls: Array.isArray(frame.t2i_image_urls) ? frame.t2i_image_urls : [],
-        t2iSelectedIndex: typeof frame.t2i_selected_index === "number"
-            ? frame.t2i_selected_index : 0,
-        duration: frame.duration ?? null,
-        visualDescription: frame.visual_description ?? null,
-        assembledPrompt: frame.assembled_prompt ?? null,
-        dialogueStructured: frame.dialogue_structured ?? null,
-        cameraMovementStructured: frame.camera_movement_structured ?? null,
-        shotSize: frame.shot_size ?? null,
-        cameraAngle: frame.camera_angle ?? null,
-        transitionHint: frame.transition_hint ?? null,
-    }), [currentProject?.default_generation_mode]);
+    const frameToShotNode = useCallback((frame: any): ShotNode => frameToBaseShotNode(
+        frame,
+        currentProject?.default_generation_mode === "i2v" ? "t2i_i2v" : "direct_r2v",
+    ), [currentProject?.default_generation_mode]);
 
     const bannerSummary = useMemo(() => {
         if (!currentProject?.frames?.length) return null;
@@ -653,6 +652,21 @@ export default function StoryboardR2V() {
             refined,
             total,
             remaining: Math.max(0, total - refined),
+        };
+    }, [currentProject?.frames, shots.length]);
+
+    const renderStats = useMemo(() => {
+        const frames = (currentProject?.frames as any[] | undefined) ?? [];
+        const rendered = frames.filter((frame: any) =>
+            frame.rendered_image_url
+            || frame.image_url
+            || (Array.isArray(frame.t2i_image_urls) && frame.t2i_image_urls.length > 0)
+        ).length;
+        const total = frames.length || shots.length;
+        return {
+            rendered,
+            total,
+            remaining: Math.max(0, total - rendered),
         };
     }, [currentProject?.frames, shots.length]);
 
@@ -798,11 +812,73 @@ export default function StoryboardR2V() {
         }
     }, [currentProject, shots.length, refineStats.remaining, refreshProjectFrames]);
 
+    const handleBatchRenderFrames = useCallback(async () => {
+        if (!currentProject?.id) return;
+        const projectId = currentProject.id;
+        const frameCount = currentProject.frames?.length ?? shots.length;
+        if (frameCount <= 0) {
+            toast.warning("暂无可生成分镜图的分镜，请先生成分镜。");
+            return;
+        }
+
+        setRenderingFrames(true);
+        const targetTotal = renderStats.remaining || frameCount;
+        setRenderProgress({ current: 0, total: targetTotal });
+        let keepTrackingExistingRun = false;
+        try {
+            const batchResult = { total: targetTotal, success: 0, failed: 0, skipped: 0 };
+            await api.renderBatchFrames(projectId, (event: RenderSSEEvent) => {
+                if (event.type === "frame_render_complete" || event.type === "frame_render_error") {
+                    setRenderProgress({
+                        current: event.completed ?? ((event.success ?? 0) + (event.failed ?? 0)),
+                        total: event.total ?? targetTotal,
+                    });
+                    void refreshProjectFrames();
+                } else if (event.type === "batch_complete") {
+                    batchResult.total = event.total ?? targetTotal;
+                    batchResult.success = event.success ?? 0;
+                    batchResult.failed = event.failed ?? 0;
+                    batchResult.skipped = event.skipped ?? 0;
+                    setRenderProgress({
+                        current: (event.success ?? 0) + (event.failed ?? 0),
+                        total: event.total ?? targetTotal,
+                    });
+                }
+            });
+            await refreshProjectFrames();
+            const failed = batchResult.failed;
+            const success = batchResult.success;
+            const skipped = batchResult.skipped;
+            if (batchResult.total === 0 && skipped > 0) {
+                toast.success("所有分镜图都已生成");
+            } else if (failed > 0) {
+                toast.warning(`分镜图生成完成：${success} 帧成功，${failed} 帧失败`);
+            } else {
+                toast.success(`分镜图生成完成：${success} 帧成功`);
+            }
+        } catch (err: any) {
+            if (err?.status === 409) {
+                keepTrackingExistingRun = true;
+                setRenderingFrames(true);
+                toast.warning("已有批量分镜图生成正在运行，已切换为跟踪进度。");
+                return;
+            }
+            const detail = err?.response?.data?.detail || err?.message || "未知错误";
+            toast.error(`批量生成分镜图失败：${String(detail).slice(0, 200)}`);
+            debugLog.warn("Studio", "batch frame render failed", err);
+        } finally {
+            if (!keepTrackingExistingRun) {
+                setRenderingFrames(false);
+                setRenderProgress(null);
+            }
+        }
+    }, [currentProject, shots.length, renderStats.remaining, refreshProjectFrames]);
+
     useEffect(() => {
         if (!currentProject?.id) return;
         let cancelled = false;
 
-        const syncRefineStatus = async () => {
+        const syncBatchStatuses = async () => {
             if (generating) return;
             try {
                 const status = await api.getRefineBatchStatus(currentProject.id);
@@ -823,10 +899,28 @@ export default function StoryboardR2V() {
             } catch (err) {
                 debugLog.warn("Studio", "sync refine batch status failed", err);
             }
+
+            try {
+                const status = await api.getRenderBatchStatus(currentProject.id);
+                if (cancelled) return;
+                if (status.running) {
+                    setRenderingFrames(true);
+                    setRenderProgress({
+                        current: status.completed ?? 0,
+                        total: status.total ?? 0,
+                    });
+                    void refreshProjectFrames();
+                } else {
+                    setRenderingFrames(false);
+                    setRenderProgress(null);
+                }
+            } catch (err) {
+                debugLog.warn("Studio", "sync render batch status failed", err);
+            }
         };
 
-        void syncRefineStatus();
-        const timer = window.setInterval(syncRefineStatus, 3000);
+        void syncBatchStatuses();
+        const timer = window.setInterval(syncBatchStatuses, 3000);
         return () => {
             cancelled = true;
             window.clearInterval(timer);
@@ -1185,25 +1279,44 @@ export default function StoryboardR2V() {
                 1    // batchSize
             );
 
-            if (result?.task_id || result?.id) {
-                const taskId = result.task_id || result.id;
+            const returnedFrame = Array.isArray(result?.frames)
+                ? result.frames.find((frame: any) => frame.id === shot.id)
+                : null;
+            if (returnedFrame) {
+                updateProject(currentProject.id, result);
+            }
+            const imageUrl = returnedFrame?.rendered_image_url
+                || returnedFrame?.image_url
+                || result?.image_url
+                || result?.rendered_image_url;
+
+            if (result?.task_id && !imageUrl) {
                 setShots(prev => prev.map((s, i) =>
-                    i === index ? { ...s, t2iTaskId: taskId, t2iStatus: "processing" } : s
+                    i === index ? { ...s, t2iTaskId: result.task_id, t2iStatus: "processing" } : s
                 ));
-            } else if (result?.image_url || result?.rendered_image_url) {
+                return;
+            }
+
+            if (imageUrl) {
                 // Immediate result (synchronous render). Append to T2I
                 // history + auto-select so the new image becomes the
                 // active首帧 used by downstream I2V generation.
-                const imageUrl = result.image_url || result.rendered_image_url;
                 setShots(prev => prev.map((s, i) => {
                     if (i !== index) return s;
-                    const updated = appendT2IImage({ ...s, t2iStatus: "completed" }, imageUrl);
+                    const updated = appendT2IImage({
+                        ...s,
+                        imageUrl: returnedFrame?.rendered_image_url || returnedFrame?.image_url || s.imageUrl,
+                        t2iTaskId: undefined,
+                        t2iStatus: "completed",
+                    }, imageUrl);
                     persistWorkbench(s.id, {
                         t2i_image_urls: updated.t2iImageUrls ?? [],
                         t2i_selected_index: updated.t2iSelectedIndex ?? 0,
                     });
                     return updated;
                 }));
+            } else {
+                throw new Error("Render returned an empty response");
             }
         } catch (error) {
             debugLog.error("Studio", "Failed to generate T2I for shot:", error);
@@ -1211,7 +1324,7 @@ export default function StoryboardR2V() {
                 i === index ? { ...s, t2iStatus: "failed" } : s
             ));
         }
-    }, [shots, currentProject, characters, scenes, props, persistWorkbench, parseAssetTags]);
+    }, [shots, currentProject, characters, scenes, props, updateProject, persistWorkbench, parseAssetTags]);
 
     // Generate video for a shot
     const generateVideo = useCallback(async (index: number) => {
@@ -1586,18 +1699,24 @@ export default function StoryboardR2V() {
             const t = allTasks.find((tt) => tt.id === id);
             return !t || t.status === "pending" || t.status === "processing";
         });
-        if (!anyInFlight && !localInFlight) return;
+        const localT2IInFlight = shots.some((s) =>
+            s.t2iStatus === "pending" || s.t2iStatus === "processing"
+        );
+        if (!anyInFlight && !localInFlight && !localT2IInFlight && !renderingFrames) return;
         const projectId = currentProject.id;
         const id = window.setInterval(async () => {
             try {
                 const fresh = await api.getProject(projectId);
                 updateProject(projectId, fresh);
+                if (Array.isArray(fresh?.frames)) {
+                    setShots(fresh.frames.map((frame: any) => frameToShotNode(frame)));
+                }
             } catch {
                 /* swallow — network blips are fine, next tick retries */
             }
         }, 5000);
         return () => window.clearInterval(id);
-    }, [currentProject?.id, (currentProject as any)?.video_tasks, shots, updateProject]);
+    }, [currentProject?.id, (currentProject as any)?.video_tasks, shots, updateProject, frameToShotNode, renderingFrames]);
 
     // Poll for task completion (both T2I and video)
     useEffect(() => {
@@ -2060,7 +2179,7 @@ export default function StoryboardR2V() {
                 <button
                     type="button"
                     onClick={() => setGenDialogOpen(true)}
-                    disabled={generating || refining}
+                    disabled={generating || refining || renderingFrames}
                     className="inline-flex h-7 items-center gap-1.5 rounded px-2.5 font-mono text-[10.5px] uppercase tracking-[0.14em] font-medium text-primary border border-primary/30 bg-primary/5 hover:bg-primary/10 transition-colors disabled:opacity-40"
                 >
                     {generating
@@ -2075,7 +2194,7 @@ export default function StoryboardR2V() {
                     <button
                         type="button"
                         onClick={handleBatchRefineFrames}
-                        disabled={generating || refining || refineStats.remaining === 0}
+                        disabled={generating || refining || renderingFrames || refineStats.remaining === 0}
                         className="inline-flex h-7 items-center gap-1.5 rounded px-2.5 font-mono text-[10.5px] uppercase tracking-[0.14em] font-medium text-amber-200 border border-amber-300/30 bg-amber-300/5 hover:bg-amber-300/10 transition-colors disabled:opacity-40"
                     >
                         {refining ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
@@ -2086,6 +2205,24 @@ export default function StoryboardR2V() {
                                 : refineStats.refined > 0
                                     ? `继续润色 · ${refineStats.remaining}`
                                     : "全部润色"
+                        }
+                    </button>
+                ) : null}
+                {shots.length > 0 ? (
+                    <button
+                        type="button"
+                        onClick={handleBatchRenderFrames}
+                        disabled={generating || refining || renderingFrames || renderStats.remaining === 0}
+                        className="inline-flex h-7 items-center gap-1.5 rounded px-2.5 font-mono text-[10.5px] uppercase tracking-[0.14em] font-medium text-emerald-200 border border-emerald-300/30 bg-emerald-300/5 hover:bg-emerald-300/10 transition-colors disabled:opacity-40"
+                    >
+                        {renderingFrames ? <Loader2 size={11} className="animate-spin" /> : <Film size={11} />}
+                        {renderingFrames
+                            ? `分镜图生成中${renderProgress ? ` · ${renderProgress.current}/${renderProgress.total}` : ""}`
+                            : renderStats.remaining === 0
+                                ? "分镜图已生成"
+                                : renderStats.rendered > 0
+                                    ? `继续生成分镜图 · ${renderStats.remaining}`
+                                    : "批量生成分镜图"
                         }
                     </button>
                 ) : null}

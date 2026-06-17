@@ -12,6 +12,7 @@ import { useTranslations } from "next-intl";
 import { useLogStore } from "@/store/logStore";
 import SeriesSidebar, { type SidebarItem } from "./SeriesSidebar";
 import GlobalLogSidebar from "@/components/layout/GlobalLogPanel";
+import { getAssetUrl } from "@/lib/utils";
 
 const SeriesModelSettingsModal = dynamic(() => import("./SeriesModelSettingsModal"), { ssr: false });
 const SeriesPromptConfigModal = dynamic(() => import("./SeriesPromptConfigModal"), { ssr: false });
@@ -215,6 +216,7 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
             <EpisodeContentPanel
               key={`episode-${selectedEpisode.id}`}
               episode={selectedEpisode}
+              series={series}
               seriesId={seriesId}
               onOpenEditor={() => handleOpenEpisode(selectedEpisode.id)}
             />
@@ -514,19 +516,30 @@ function AssetContentPanel({
 
 function EpisodeContentPanel({
   episode,
+  series,
   seriesId,
   onOpenEditor,
 }: {
   episode: Project;
+  series: Series | null;
   seriesId: string;
   onOpenEditor: () => void;
 }) {
   const t = useTranslations("series");
 
   const frames = episode.frames || [];
-  const characters = episode.characters || [];
-  const scenes = episode.scenes || [];
-  const originalText = episode.originalText || "";
+  const characters = (episode.characters?.length ? episode.characters : series?.characters) || [];
+  const scenes = (episode.scenes?.length ? episode.scenes : series?.scenes) || [];
+  const originalText = episode.originalText || (episode as any).original_text || "";
+  const getFrameThumbUrl = (frame: any): string | undefined => {
+    if (frame.rendered_image_url) return frame.rendered_image_url;
+    if (frame.image_url) return frame.image_url;
+    if (Array.isArray(frame.t2i_image_urls) && frame.t2i_image_urls.length > 0) {
+      const idx = Math.max(0, Math.min(frame.t2i_selected_index ?? 0, frame.t2i_image_urls.length - 1));
+      return frame.t2i_image_urls[idx];
+    }
+    return undefined;
+  };
 
   return (
     <motion.div
@@ -592,15 +605,17 @@ function EpisodeContentPanel({
             </div>
           ) : (
             <div className="grid grid-cols-4 lg:grid-cols-6 gap-2">
-              {frames.slice(0, 12).map((frame, i) => (
+              {frames.slice(0, 12).map((frame, i) => {
+                const thumbUrl = getFrameThumbUrl(frame);
+                return (
                 <div
                   key={frame.id}
                   className="aspect-video bg-surface rounded-lg border border-glass-border overflow-hidden cursor-pointer hover:border-primary/50 transition-colors"
                   onClick={onOpenEditor}
                 >
-                  {frame.rendered_image_url ? (
+                  {thumbUrl ? (
                     <img
-                      src={frame.rendered_image_url}
+                      src={getAssetUrl(thumbUrl)}
                       alt={`#${i + 1}`}
                       className="w-full h-full object-cover"
                     />
@@ -610,7 +625,8 @@ function EpisodeContentPanel({
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
               {frames.length > 12 && (
                 <div className="aspect-video bg-surface rounded-lg border border-glass-border flex items-center justify-center text-xs text-text-muted">
                   +{frames.length - 12}

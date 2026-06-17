@@ -27,6 +27,19 @@ export function migrateShotNode(shot: ShotNode): ShotNode {
             t2iSelectedIndex: Math.max(0, (next.t2iImageUrls?.length ?? 1) - 1),
         };
     }
+    if (next.t2iImageUrls && next.t2iImageUrls.length > 0) {
+        const activeIndex = Math.max(
+            0,
+            Math.min(next.t2iSelectedIndex ?? 0, next.t2iImageUrls.length - 1),
+        );
+        if (next.t2iSelectedIndex !== activeIndex || next.t2iImageUrl !== next.t2iImageUrls[activeIndex]) {
+            next = {
+                ...next,
+                t2iSelectedIndex: activeIndex,
+                t2iImageUrl: next.t2iImageUrls[activeIndex],
+            };
+        }
+    }
     // videoTaskIdsByTab: default empty buckets.
     if (!next.videoTaskIdsByTab) {
         // Backfill: legacy single videoTaskId belongs to the shot's

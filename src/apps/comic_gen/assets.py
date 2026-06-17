@@ -2,7 +2,7 @@ import os
 import uuid
 import time
 from typing import Dict, Any, List
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from .models import Character, Scene, Prop, GenerationStatus, ImageAsset, ImageVariant, MAX_VARIANTS_PER_ASSET
 from ...models.image import WanxImageModel
 from ...utils import get_logger
@@ -55,10 +55,11 @@ class AssetGenerator:
 
     def _get_model(self):
         """Get image model based on current IMAGE_PROVIDER env var."""
-        import os
         image_provider = os.environ.get("IMAGE_PROVIDER", "dashscope").lower()
         has_key = bool(os.environ.get("IMAGE_API_KEY", ""))
-        if image_provider == "openai" and has_key:
+        base_url = os.environ.get("IMAGE_BASE_URL", "")
+        is_local_endpoint = urlparse(base_url).hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+        if image_provider == "openai" and (has_key or is_local_endpoint):
             from ...models.openai_image import OpenAIImageModel
             return OpenAIImageModel(self.config.get('model', {}))
         elif image_provider == "comfyui":

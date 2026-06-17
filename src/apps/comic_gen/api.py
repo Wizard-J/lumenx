@@ -2047,6 +2047,33 @@ def get_storyboard_refine_batch_status(script_id: str):
     return pipeline.get_refine_batch_status(script_id)
 
 
+@app.post("/projects/{script_id}/storyboard/render_batch")
+def render_storyboard_batch(script_id: str):
+    """Batch-generate storyboard still images. Streams SSE events."""
+    from fastapi.responses import StreamingResponse
+
+    script = pipeline.get_script(script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
+    status = pipeline.get_render_batch_status(script_id)
+    if status.get("running"):
+        raise HTTPException(status_code=409, detail="Batch storyboard render is already running")
+
+    def event_stream():
+        for event_type, data in pipeline.render_batch_generator(script_id):
+            yield f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/projects/{script_id}/storyboard/render_batch/status")
+def get_storyboard_render_batch_status(script_id: str):
+    script = pipeline.get_script(script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
+    return pipeline.get_render_batch_status(script_id)
+
+
 @app.post("/projects/{script_id}/generate_storyboard", response_model=Script)
 def generate_storyboard(script_id: str):
     """Triggers storyboard generation."""

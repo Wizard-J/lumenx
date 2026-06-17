@@ -158,12 +158,15 @@ export default function SettingsPage() {
   const [openaiLLMModels, setOpenaiLLMModels] = useState<{id: string; name: string}[]>([]);
   const [syncingLLMModels, setSyncingLLMModels] = useState(false);
   const [llmModelFilter, setLLmModelFilter] = useState("");
+  const [modelSyncError, setModelSyncError] = useState<string | null>(null);
+  const autoSyncAttemptedRef = useRef<Set<string>>(new Set());
 
-  const syncOpenaiModels = async (type: "image" | "video" | "llm") => {
+  const syncOpenaiModels = async (type: "image" | "video" | "llm", options: { silent?: boolean } = {}) => {
     if (type === "image") setSyncingImageModels(true);
     else if (type === "video") setSyncingVideoModels(true);
     else setSyncingLLMModels(true);
     try {
+      setModelSyncError(null);
       const res = await api.syncOpenAIModels(type);
       const models = (res.models || []).map((m: {id: string; owned_by: string}) => ({
         id: m.id,
@@ -174,7 +177,11 @@ export default function SettingsPage() {
       else setOpenaiLLMModels(models);
     } catch (e: any) {
       const detail = e?.response?.data?.detail || e?.message || e;
-      alert(`Failed to sync models: ${detail}`);
+      const message = `Failed to sync ${type.toUpperCase()} models: ${detail}`;
+      setModelSyncError(message);
+      if (!options.silent) {
+        console.warn(message);
+      }
     } finally {
       if (type === "image") setSyncingImageModels(false);
       else if (type === "video") setSyncingVideoModels(false);
@@ -223,9 +230,14 @@ export default function SettingsPage() {
       const data = await api.getEnvConfig();
       setConfig((prev) => normalizeEnvConfig(prev, data));
       // Auto-sync models for openai-compatible providers
-      if (data.LLM_PROVIDER === "openai") syncOpenaiModels("llm");
-      if (data.IMAGE_PROVIDER === "openai") syncOpenaiModels("image");
-      if (data.VIDEO_PROVIDER === "openai") syncOpenaiModels("video");
+      const autoSync = (type: "image" | "video" | "llm") => {
+        if (autoSyncAttemptedRef.current.has(type)) return;
+        autoSyncAttemptedRef.current.add(type);
+        void syncOpenaiModels(type, { silent: true });
+      };
+      if (data.LLM_PROVIDER === "openai") autoSync("llm");
+      if (data.IMAGE_PROVIDER === "openai") autoSync("image");
+      if (data.VIDEO_PROVIDER === "openai") autoSync("video");
     } catch {
       setLoadError("Failed to load configuration. Is the backend running?");
     } finally {
@@ -329,6 +341,9 @@ export default function SettingsPage() {
     prompts: { title: "Default Prompts", description: "Reusable prompt defaults for generation workflows" },
   };
   const activeSectionMeta = sectionMeta[activeSection];
+  const selectedImageModelIsDashScope = GLOBAL_IMAGE_MODELS.some((model) => model.id === modelSettings.t2i_model);
+  const imageProviderModelMismatch =
+    config.IMAGE_PROVIDER === "dashscope" && Boolean(modelSettings.t2i_model) && !selectedImageModelIsDashScope;
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)]">
@@ -855,6 +870,20 @@ export default function SettingsPage() {
         </div>
 
         <div className="space-y-5">
+          {modelSyncError && (
+            <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
+              <span>{modelSyncError}</span>
+              <button
+                type="button"
+                onClick={() => setModelSyncError(null)}
+                className="text-amber-100/70 hover:text-amber-100"
+                aria-label="Dismiss model sync error"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
+
           {/* ── LLM Models ── */}
           <div>
             <div className="flex items-center gap-2 text-sm font-bold text-foreground mb-3">
@@ -948,6 +977,11 @@ export default function SettingsPage() {
             </div>
           ) : (
             <>
+              {imageProviderModelMismatch && (
+                <div className="rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
+                  当前图片模型 {modelSettings.t2i_model} 不是 DashScope 模型。请把 Image Generation Provider 切到 OpenAI Compatible，或重新选择 DashScope 图片模型。
+                </div>
+              )}
               {config.IMAGE_PROVIDER === "openai" && (
                 <div className="flex items-center gap-2 mb-2">
                   <button
@@ -982,10 +1016,10 @@ export default function SettingsPage() {
                       { id: "gpt-image-2-pro", name: "GPT Image 2 Pro" },
                     ];
                     const baseModels = config.IMAGE_PROVIDER === "openai"
-                      ? (openaiImageModels.length > 0 ? openaiImageModels : defaults)
-                      : GLOBAL_IMAGE_MODELS;
+                      ? [...(openaiImageModels.length > 0 ? openaiImageModels : defaults)]
+                      : [...GLOBAL_IMAGE_MODELS];
                     // On initial load, if saved model not in list, prepend it.
-                    if (modelSettings.t2i_model && !baseModels.some(m => m.id === modelSettings.t2i_model)) {
+                    if (config.IMAGE_PROVIDER === "openai" && modelSettings.t2i_model && !baseModels.some(m => m.id === modelSettings.t2i_model)) {
                       baseModels.unshift({ id: modelSettings.t2i_model, name: modelSettings.t2i_model });
                     }
                     return baseModels.filter(m => !imageModelFilter || m.id.toLowerCase().includes(imageModelFilter.toLowerCase()) || m.name.toLowerCase().includes(imageModelFilter.toLowerCase()));

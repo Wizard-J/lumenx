@@ -79,6 +79,8 @@ class ComicGenPipeline:
         self.video_generation_tasks: Dict[str, Dict[str, Any]] = {}
         self._refine_batch_lock = threading.RLock()
         self._refine_batch_status: Dict[str, Dict[str, Any]] = {}
+        self._render_batch_lock = threading.RLock()
+        self._render_batch_status: Dict[str, Dict[str, Any]] = {}
         # Temporary cache for file import previews (import_id -> text)
         self._import_cache: Dict[str, str] = {}
         # Cached model instances for Kling/Vidu (lazily initialized)
@@ -129,6 +131,26 @@ class ComicGenPipeline:
             "failed": 0,
             "skipped": 0,
             "remaining": max(0, len(frames) - refined),
+        }
+
+    def get_render_batch_status(self, script_id: str) -> Dict[str, Any]:
+        """Return in-memory batch storyboard-image progress for a project."""
+        with self._render_batch_lock:
+            status = self._render_batch_status.get(script_id)
+            if status:
+                return dict(status)
+        script = self.scripts.get(script_id)
+        frames = script.frames if script else []
+        completed = sum(1 for f in frames if self._frame_has_t2i_image(f))
+        failed = sum(1 for f in frames if f.status == GenerationStatus.FAILED and not self._frame_has_t2i_image(f))
+        return {
+            "running": False,
+            "total": len(frames),
+            "completed": completed,
+            "success": completed,
+            "failed": failed,
+            "skipped": 0,
+            "remaining": max(0, len(frames) - completed),
         }
 
     def _recover_orphan_tasks(self) -> None:
@@ -384,6 +406,26 @@ class ComicGenPipeline:
             except Exception:
                 logger.warning("upload_t2i_frame: save failed")
             return frame
+
+    def _append_frame_t2i_url(self, frame: "StoryboardFrame", image_url: str) -> None:
+        if not image_url:
+            return
+        current = list(getattr(frame, "t2i_image_urls", None) or [])
+        if image_url in current:
+            frame.t2i_selected_index = current.index(image_url)
+        else:
+            current.append(image_url)
+            if len(current) > self._T2I_HISTORY_LIMIT:
+                current = current[-self._T2I_HISTORY_LIMIT:]
+            frame.t2i_image_urls = current
+            frame.t2i_selected_index = len(current) - 1
+
+    def _frame_has_t2i_image(self, frame: "StoryboardFrame") -> bool:
+        return bool(
+            getattr(frame, "rendered_image_url", None)
+            or getattr(frame, "image_url", None)
+            or getattr(frame, "t2i_image_urls", None)
+        )
 
     def mark_video_task_failed(
         self, script_id: str, task_id: str, error_message: str
@@ -1639,6 +1681,10 @@ class ComicGenPipeline:
             idx, frame = entry
             try:
                 self._refine_frame_inner(script_id, frame.id)
+                # Persist inside the worker so completed frames survive if the
+                # SSE client disconnects before the main generator consumes the
+                # future result.
+                self._save_data(script_id)
                 return ("ok", idx, frame.id)
             except Exception as exc:
                 logger.error(f"[refine_batch] frame={frame.id} error={exc}")
@@ -1703,7 +1749,7 @@ class ComicGenPipeline:
                     "success": success,
                     "failed": failed,
                     "skipped": len(script.frames) - total,
-                    "remaining": 0,
+                    "remaining": max(0, total - success),
                     "updated_at": time.time(),
                 }
             yield ("batch_complete", {
@@ -2150,32 +2196,174 @@ class ComicGenPipeline:
                 size=effective_size,
                 model_name=i2i_model
             )
+            if frame.status == GenerationStatus.COMPLETED:
+                selected_url = frame.rendered_image_url or frame.image_url
+                if selected_url:
+                    self._append_frame_t2i_url(frame, selected_url)
+            script.updated_at = time.time()
             
             self._save_data()
             return script
         except Exception as e:
             frame.status = GenerationStatus.FAILED
+            script.updated_at = time.time()
             self._save_data()
             raise e
             # 1. Take the composition_data (positions of assets)
             # 2. Construct a composite image (ControlNet input)
             # 3. Call Img2Img with the composite + prompt
-            
-            logger.debug(f"Rendering frame {frame_id} with prompt: {prompt}")
-            time.sleep(1.5) # Simulate processing
-            
-            # Mock Result
-            mock_url = f"https://placehold.co/1280x720/2a2a2a/FFF?text=Rendered+Frame+{frame_id}"
-            frame.rendered_image_url = mock_url
-            frame.image_url = mock_url # Update main image too
-            frame.status = GenerationStatus.COMPLETED
-            
-        except Exception as e:
-            logger.error(f"Frame rendering failed: {e}")
-            frame.status = GenerationStatus.FAILED
-            
-        self._save_data()
-        return script
+
+    def render_batch_generator(self, script_id: str):
+        """Batch-generate storyboard still images for frames missing T2I output."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        script = self.scripts.get(script_id)
+        if not script:
+            raise ValueError("Script not found")
+
+        with self._render_batch_lock:
+            existing = self._render_batch_status.get(script_id)
+            if existing and existing.get("running"):
+                raise RuntimeError("Batch storyboard render is already running for this project")
+
+        pending_frames = [
+            (idx, frame)
+            for idx, frame in enumerate(script.frames)
+            if not self._frame_has_t2i_image(frame)
+        ]
+        total = len(pending_frames)
+        if total == 0:
+            yield ("batch_complete", {
+                "total": 0,
+                "success": 0,
+                "failed": 0,
+                "skipped": len(script.frames),
+            })
+            return
+
+        with self._render_batch_lock:
+            self._render_batch_status[script_id] = {
+                "running": True,
+                "total": total,
+                "completed": 0,
+                "success": 0,
+                "failed": 0,
+                "skipped": len(script.frames) - total,
+                "remaining": total,
+                "started_at": time.time(),
+                "updated_at": time.time(),
+            }
+
+        success = 0
+        failed = 0
+        max_workers = min(2, total)
+
+        def _render_prompt(frame: "StoryboardFrame") -> str:
+            return (
+                frame.assembled_prompt
+                or frame.visual_description
+                or frame.image_prompt
+                or frame.action_description
+                or ""
+            ).strip()
+
+        def _render_one(entry):
+            idx, frame = entry
+            try:
+                prompt = _render_prompt(frame)
+                if not prompt:
+                    raise ValueError("Frame has no prompt for storyboard render")
+                self.generate_storyboard_render(script_id, frame.id, None, prompt, 1)
+                if not self._frame_has_t2i_image(frame):
+                    raise RuntimeError("Storyboard render finished without an image")
+                return ("ok", idx, frame.id)
+            except Exception as exc:
+                logger.error(f"[render_batch] frame={frame.id} error={exc}")
+                frame.status = GenerationStatus.FAILED
+                frame.updated_at = time.time()
+                self._save_data(script_id)
+                return ("err", idx, frame.id, str(exc))
+
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(_render_one, (idx, frame)): (idx, frame)
+                    for idx, frame in pending_frames
+                }
+                for future in as_completed(futures):
+                    result = future.result()
+                    completed = success + failed + 1
+                    if result[0] == "ok":
+                        _, idx, fid = result
+                        success += 1
+                        event_type = "frame_render_complete"
+                        event_payload = {
+                            "frame_id": fid,
+                            "frame_index": idx,
+                            "total": total,
+                            "success": success,
+                            "failed": failed,
+                            "completed": completed,
+                        }
+                    else:
+                        _, idx, fid, err = result
+                        failed += 1
+                        event_type = "frame_render_error"
+                        event_payload = {
+                            "frame_id": fid,
+                            "frame_index": idx,
+                            "total": total,
+                            "error": err,
+                            "success": success,
+                            "failed": failed,
+                            "completed": completed,
+                        }
+
+                    with self._render_batch_lock:
+                        status = self._render_batch_status.setdefault(script_id, {})
+                        status.update({
+                            "running": True,
+                            "total": total,
+                            "completed": completed,
+                            "success": success,
+                            "failed": failed,
+                            "skipped": len(script.frames) - total,
+                            "remaining": max(0, total - completed),
+                            "updated_at": time.time(),
+                        })
+                    self._save_data(script_id)
+                    yield (event_type, event_payload)
+
+            self._save_data(script_id)
+            with self._render_batch_lock:
+                self._render_batch_status[script_id] = {
+                    "running": False,
+                    "total": total,
+                    "completed": success + failed,
+                    "success": success,
+                    "failed": failed,
+                    "skipped": len(script.frames) - total,
+                    "remaining": 0,
+                    "updated_at": time.time(),
+                }
+            yield ("batch_complete", {
+                "total": total,
+                "success": success,
+                "failed": failed,
+                "skipped": len(script.frames) - total,
+            })
+        finally:
+            with self._render_batch_lock:
+                status = self._render_batch_status.get(script_id)
+                if status and status.get("running"):
+                    status.update({
+                        "running": False,
+                        "completed": success + failed,
+                        "success": success,
+                        "failed": failed,
+                        "remaining": max(0, total - success - failed),
+                        "updated_at": time.time(),
+                    })
 
     def generate_video(self, script_id: str) -> Script:
         """Step 4: Generate video clips."""

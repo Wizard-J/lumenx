@@ -371,6 +371,9 @@ class ComfyUIImageModel(ImageGenModel):
         self.params = config.get("params", {})
         self._client: Optional[ComfyUIClient] = None
 
+    def supports_reference_images(self) -> bool:
+        return True
+
     @property
     def base_url(self) -> str:
         return _get_setting("COMFYUI_BASE_URL", default="http://localhost:8188")

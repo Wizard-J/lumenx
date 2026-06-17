@@ -225,6 +225,20 @@ export interface RefineBatchStatus {
     updated_at?: number;
 }
 
+export interface RenderSSEEvent {
+    type: "frame_render_complete" | "frame_render_error" | "batch_complete";
+    frame_id?: string;
+    frame_index?: number;
+    total?: number;
+    completed?: number;
+    success?: number;
+    failed?: number;
+    skipped?: number;
+    error?: string;
+}
+
+export type RenderBatchStatus = RefineBatchStatus;
+
 export const api = {
     createProject: async (title: string, text: string, skipAnalysis: boolean = false, workflowMode: string = "r2v") => {
         const res = await axios.post(`${API_URL}/projects`, { title, text, workflow_mode: workflowMode }, {
@@ -1082,6 +1096,50 @@ export const api = {
     getRefineBatchStatus: async (scriptId: string): Promise<RefineBatchStatus> => {
         const response = await fetch(`${API_URL}/projects/${scriptId}/storyboard/refine_batch/status`);
         if (!response.ok) throw new Error("Failed to get batch refine status");
+        return response.json();
+    },
+
+    /** Batch-generate storyboard still images via SSE stream. */
+    renderBatchFrames: async (
+        scriptId: string,
+        onEvent: (event: RenderSSEEvent) => void,
+    ): Promise<void> => {
+        const response = await fetch(`${API_URL}/projects/${scriptId}/storyboard/render_batch`, {
+            method: "POST",
+        });
+        if (!response.ok) {
+            const detail = await response.json().catch(() => null);
+            const error: any = new Error(detail?.detail || "Failed to start batch storyboard render");
+            error.status = response.status;
+            throw error;
+        }
+        const reader = response.body?.getReader();
+        if (!reader) return;
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            let currentEventType = "";
+            for (const line of lines) {
+                if (line.startsWith("event: ")) {
+                    currentEventType = line.slice(7).trim();
+                } else if (line.startsWith("data: ")) {
+                    try {
+                        const data = JSON.parse(line.slice(6));
+                        onEvent({ type: currentEventType as RenderSSEEvent["type"], ...data });
+                    } catch { /* skip malformed lines */ }
+                }
+            }
+        }
+    },
+
+    getRenderBatchStatus: async (scriptId: string): Promise<RenderBatchStatus> => {
+        const response = await fetch(`${API_URL}/projects/${scriptId}/storyboard/render_batch/status`);
+        if (!response.ok) throw new Error("Failed to get batch storyboard render status");
         return response.json();
     },
 

@@ -1,6 +1,7 @@
 import os
 import time
 from typing import Dict, Any, List
+from urllib.parse import urlparse
 from .models import StoryboardFrame, Character, Scene, Prop, GenerationStatus, ImageAsset, ImageVariant
 from ...models.image import WanxImageModel
 from ...utils import get_logger
@@ -8,11 +9,106 @@ from ...utils.oss_utils import is_object_key
 
 logger = get_logger(__name__)
 
+DEFAULT_STORYBOARD_NEGATIVE_PROMPT = (
+    "logo, watermark, signature, username, social media handle, weibo watermark, "
+    "text overlay, subtitles, caption, credits, QR code, brand mark, app icon, "
+    "corner bug, UI elements, frame border, poster text, illegible text"
+)
+
+
 class StoryboardGenerator:
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
-        self.model = WanxImageModel(self.config.get('model', {}))
         self.output_dir = self.config.get('output_dir', 'output/storyboard')
+
+    def _negative_prompt(self) -> str:
+        params = self.config.get("model", {}).get("params", {})
+        configured = (
+            os.environ.get("STORYBOARD_NEGATIVE_PROMPT")
+            or params.get("storyboard_negative_prompt")
+            or params.get("negative_prompt")
+            or ""
+        )
+        if configured:
+            return f"{configured}, {DEFAULT_STORYBOARD_NEGATIVE_PROMPT}"
+        return DEFAULT_STORYBOARD_NEGATIVE_PROMPT
+
+    def _get_model(self):
+        """Get image model based on current IMAGE_PROVIDER env var."""
+        image_provider = os.environ.get("IMAGE_PROVIDER", "dashscope").lower()
+        has_key = bool(os.environ.get("IMAGE_API_KEY", ""))
+        base_url = os.environ.get("IMAGE_BASE_URL", "")
+        is_local_endpoint = urlparse(base_url).hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+        if image_provider == "openai" and (has_key or is_local_endpoint):
+            from ...models.openai_image import OpenAIImageModel
+            return OpenAIImageModel(self.config.get('model', {}))
+        if image_provider == "comfyui":
+            from ...models.comfyui import ComfyUIImageModel
+            return ComfyUIImageModel(self.config.get('model', {}))
+        return WanxImageModel(self.config.get('model', {}))
+
+    def _model_supports_reference_images(self, model: Any) -> bool:
+        checker = getattr(model, "supports_reference_images", None)
+        if callable(checker):
+            return bool(checker())
+        return False
+
+    def _character_consistency_anchor(self, char: Character) -> str:
+        parts = [char.name]
+        if char.age:
+            parts.append(str(char.age))
+        if char.gender:
+            parts.append(str(char.gender))
+        if char.description:
+            parts.append(char.description)
+        if char.clothing:
+            parts.append(f"clothing: {char.clothing}")
+        return "，".join(p for p in parts if p)
+
+    def _scene_consistency_anchor(self, scene: Scene) -> str:
+        parts = [scene.name]
+        if scene.description:
+            parts.append(scene.description)
+        if scene.time_of_day:
+            parts.append(f"time: {scene.time_of_day}")
+        if scene.lighting_mood:
+            parts.append(f"lighting: {scene.lighting_mood}")
+        return "，".join(p for p in parts if p)
+
+    def _inject_text_consistency_prompt(
+        self,
+        prompt: str,
+        frame: StoryboardFrame,
+        characters: List[Character],
+        scene: Scene,
+    ) -> str:
+        frame_characters = [
+            char for char in characters
+            if char.id in frame.character_ids
+        ]
+        character_lines = [
+            self._character_consistency_anchor(char)
+            for char in frame_characters
+        ]
+        character_lines = [line for line in character_lines if line]
+        scene_line = self._scene_consistency_anchor(scene) if scene else ""
+
+        if not character_lines and not scene_line:
+            return prompt
+
+        anchors = []
+        if character_lines:
+            anchors.append("角色一致性锁定：" + "；".join(character_lines))
+        if scene_line:
+            anchors.append("场景一致性锁定：" + scene_line)
+
+        consistency_rules = (
+            "纯文生图模式，无可用参考图输入。"
+            "请严格保持上述角色的年龄、脸型、发型、体型、服装、标志性细节和主色调一致；"
+            "严格保持上述场景的建筑结构、材质、光线、色彩和空间关系一致。"
+            "不要重新设计角色或场景。画面中不要出现任何文字、水印、logo、签名或社交媒体标识。"
+        )
+        return f"{' '.join(anchors)} {consistency_rules} 当前镜头：{prompt}"
 
     def generate_storyboard(self, script: Any) -> Any:
         """Generates images for all frames in the storyboard."""
@@ -36,6 +132,8 @@ class StoryboardGenerator:
     def generate_frame(self, frame: StoryboardFrame, characters: List[Character], scene: Scene, ref_image_path: str = None, ref_image_paths: List[str] = None, prompt: str = None, batch_size: int = 1, size: str = None, model_name: str = None) -> StoryboardFrame:
         """Generates a storyboard frame image."""
         frame.status = GenerationStatus.PROCESSING
+        model = self._get_model()
+        supports_reference_images = self._model_supports_reference_images(model)
         
         # Default size for storyboard (landscape)
         effective_size = size or "1024*576"
@@ -150,9 +248,17 @@ class StoryboardGenerator:
             # If prompt is provided by user/LLM, ensure character descriptions are still present for I2I consistency
             if char_text and char_text not in prompt:
                 prompt = f"{prompt} Characters: {char_text}."
+
+        if asset_ref_paths and not supports_reference_images:
+            logger.info(
+                "[Storyboard] Current image model does not support reference images; "
+                "injecting text consistency anchors instead"
+            )
+            prompt = self._inject_text_consistency_prompt(prompt, frame, characters, scene)
         
         # Store the optimized prompt
         frame.image_prompt = prompt
+        negative_prompt = self._negative_prompt()
         
         # Initialize rendered_image_asset if not present
         if not frame.rendered_image_asset:
@@ -172,8 +278,16 @@ class StoryboardGenerator:
                 
                 # Use I2I if reference images are available
                 # Pass collected asset paths to model
-                logger.info(f"[Storyboard] Calling model.generate with {len(asset_ref_paths)} reference images using model {model_name or 'default'}")
-                self.model.generate(prompt, output_path, ref_image_paths=asset_ref_paths, size=effective_size, model_name=model_name)
+                refs_for_model = asset_ref_paths if supports_reference_images else []
+                logger.info(f"[Storyboard] Calling model.generate with {len(refs_for_model)} reference images using model {model_name or 'default'}")
+                model.generate(
+                    prompt,
+                    output_path,
+                    ref_image_paths=refs_for_model,
+                    size=effective_size,
+                    model_name=model_name,
+                    negative_prompt=negative_prompt,
+                )
                 
                 # Store relative path for frontend serving
                 rel_path = os.path.relpath(output_path, "output")

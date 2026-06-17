@@ -24,6 +24,9 @@ class ImageGenModel(ABC):
     def __init__(self, config: Dict[str, Any]):
         self.config = config
 
+    def supports_reference_images(self) -> bool:
+        return False
+
     @abstractmethod
     def generate(self, prompt: str, output_path: str, **kwargs) -> Tuple[str, float]:
         """
@@ -45,6 +48,9 @@ class WanxImageModel(ImageGenModel):
     def __init__(self, config):
         super().__init__(config)
         self.params = config.get('params', {})
+
+    def supports_reference_images(self) -> bool:
+        return True
 
     @property
     def api_key(self):

@@ -333,6 +333,33 @@ export default function ShotCard({
     }, []);
 
     const renderPreview = () => {
+        const fallbackImageUrl = shot.t2iImageUrl || shot.imageUrl;
+        const renderImageFallback = (showVideoRetry = false) => (
+            <div className="w-full aspect-video relative">
+                <PreviewImage
+                    src={fallbackImageUrl || ""}
+                    alt={t("t2iCompleted") || "Storyboard frame"}
+                    className="w-full h-full"
+                />
+                {showVideoRetry ? (
+                    <div className="absolute inset-x-2 bottom-2 flex items-center justify-between gap-2 rounded-md border border-status-failed-border bg-status-failed-bg/85 px-2 py-1 backdrop-blur-sm">
+                        <span className="text-[10px] font-medium text-status-failed-fg">{t("generationFailed")}</span>
+                        <button
+                            type="button"
+                            onClick={onGenerateVideo}
+                            className="text-[10px] font-medium text-primary hover:text-primary/80"
+                        >
+                            {t("retry")}
+                        </button>
+                    </div>
+                ) : (
+                    <div className="absolute bottom-2 left-2 text-[10px] px-1.5 py-0.5 rounded-full bg-black/65 text-white/90 font-medium backdrop-blur-sm pointer-events-none">
+                        分镜图
+                    </div>
+                )}
+            </div>
+        );
+
         if (shot.tabMode === "t2i_i2v") {
             if (shot.videoUrl) {
                 return (
@@ -354,6 +381,9 @@ export default function ShotCard({
                     </div>
                 );
             }
+            if (shot.videoStatus === "failed" && fallbackImageUrl) {
+                return renderImageFallback(true);
+            }
             if (shot.videoStatus === "failed") {
                 return (
                     <div className="w-full aspect-video flex flex-col items-center justify-center gap-2">
@@ -367,7 +397,7 @@ export default function ShotCard({
                     </div>
                 );
             }
-            if (shot.t2iImageUrl) {
+            if (fallbackImageUrl) {
                 // Fixed: was rendering raw `<img src={shot.t2iImageUrl}>` —
                 // shot.t2iImageUrl is a relative path (e.g. "uploads/t2i_xxx.jpg")
                 // which the browser resolved against the current origin → 404 →
@@ -380,7 +410,7 @@ export default function ShotCard({
                 return (
                     <div className="w-full aspect-video relative">
                         <PreviewImage
-                            src={shot.t2iImageUrl}
+                            src={fallbackImageUrl}
                             alt={t("t2iCompleted") || "First frame"}
                             className="w-full h-full"
                         />
@@ -449,6 +479,12 @@ export default function ShotCard({
                 </div>
             );
         }
+        if (shot.videoStatus === "failed" && fallbackImageUrl) {
+            return renderImageFallback(true);
+        }
+        if (fallbackImageUrl) {
+            return renderImageFallback(false);
+        }
         if (shot.videoStatus === "failed") {
             return (
                 <div className="w-full aspect-video flex flex-col items-center justify-center gap-2">
@@ -515,6 +551,23 @@ export default function ShotCard({
     };
 
     const isActiveT2I = shot.tabMode === "t2i_i2v";
+    const hasStoryboardImage = !!(shot.t2iImageUrl || shot.imageUrl);
+    const imageInFlight = shot.t2iStatus === "pending" || shot.t2iStatus === "processing";
+    const imageButtonLabel = imageInFlight
+        ? "分镜图生成中"
+        : shot.t2iStatus === "failed"
+            ? "重试分镜图"
+            : hasStoryboardImage
+                ? "重生成分镜图"
+                : "生成分镜图";
+    const videoInFlight = inFlightCount > 0 || shot.videoStatus === "pending" || shot.videoStatus === "processing";
+    const videoButtonLabel = videoInFlight
+        ? `视频生成中 · ${inFlightCount || 1}`
+        : shot.videoStatus === "failed"
+            ? `重试视频 ×${generateCount}`
+            : shot.videoUrl
+                ? `再生成视频 ×${generateCount}`
+                : `生成视频 ×${generateCount}`;
 
     return (
         <div
@@ -914,21 +967,30 @@ export default function ShotCard({
                                     )}
                                 </motion.button>
 
-                                {/* R2V: Generate first-frame image CTA */}
-                                {shot.tabMode === "direct_r2v" && !shot.t2iImageUrl && shot.t2iStatus !== "processing" && shot.t2iStatus !== "pending" && (
-                                    <motion.button
-                                        whileHover={{ scale: 1.02 }}
-                                        whileTap={{ scale: 0.98 }}
-                                        type="button"
-                                        onClick={onGenerateT2I}
-                                        disabled={!shot.prompt.trim()}
-                                        title="生成分镜参考图（用于后续图生视频）"
-                                        className="inline-flex items-center gap-1.5 rounded-md px-4 py-2 font-sans text-[12px] font-semibold tracking-tight transition-colors duration-fast ease-out-quart focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 disabled:cursor-not-allowed disabled:opacity-40 bg-white/[0.08] text-text-secondary border border-white/[0.08] hover:bg-white/[0.14] hover:text-foreground hover:border-white/[0.18]"
-                                    >
+                                <motion.button
+                                    whileHover={!imageInFlight && shot.prompt.trim() ? { scale: 1.01 } : undefined}
+                                    whileTap={!imageInFlight && shot.prompt.trim() ? { scale: 0.99 } : undefined}
+                                    type="button"
+                                    onClick={onGenerateT2I}
+                                    disabled={!shot.prompt.trim() || imageInFlight}
+                                    title={!shot.prompt.trim() ? "请先输入提示词" : "生成分镜图，用于预览和后续视频生成参考"}
+                                    className={`inline-flex items-center justify-center gap-1.5 rounded-md px-4 py-2 min-w-[128px] font-sans text-[12px] font-semibold tracking-tight transition-colors duration-fast ease-out-quart focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/55 disabled:cursor-not-allowed disabled:opacity-50 ${
+                                        imageInFlight
+                                            ? "border border-amber-400/35 bg-amber-400/12 text-amber-200"
+                                            : shot.t2iStatus === "failed"
+                                                ? "border border-status-failed-border bg-status-failed-bg text-status-failed-fg hover:brightness-110"
+                                                : hasStoryboardImage
+                                                    ? "border border-emerald-400/30 bg-emerald-400/10 text-emerald-200 hover:bg-emerald-400/16"
+                                                    : "border border-amber-400/35 bg-amber-400/12 text-amber-200 hover:bg-amber-400/18"
+                                    }`}
+                                >
+                                    {imageInFlight ? (
+                                        <Loader2 size={14} className="animate-spin" strokeWidth={2} />
+                                    ) : (
                                         <ImageIcon size={14} strokeWidth={2} />
-                                        <span>生成图片</span>
-                                    </motion.button>
-                                )}
+                                    )}
+                                    <span>{imageButtonLabel}</span>
+                                </motion.button>
                                 <div className="flex items-center gap-1 shrink-0">
                                     {[1, 2, 4, 6].map((n) => {
                                         const active = generateCount === n;
@@ -952,11 +1014,11 @@ export default function ShotCard({
                                     })}
                                 </div>
                                 <motion.button
-                                    whileHover={canGenerate && inFlightCount === 0 ? { scale: 1.005 } : undefined}
-                                    whileTap={canGenerate && inFlightCount === 0 ? { scale: 0.995 } : undefined}
+                                    whileHover={canGenerate && !videoInFlight ? { scale: 1.005 } : undefined}
+                                    whileTap={canGenerate && !videoInFlight ? { scale: 0.995 } : undefined}
                                     type="button"
                                     onClick={() => onGenerateBatch?.(generateCount)}
-                                    disabled={!canGenerate || inFlightCount > 0}
+                                    disabled={!canGenerate || videoInFlight}
                                     title={!canGenerate
                                         ? (shot.tabMode === "t2i_i2v"
                                             ? "请先在上方生成或上传首帧"
@@ -964,15 +1026,15 @@ export default function ShotCard({
                                         : `生成 ${generateCount} 条视频候选`}
                                     className="inline-flex items-center justify-center gap-1.5 rounded-md px-5 py-2 min-w-[140px] font-sans text-[13px] font-semibold tracking-tight transition-colors duration-fast ease-out-quart focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 disabled:cursor-not-allowed disabled:opacity-40 bg-primary text-white border border-[rgba(100,108,255,0.65)] shadow-[inset_0_1.5px_0_rgba(255,255,255,0.14),inset_0_-1px_0_rgba(60,68,200,0.45),0_4px_14px_-2px_rgba(100,108,255,0.45)] hover:bg-[#7a82ff] hover:border-[rgba(100,108,255,0.85)] disabled:hover:bg-primary disabled:hover:border-[rgba(100,108,255,0.65)]"
                                 >
-                                    {inFlightCount > 0 ? (
+                                    {videoInFlight ? (
                                         <>
                                             <Loader2 size={14} className="animate-spin" strokeWidth={2} />
-                                            <span>{`生成中 · ${inFlightCount}`}</span>
+                                            <span>{videoButtonLabel}</span>
                                         </>
                                     ) : (
                                         <>
                                             <Sparkles size={14} strokeWidth={2} />
-                                            <span>{`生成 ×${generateCount}`}</span>
+                                            <span>{videoButtonLabel}</span>
                                         </>
                                     )}
                                 </motion.button>

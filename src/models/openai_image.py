@@ -117,6 +117,14 @@ class OpenAIImageModel(ImageGenModel):
             logger.info(f"Reference images detected ({len(all_refs)}), will append context to prompt")
             prompt = f"{prompt} (Reference: character design sheet)"
 
+        negative_prompt = kwargs.get("negative_prompt") or self.params.get("negative_prompt")
+        if negative_prompt:
+            prompt = (
+                f"{prompt}\n\n"
+                f"Negative prompt: {negative_prompt}. "
+                "Do not render any logo, watermark, text, signature, username, social media handle, QR code, or UI overlay."
+            )
+
         # Override wanx-family model names with configured IMAGE_MODEL
         if model_name and model_name.startswith("wan"):
             model_name = None
