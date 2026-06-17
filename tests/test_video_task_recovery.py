@@ -29,7 +29,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.apps.comic_gen.models import Script, StoryboardFrame, VideoTask
+from src.apps.comic_gen.models import Character, Script, StoryboardFrame, VideoTask
 from src.apps.comic_gen.pipeline import ComicGenPipeline
 
 
@@ -479,3 +479,33 @@ def test_create_video_task_workbench_tab_defaults_to_none(pipeline):
         )
     task = next(t for t in script.video_tasks if t.id == task_id)
     assert task.workbench_tab is None
+
+
+def test_create_asset_video_task_persists_aspect_ratio(pipeline):
+    character = Character(
+        id="c1",
+        name="Hero",
+        description="A hero",
+        full_body_image_url="http://example.com/hero.png",
+    )
+    script = Script(
+        id="p1",
+        title="P",
+        original_text="t",
+        created_at=time.time(),
+        updated_at=time.time(),
+        characters=[character],
+    )
+    pipeline.scripts = {script.id: script}
+
+    with patch.object(pipeline, "_save_data"):
+        updated, task_id = pipeline.create_asset_video_task(
+            script.id,
+            character.id,
+            "character",
+            aspect_ratio="9:16",
+        )
+
+    task = next(t for t in updated.video_tasks if t.id == task_id)
+    assert task.ratio == "9:16"
+    assert character.video_assets[0].ratio == "9:16"

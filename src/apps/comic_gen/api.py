@@ -489,29 +489,6 @@ def get_series(series_id: str):
     # Include episode summaries
     episodes = pipeline.get_series_episodes(series_id)
     result = series.model_dump()
-    # DEBUG: log asset counts
-    chars = result.get('characters', [])
-    for c in chars:
-        hsa = c.get('headshot_asset', {})
-        fba = c.get('full_body_asset', {})
-        tva = c.get('three_view_asset', {})
-        hs_v = len(hsa.get('variants', [])) if hsa else 0
-        fb_v = len(fba.get('variants', [])) if fba else 0
-        tv_v = len(tva.get('variants', [])) if tva else 0
-        if hs_v > 0 or fb_v > 0 or tv_v > 0:
-            logger.info(f"[DEBUG] get_series character {c.get('name')}: fb={fb_v} tv={tv_v} hs={hs_v}")
-    props = result.get('props', [])
-    for p in props:
-        ia = p.get('image_asset', {})
-        iv = len(ia.get('variants', [])) if ia else 0
-        if iv > 0:
-            logger.info(f"[DEBUG] get_series prop {p.get('name')}: image_variants={iv}")
-    scenes = result.get('scenes', [])
-    for s in scenes:
-        ia = s.get('image_asset', {})
-        iv = len(ia.get('variants', [])) if ia else 0
-        if iv > 0:
-            logger.info(f"[DEBUG] get_series scene {s.get('name')}: image_variants={iv}")
     result["episodes"] = [
         {
             "id": ep.id,
@@ -2324,7 +2301,7 @@ def get_task_status(task_id: str):
     if status["status"] == "completed":
         script = pipeline.get_script(status["script_id"])
         if script:
-            status["script"] = signed_response(script).body.decode('utf-8')
+            status["script"] = json.loads(signed_response(script).body)
     
     return status
 

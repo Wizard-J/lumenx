@@ -854,33 +854,7 @@ class ComicGenPipeline:
         else:
             raise ValueError(f"Unknown asset type: {asset_type}")
 
-        # DEBUG: verify asset data was written
-        if asset_type == "character":
-            target2 = next((c for c in series.characters if c.id == asset_id), None)
-            if target2:
-                fb = len(target2.full_body_asset.variants) if target2.full_body_asset else 0
-                tv = len(target2.three_view_asset.variants) if target2.three_view_asset else 0
-                hs = len(target2.headshot_asset.variants) if target2.headshot_asset else 0
-                logger.info(f"[DEBUG] After generate_character: full_body={fb} three_view={tv} headshot={hs}")
-        elif asset_type in ("scene", "prop"):
-            target2 = next((a for a in (series.scenes if asset_type == "scene" else series.props) if a.id == asset_id), None)
-            if target2:
-                iv = len(target2.image_asset.variants) if target2.image_asset else 0
-                logger.info(f"[DEBUG] After generate_{asset_type}: image_variants={iv}")
         self._save_series_data()
-        # DEBUG: verify saved data
-        reloaded = self._storage.get_series(series_id)
-        if reloaded:
-            import json
-            chars_json = json.loads(reloaded.get("characters_json", "[]"))
-            for c in chars_json:
-                if c.get("id") == asset_id:
-                    hs = c.get("headshot_asset", {})
-                    ia = c.get("image_asset", {})
-                    fba = c.get("full_body_asset", {})
-                    tva = c.get("three_view_asset", {})
-                    logger.info(f"[DEBUG] Saved to DB - headshot variants={len(hs.get('variants',[]))}, image variants={len(ia.get('variants',[]))}, full_body variants={len(fba.get('variants',[]))}, three_view variants={len(tva.get('variants',[]))}")
-                    break
 
     def get_asset_generation_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
         """Returns the status of an asset generation task."""
@@ -3096,66 +3070,6 @@ class ComicGenPipeline:
         
         return "FFmpeg merge failed with unknown error. Please check the application logs for details."
 
-    def create_asset_video_task(self, script_id: str, asset_id: str, asset_type: str, prompt: str, duration: int = 5, aspect_ratio: str = None) -> Tuple[Script, str]:
-        """Creates a new video generation task for an asset (R2V)."""
-        script = self.scripts.get(script_id)
-        if not script:
-            raise ValueError("Script not found")
-            
-        # Find asset
-        target_asset = None
-        if asset_type == "character":
-            target_asset = next((c for c in script.characters if c.id == asset_id), None)
-        elif asset_type == "scene":
-            target_asset = next((s for s in script.scenes if s.id == asset_id), None)
-        elif asset_type == "prop":
-            target_asset = next((p for p in script.props if p.id == asset_id), None)
-            
-        if not target_asset:
-            raise ValueError(f"Asset {asset_id} of type {asset_type} not found")
-            
-        # Use main image as reference
-        image_url = target_asset.image_url
-        if not image_url:
-             # Try fallback for character
-             if asset_type == "character":
-                 image_url = target_asset.full_body_image_url or target_asset.avatar_url
-        
-        if not image_url:
-            raise ValueError("Asset has no reference image")
-
-        # Save prompt to asset
-        if prompt:
-            target_asset.video_prompt = prompt
-            
-        task_id = str(uuid.uuid4())
-        
-        # Create VideoTask
-        task = VideoTask(
-            id=task_id,
-            project_id=script_id,
-            asset_id=asset_id, # Link to asset
-            image_url=image_url,
-            prompt=prompt or f"Cinematic shot of {target_asset.name}",
-            status="pending",
-            duration=duration,
-            model="wan2.6-r2v", # Force R2V model
-            created_at=time.time()
-        )
-        
-        # Add to script.video_tasks for global tracking
-        if not script.video_tasks:
-            script.video_tasks = []
-        script.video_tasks.append(task)
-        
-        # Add to asset's video_assets list
-        if not target_asset.video_assets:
-            target_asset.video_assets = []
-        target_asset.video_assets.append(task)
-        
-        self._save_data()
-        return script, task_id
-
     def process_video_task(self, script_id: str, task_id: str):
         """Processes a video task."""
         script = self.get_script(script_id)
@@ -3235,7 +3149,7 @@ class ComicGenPipeline:
                     duration=task.duration,
                     model=task.model,
                     negative_prompt=task.negative_prompt,
-                    aspect_ratio="16:9",
+                    aspect_ratio=task.ratio or "16:9",
                     mode=task.mode or "std",
                     sound=task.sound or "off",
                     cfg_scale=task.cfg_scale,
@@ -3253,7 +3167,7 @@ class ComicGenPipeline:
                     duration=task.duration,
                     model=task.model,
                     resolution=task.resolution,
-                    aspect_ratio="16:9",
+                    aspect_ratio=task.ratio or "16:9",
                     seed=task.seed or 0,
                     audio=task.vidu_audio if task.vidu_audio is not None else True,
                     movement_amplitude=task.movement_amplitude or "auto",
@@ -3363,17 +3277,23 @@ class ComicGenPipeline:
         target_asset = None
         if asset_type == "character":
             target_asset = next((c for c in script.characters if c.id == asset_id), None)
+            if not target_asset:
+                raise ValueError(f"Asset {asset_id} not found")
             # Use full body image for character video
             image_url = target_asset.full_body_image_url or target_asset.image_url
             if not prompt:
                 prompt = f"A cinematic shot of {target_asset.name}, {target_asset.description}, looking around, breathing, slight movement, high quality, 4k"
         elif asset_type == "scene":
             target_asset = next((s for s in script.scenes if s.id == asset_id), None)
+            if not target_asset:
+                raise ValueError(f"Asset {asset_id} not found")
             image_url = target_asset.image_url
             if not prompt:
                 prompt = f"A cinematic shot of {target_asset.name}, {target_asset.description}, ambient motion, lighting change, high quality, 4k"
         elif asset_type == "prop":
             target_asset = next((p for p in script.props if p.id == asset_id), None)
+            if not target_asset:
+                raise ValueError(f"Asset {asset_id} not found")
             image_url = target_asset.image_url
             if not prompt:
                 prompt = f"A cinematic shot of {target_asset.name}, {target_asset.description}, rotating slowly, high quality, 4k"
@@ -3406,10 +3326,6 @@ class ComicGenPipeline:
         except Exception:
             pass
 
-        # Determine resolution from aspect ratio or default
-        resolution = "720p" # Default
-        # TODO: Map aspect_ratio to resolution if needed
-        
         task = VideoTask(
             id=task_id,
             project_id=script_id,
@@ -3418,7 +3334,8 @@ class ComicGenPipeline:
             prompt=prompt,
             status="pending",
             duration=duration,
-            resolution=resolution,
+            resolution="720p",
+            ratio=aspect_ratio,
             model="wan2.6-i2v", # Asset video uses I2V
             created_at=time.time()
         )
