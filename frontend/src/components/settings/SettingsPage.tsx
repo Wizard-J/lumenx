@@ -21,6 +21,7 @@ type EnvConfig = EnvConfigPayload & {
   OSS_BUCKET_NAME: string;
   OSS_ENDPOINT: string;
   OSS_BASE_PATH: string;
+  OSS_REGION: string;
   KLING_PROVIDER_MODE: ProviderMode;
   VIDU_PROVIDER_MODE: ProviderMode;
   PIXVERSE_PROVIDER_MODE: ProviderMode;
@@ -35,6 +36,9 @@ type EnvConfig = EnvConfigPayload & {
   VIDEO_API_KEY: string;
   VIDEO_BASE_URL: string;
   VIDEO_MODEL: string;
+  TTS_BACKEND: "dashscope" | "local_qwen3";
+  LOCAL_QWEN3_TTS_PYTHON: string;
+  LOCAL_QWEN3_TTS_MODEL: string;
   endpoint_overrides: Record<string, string>;
 };
 
@@ -51,6 +55,7 @@ const DEFAULT_CONFIG: EnvConfig = {
   OSS_BUCKET_NAME: "",
   OSS_ENDPOINT: "",
   OSS_BASE_PATH: "",
+  OSS_REGION: "us-east-1",
   KLING_PROVIDER_MODE: "dashscope",
   VIDU_PROVIDER_MODE: "dashscope",
   PIXVERSE_PROVIDER_MODE: "dashscope",
@@ -65,6 +70,9 @@ const DEFAULT_CONFIG: EnvConfig = {
   VIDEO_API_KEY: "",
   VIDEO_BASE_URL: "",
   VIDEO_MODEL: "",
+  TTS_BACKEND: "dashscope",
+  LOCAL_QWEN3_TTS_PYTHON: "~/.lumen-x/qwen3-tts/.venv/bin/python",
+  LOCAL_QWEN3_TTS_MODEL: "~/.lumen-x/qwen3-tts/models/Qwen3-TTS-12Hz-0.6B-CustomVoice",
   endpoint_overrides: {},
 };
 
@@ -748,6 +756,14 @@ export default function SettingsPage() {
           )}
           {activeSection === "legacy" && (
             <>
+      <section className="glass-panel rounded-xl p-6 space-y-5">
+        <div><h2 className="text-lg font-bold text-foreground">Text-to-Speech</h2><p className="text-xs text-text-secondary mt-1">Choose cloud synthesis or the isolated local Qwen3-TTS runtime.</p></div>
+        <div className="grid grid-cols-2 gap-2 max-w-lg">
+          <button type="button" onClick={() => handleChange("TTS_BACKEND", "local_qwen3")} className={modeButtonClass(config.TTS_BACKEND === "local_qwen3")}><span className="font-medium">Local Qwen3-TTS</span><span className="block text-[10px] opacity-70">0.6B · Apple MPS · Offline</span></button>
+          <button type="button" onClick={() => handleChange("TTS_BACKEND", "dashscope")} className={modeButtonClass(config.TTS_BACKEND !== "local_qwen3")}><span className="font-medium">DashScope</span><span className="block text-[10px] opacity-70">Cloud CosyVoice / Qwen3</span></button>
+        </div>
+        {config.TTS_BACKEND === "local_qwen3" && <div className="space-y-3 rounded-lg border border-primary/20 bg-primary/5 p-4"><p className="text-xs text-text-secondary">首次使用前运行 <code className="font-mono text-primary">scripts/setup_local_qwen3_tts.sh</code>。脚本只下载一次模型，之后可完全离线。</p><div><label className="block text-xs text-text-muted mb-1">Isolated Python</label><input value={config.LOCAL_QWEN3_TTS_PYTHON} onChange={(e) => handleChange("LOCAL_QWEN3_TTS_PYTHON", e.target.value)} className={inputClass}/></div><div><label className="block text-xs text-text-muted mb-1">Local model directory</label><input value={config.LOCAL_QWEN3_TTS_MODEL} onChange={(e) => handleChange("LOCAL_QWEN3_TTS_MODEL", e.target.value)} className={inputClass}/></div></div>}
+      </section>
       {/* ── Section 3: Cloud & Vendor Providers ── */}
       <section className="glass-panel rounded-xl p-6 space-y-6">
         <div className="flex items-center gap-3">
@@ -756,7 +772,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <h2 className="text-lg font-bold text-foreground">Cloud & Vendor Providers</h2>
-            <p className="text-xs text-text-secondary">DashScope, OSS storage, and legacy vendor-direct routing</p>
+            <p className="text-xs text-text-secondary">DashScope, MinIO / S3 storage, and legacy vendor-direct routing</p>
           </div>
         </div>
         <div className="space-y-4">
@@ -770,31 +786,36 @@ export default function SettingsPage() {
             </div>
 
             <div className="pt-4 border-t border-glass-border">
-              <h3 className="text-sm font-bold text-foreground mb-4">OSS Mirror (Optional)</h3>
-              <p className="text-xs text-text-muted mb-3">Storage is local-first by default. Configure OSS for optional cloud mirror.</p>
+              <h3 className="text-sm font-bold text-foreground mb-4">Object Storage (MinIO / OSS)</h3>
+              <p className="text-xs text-text-muted mb-3">Configure S3‑compatible storage (MinIO, Alibaba Cloud OSS, AWS S3). Used by Agnes Video to reference asset images via pre‑signed URLs instead of oversized base64 payloads. Storage is local‑first when left empty.</p>
               <div>
-                <label className="block text-sm font-medium text-text-secondary mb-2">Alibaba Cloud Access Key ID</label>
-                <input type="password" value={config.ALIBABA_CLOUD_ACCESS_KEY_ID} onChange={(e) => handleChange("ALIBABA_CLOUD_ACCESS_KEY_ID", e.target.value)} placeholder="Optional, for OSS mirror" className={inputClass} />
+                <label className="block text-sm font-medium text-text-secondary mb-2">Access Key ID</label>
+                <input type="password" value={config.ALIBABA_CLOUD_ACCESS_KEY_ID} onChange={(e) => handleChange("ALIBABA_CLOUD_ACCESS_KEY_ID", e.target.value)} placeholder="MinIO / Alibaba Cloud Access Key" className={inputClass} />
               </div>
               <div className="mt-3">
-                <label className="block text-sm font-medium text-text-secondary mb-2">Alibaba Cloud Access Key Secret</label>
-                <input type="password" value={config.ALIBABA_CLOUD_ACCESS_KEY_SECRET} onChange={(e) => handleChange("ALIBABA_CLOUD_ACCESS_KEY_SECRET", e.target.value)} placeholder="Optional, for OSS mirror" className={inputClass} />
+                <label className="block text-sm font-medium text-text-secondary mb-2">Access Key Secret</label>
+                <input type="password" value={config.ALIBABA_CLOUD_ACCESS_KEY_SECRET} onChange={(e) => handleChange("ALIBABA_CLOUD_ACCESS_KEY_SECRET", e.target.value)} placeholder="MinIO / Alibaba Cloud Secret Key" className={inputClass} />
               </div>
               <div className="mt-3">
                 <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
-                  <span>OSS Bucket Name</span>
+                  <span>Endpoint URL</span>
+                  <span className="text-text-muted font-normal text-xs">e.g. https://minio.example.com</span>
+                </label>
+                <input type="text" value={config.OSS_ENDPOINT} onChange={(e) => handleChange("OSS_ENDPOINT", e.target.value)} placeholder="https://minio.example.com (optional)" className={inputClass} />
+              </div>
+              <div className="mt-3">
+                <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
+                  <span>Bucket Name</span>
                 </label>
                 <input type="text" value={config.OSS_BUCKET_NAME} onChange={(e) => handleChange("OSS_BUCKET_NAME", e.target.value)} placeholder="your_bucket_name (optional)" className={inputClass} />
               </div>
               <div className="mt-3">
-                <label className="flex items-center justify-between text-sm font-medium text-text-secondary mb-2">
-                  <span>OSS Endpoint</span>
-                </label>
-                <input type="text" value={config.OSS_ENDPOINT} onChange={(e) => handleChange("OSS_ENDPOINT", e.target.value)} placeholder="oss-cn-beijing.aliyuncs.com (optional)" className={inputClass} />
+                <label className="block text-sm font-medium text-text-secondary mb-2">Base Path (Prefix)</label>
+                <input type="text" value={config.OSS_BASE_PATH} onChange={(e) => handleChange("OSS_BASE_PATH", e.target.value)} placeholder="lumenx" className={inputClass} />
               </div>
               <div className="mt-3">
-                <label className="block text-sm font-medium text-text-secondary mb-2">OSS Base Path</label>
-                <input type="text" value={config.OSS_BASE_PATH} onChange={(e) => handleChange("OSS_BASE_PATH", e.target.value)} placeholder="lumenx" className={inputClass} />
+                <label className="block text-sm font-medium text-text-secondary mb-2">Region</label>
+                <input type="text" value={config.OSS_REGION} onChange={(e) => handleChange("OSS_REGION", e.target.value)} placeholder="us-east-1 (MinIO ignore but required)" className={inputClass} />
               </div>
             </div>
 

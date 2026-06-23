@@ -253,378 +253,8 @@ class ComicGenPipeline:
             recovered += sweep_pool(getattr(series, "characters", []), "character")
             recovered += sweep_pool(getattr(series, "scenes", []), "scene")
             recovered += sweep_pool(getattr(series, "props", []), "prop")
-    def _fast_parse_entities(self, text: str, title: str) -> Optional[Script]:
-        """Try to extract characters/scenes/props from structured sections.
-        Returns a Script object when structured data is found, None otherwise.
 
-        Supports multiple formats:
-
-        **Key:value lines** (compact):
-          ## 角色
-          老赵：35-40岁，普通身材，黑色短发凌乱
-          
-          ## 场景
-          原始森林上空：晨雾笼罩的原始森林鸟瞰
-
-        **List tables** (multi-row, one entity per row):
-          ## 场景环境
-          | 场景 | 出现镜头 | 说明 |
-          |------|---------|------|
-          | 原始森林上空 | 01 | 晨雾笼罩的原始森林鸟瞰 |
-          
-          ## 道具物品
-          | 道具 | 出现镜头 | 说明 |
-          |------|---------|------|
-          | 行李箱 | 03/04 | 弹开状态 |
-
-        **Profile tables** (single-entity, key-value rows):
-          ## 角色定妆参考
-          | 项目 | 描述 |
-          |------|------|
-          | 姓名 | 老赵 |
-          | 年龄 | 35-40岁 |
-
-        Section header matching is flexible — '角色', '角色定妆参考', '场景',
-        '场景环境', '道具', '道具物品' are all recognized.
-        """
-        from .models import Script, Character, Scene, Prop
-        import re as _re
-
-        entities = {"characters": [], "scenes": [], "props": []}
-        found_any = False
-
-        def _parse_table(section_text: str) -> list:
-            """Parse a markdown table and return list of dicts with column headers as keys."""
-            lines = [l for l in section_text.strip().split('\n') if l.strip().startswith('|')]
-            if len(lines) < 3:
-                return []  # need header + separator + at least 1 data row
-            
-            # Parse header
-            headers = [h.strip() for h in lines[0].split('|') if h.strip()]
-            if not headers:
-                return []
-            
-            # Data rows (skip separator line at index 1)
-            rows = []
-            for line in lines[2:]:
-                cells = [c.strip() for c in line.split('|') if c.strip()]
-                if len(cells) >= len(headers):
-                    row = {headers[i]: cells[i] for i in range(len(headers))}
-                    rows.append(row)
-                elif len(cells) == 1 and len(headers) >= 2:
-                    # Single cell — treat as name with empty description
-                    rows.append({headers[0]: cells[0], headers[1]: ""})
-            return rows
-
-        def _is_profile_table(rows: list) -> bool:
-            """Detect if a table is a profile (key-value rows) vs a list (one entity per row).
-            Profile tables have headers like ['项目', '描述'] and rows like [{'项目': '姓名', '描述': '老赵'}]."""
-            if not rows:
-                return False
-            headers = list(rows[0].keys())
-            # Profile pattern: first column is attribute name like "姓名", "年龄"
-            first_vals = [r[headers[0]] for r in rows if r.get(headers[0])]
-            attr_keywords = {'姓名', '年龄', '体型', '发型', '面容', '服装', '特征', '气质', '项目'}
-            if any(v in attr_keywords for v in first_vals):
-                return True
-            return False
-
-        def _build_character_from_profile(rows: list) -> dict:
-            """Build a single character dict from profile table rows."""
-            char = {"name": "", "description": "", "age": "", "gender": "", "clothing": ""}
-            attr_map = {
-                '姓名': 'name', '年龄': 'age', '性别': 'gender', '体型': 'description',
-                '发型': 'description', '面容': 'description', '服装': 'clothing',
-                '特征': 'description', '气质': 'description',
-            }
-            for row in rows:
-                vals = list(row.values())
-                if len(vals) >= 2:
-                    key = vals[0].strip()
-                    val = vals[1].strip()
-                    target = attr_map.get(key)
-                    if target == 'description':
-                        if char['description']:
-                            char['description'] += '，' + val
-                        else:
-                            char['description'] = val
-                    elif target:
-                        char[target] = val
-            return char
-
-        # Section header recognition
-        section_map = {
-            '角色': 'characters', '角色定妆参考': 'characters',
-            '场景': 'scenes', '场景环境': 'scenes',
-            '道具': 'props', '道具物品': 'props',
-        }
-
-        # Split text and find sections
-        lines = text.split('\n')
-        current_section = None
-        current_lines = []
-
-        for line in lines:
-            header_match = _re.match(r'#{1,3}\s*(.+?)\s*$', line.strip())
-            if header_match:
-                raw_header = header_match.group(1).strip()
-                # Try to match section name
-                matched_key = None
-                for key, value in section_map.items():
-                    if key in raw_header or raw_header in key:
-                        matched_key = value
-                        break
-                
-                if matched_key:
-                    # Flush previous
-                    if current_section and current_lines:
-                        section_text = '\n'.join(current_lines)
-                        table_rows = _parse_table(section_text)
-                        
-                        if table_rows:
-                            if current_section == 'characters' and _is_profile_table(table_rows):
-                                # Single character profile
-                                char = _build_character_from_profile(table_rows)
-                                if char['name']:
-                                    entities['characters'].append(char)
-                                    found_any = True
-                            else:
-                                # List table: one entity per row
-                                headers = list(table_rows[0].keys())
-                                name_col = headers[0]
-                                desc_col = headers[1] if len(headers) >= 2 else None
-                                for row in table_rows:
-                                    name = row.get(name_col, "").strip()
-                                    desc = row.get(desc_col, "").strip() if desc_col else ""
-                                    if name and name not in ("场景", "道具", "项目", "描述", "场景名"):
-                                        entities[current_section].append({"name": name, "description": desc})
-                                        found_any = True
-                        else:
-                            # Try key:value line format
-                            for l in section_text.strip().split('\n'):
-                                ll = l.strip()
-                                if not ll or ll.startswith('#') or ll.startswith('>') or ll.startswith('---'):
-                                    continue
-                                kv = _re.match(r'([^：:]+)[：:]\s*(.*)', ll)
-                                if kv:
-                                    name = kv.group(1).strip()
-                                    desc = kv.group(2).strip()
-                                    if name:
-                                        entities[current_section].append({"name": name, "description": desc})
-                                        found_any = True
-                    
-                    current_section = matched_key
-                    current_lines = []
-                else:
-                    # Non-matching header closes current section
-                    if current_section and current_lines:
-                        section_text = '\n'.join(current_lines)
-                        table_rows = _parse_table(section_text)
-                        
-                        if table_rows:
-                            if current_section == 'characters' and _is_profile_table(table_rows):
-                                char = _build_character_from_profile(table_rows)
-                                if char['name']:
-                                    entities['characters'].append(char)
-                                    found_any = True
-                            else:
-                                headers = list(table_rows[0].keys())
-                                name_col = headers[0]
-                                desc_col = headers[1] if len(headers) >= 2 else None
-                                for row in table_rows:
-                                    name = row.get(name_col, "").strip()
-                                    desc = row.get(desc_col, "").strip() if desc_col else ""
-                                    if name and name not in ("场景", "道具", "项目", "描述", "场景名"):
-                                        entities[current_section].append({"name": name, "description": desc})
-                                        found_any = True
-                        else:
-                            for l in section_text.strip().split('\n'):
-                                ll = l.strip()
-                                if not ll or ll.startswith('#') or ll.startswith('>') or ll.startswith('---'):
-                                    continue
-                                kv = _re.match(r'([^：:]+)[：:]\s*(.*)', ll)
-                                if kv:
-                                    name = kv.group(1).strip()
-                                    desc = kv.group(2).strip()
-                                    if name:
-                                        entities[current_section].append({"name": name, "description": desc})
-                                        found_any = True
-                    current_section = None
-                    current_lines = []
-            elif current_section:
-                current_lines.append(line)
-
-        # Flush last section
-        if current_section and current_lines:
-            section_text = '\n'.join(current_lines)
-            table_rows = _parse_table(section_text)
-            
-            if table_rows:
-                if current_section == 'characters' and _is_profile_table(table_rows):
-                    char = _build_character_from_profile(table_rows)
-                    if char['name']:
-                        entities['characters'].append(char)
-                        found_any = True
-                else:
-                    headers = list(table_rows[0].keys())
-                    name_col = headers[0]
-                    desc_col = headers[1] if len(headers) >= 2 else None
-                    for row in table_rows:
-                        name = row.get(name_col, "").strip()
-                        desc = row.get(desc_col, "").strip() if desc_col else ""
-                        if name and name not in ("场景", "道具", "项目", "描述", "场景名"):
-                            entities[current_section].append({"name": name, "description": desc})
-                            found_any = True
-            else:
-                for l in section_text.strip().split('\n'):
-                    ll = l.strip()
-                    if not ll or ll.startswith('#') or ll.startswith('>') or ll.startswith('---'):
-                        continue
-                    kv = _re.match(r'([^：:]+)[：:]\s*(.*)', ll)
-                    if kv:
-                        name = kv.group(1).strip()
-                        desc = kv.group(2).strip()
-                        if name:
-                            entities[current_section].append({"name": name, "description": desc})
-                            found_any = True
-
-        if not found_any:
-            return None
-
-        # Build Script object
-        new_script = Script(
-            id=str(uuid.uuid4()),
-            title=title,
-            original_text=text,
-            characters=[],
-            scenes=[],
-            props=[],
-            frames=[],
-            created_at=time.time(),
-            updated_at=time.time(),
-        )
-
-        for c in entities["characters"]:
-            new_script.characters.append(Character(
-                id=str(uuid.uuid4()),
-                name=c["name"],
-                description=c.get("description", ""),
-                age=c.get("age"),
-                clothing=c.get("clothing", ""),
-            ))
-        for s in entities["scenes"]:
-            new_script.scenes.append(Scene(
-                id=str(uuid.uuid4()),
-                name=s["name"],
-                description=s.get("description", ""),
-            ))
-        for p in entities["props"]:
-            new_script.props.append(Prop(
-                id=str(uuid.uuid4()),
-                name=p["name"],
-                description=p.get("description", ""),
-            ))
-
-        return new_script
-
-
-
-
-    def _auto_link_frame_assets(self, frames: list, characters: list, scenes: list, props: list = None) -> None:
-        """
-        Auto-link frames to scene/character/prop assets by matching names
-        in the action_description text. This saves the user from having to
-        manually assign reference images in the storyboard editor.
-
-        Priority:
-          1. If action_description contains a resource line like
-             【角色：老赵 · 场景：机舱内 · 道具：行李箱】,
-             do exact name-to-ID matching for those explicitly declared names.
-          2. Fall back to substring matching of all character/scene names
-             anywhere in the description text.
-
-        Mutates frames in-place: fills scene_id, character_ids, prop_ids.
-        """
-        if props is None:
-            props = []
-
-        import re as _re
-
-        for frame in frames:
-            desc = (frame.action_description or "")
-            if not desc:
-                continue
-
-            # Step 1: Try to extract explicitly declared names from resource line
-            # Format: 【场景：X · 角色：Y · 道具：Z】 or 【X · Y · Z】
-            res_m = _re.search(r'【([^】]*)】', desc)
-            declared_scenes = []
-            declared_chars = []
-            declared_props = []
-            if res_m:
-                inner = res_m.group(1).strip()
-                segments = [s.strip() for s in inner.split('·') if s.strip()]
-                has_keys = any('：' in s for s in segments)
-                if has_keys:
-                    for seg in segments:
-                        if '：' not in seg:
-                            continue
-                        key, val = seg.split('：', 1)
-                        key = key.strip()
-                        val = val.strip()
-                        if val and val != "无":
-                            vals = [v.strip() for v in val.split(',') if v.strip()]
-                            if key == "场景":
-                                declared_scenes = vals
-                            elif key == "角色":
-                                declared_chars = vals
-                            elif key == "道具":
-                                declared_props = vals
-                else:
-                    # Compact: first=场景, second=角色, third=道具
-                    labels = [declared_scenes, declared_chars, declared_props]
-                    for i, val in enumerate(segments[:3]):
-                        if val and val != "无":
-                            labels[i].append(val)
-
-            # Step 2: Match characters by name
-            # Use exact match for declared names, substring for the rest
-            desc_normalized = self._entity_name_key(desc)
-            
-            for ch in characters:
-                ch_key = self._entity_name_key(ch.name)
-                if not ch_key:
-                    continue
-                # Check if this character is declared explicitly
-                if ch.name in declared_chars:
-                    if ch.id not in frame.character_ids:
-                        frame.character_ids.append(ch.id)
-                elif ch_key in desc_normalized:
-                    # Fallback: substring matching
-                    if ch.id not in frame.character_ids:
-                        frame.character_ids.append(ch.id)
-
-            # Step 3: Match scene by name
-            for sc in scenes:
-                sc_key = self._entity_name_key(sc.name)
-                if not sc_key:
-                    continue
-                if sc.name in declared_scenes:
-                    frame.scene_id = sc.id
-                    break
-                if sc_key in desc_normalized:
-                    frame.scene_id = sc.id
-                    break
-
-            # Step 4: Match props by name
-            if declared_props:
-                for prop in props:
-                    if prop.name in declared_props and prop.id not in frame.prop_ids:
-                        frame.prop_ids.append(prop.id)
-
-
-
-        return None
+        return recovered
 
     _MAX_LABEL_LEN = 20
 
@@ -939,82 +569,17 @@ class ComicGenPipeline:
         return script
     
     def extract_preview(self, script_id: str, text: str) -> Script:
-        """Run entity extraction without saving. Cache result for subsequent apply.
-
-        Fast path: if text contains structured `## 角色 / ## 场景 / ## 道具`
-        sections in '{名称}：{描述}' format, parse with regex (no LLM cost).
-        Falls back to LLM parse_novel() when no structured sections are found.
-        """
+        """Run entity extraction without saving. Cache result for subsequent apply."""
         existing_script = self.scripts.get(script_id)
         if not existing_script:
             raise ValueError("Script not found")
-
-        # Fast path: try regex-based entity extraction first
-        fast_result = self._fast_parse_entities(text, existing_script.title)
-        if fast_result is not None:
-            self._extraction_cache[script_id] = (time.time(), fast_result, True)
-            fast_result._fast_path = True  # flag for API response
-            return fast_result
-
-        # Slow path: LLM-based extraction
         new_script = self.script_processor.parse_novel(existing_script.title, text)
         self._supplement_mentioned_existing_entities(existing_script, new_script, text)
         self._extraction_cache[script_id] = (time.time(), new_script)
         return new_script
 
-    def _cleanup_old_entity_oss_images(self, script: "Script") -> None:
-        """Delete orphaned OSS images from entities being replaced."""
-        for char in (script.characters or []):
-            self._cleanup_single_entity_oss_images(char)
-        for scene in (script.scenes or []):
-            self._cleanup_single_entity_oss_images(scene)
-        for prop in (script.props or []):
-            self._cleanup_single_entity_oss_images(prop)
-
-
-    def _cleanup_single_entity_oss_images(self, entity: Any) -> None:
-        """Delete OSS images for a single character/scene/prop entity."""
-        from ...utils.oss_utils import is_object_key
-        uploader = None
-
-        def _try_delete(url: str) -> None:
-            if not url or not is_object_key(url):
-                return
-            nonlocal uploader
-            if uploader is None:
-                from ...utils.oss_utils import OSSImageUploader
-                uploader = OSSImageUploader()
-                if not uploader.is_configured:
-                    uploader = None
-                    return
-            uploader.delete_object(url)
-
-        _try_delete(getattr(entity, "image_url", None))
-        _try_delete(getattr(entity, "full_body_image_url", None))
-        _try_delete(getattr(entity, "three_view_image_url", None))
-        _try_delete(getattr(entity, "headshot_image_url", None))
-        _try_delete(getattr(entity, "avatar_url", None))
-        for asset_field in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset"):
-            asset = getattr(entity, asset_field, None)
-            if asset:
-                for v in (asset.variants or []):
-                    _try_delete(getattr(v, "url", None))
-        # Also handle stages reference images (Cast page's primary image source)
-        for stage in (getattr(entity, "stages", None) or []):
-            for v in (stage.reference_images or []):
-                _try_delete(getattr(v, "url", None))
-        # Handle AssetUnit fields (reference_sheet, full_body, three_views, head_shot)
-        for unit_field in ("reference_sheet", "full_body", "three_views", "head_shot"):
-            unit = getattr(entity, unit_field, None)
-            if unit:
-                for v in (unit.image_variants or []):
-                    _try_delete(getattr(v, "url", None))
-                for v in (unit.video_variants or []):
-                    _try_delete(getattr(v, "url", None))
-
-
-
-    def _entity_name_key(self, name: str) -> str:
+    @staticmethod
+    def _entity_name_key(name: str) -> str:
         return re.sub(r"[\s·•_\-—（）()]+", "", str(name or "")).casefold()
 
     def _supplement_mentioned_existing_entities(self, existing_script: Script, parsed_script: Script, text: str) -> None:
@@ -1064,12 +629,7 @@ class ComicGenPipeline:
             target.visual_weight = max(target.visual_weight, incoming.visual_weight)
 
     def _merge_exact_series_entities(self, script: Script) -> None:
-        """Automatically reconcile exact-name matches into the shared library.
-
-        When a fresh (PENDING) episode entity matches a series entity, the
-        series entity's old image variants are cleared and OSS files deleted
-        so stale images don't persist in Cast after a re-extraction.
-        """
+        """Automatically reconcile exact-name matches into the shared library."""
         series = self.series_store.get(script.series_id) if script.series_id else None
         if not series:
             return
@@ -1083,31 +643,6 @@ class ComicGenPipeline:
                     remaining.append(local)
                     continue
                 self._merge_entity_visual_metadata(shared, local)
-                # Fresh re-parsed entity is PENDING → clear stale series images
-                if getattr(local, "status", None) == GenerationStatus.PENDING:
-                    # Delete OSS files for stale series entity images
-                    self._cleanup_single_entity_oss_images(shared)
-                    # Reset series entity image variants to avoid stale images
-                    for img_field in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset"):
-                        img = getattr(shared, img_field, None)
-                        if img:
-                            img.selected_id = None
-                            img.variants = []
-                    # Clear stages reference images (Cast page's primary image source)
-                    for stage in (getattr(shared, "stages", None) or []):
-                        stage.selected_image_id = None
-                        stage.reference_images = []
-                    # Clear AssetUnit fields (reference_sheet, full_body, three_views, head_shot)
-                    for unit_field in ("reference_sheet", "full_body", "three_views", "head_shot"):
-                        unit = getattr(shared, unit_field, None)
-                        if unit:
-                            unit.selected_image_id = None
-                            unit.image_variants = []
-                    for legacy in ("image_url", "full_body_image_url", "three_view_image_url",
-                                   "headshot_image_url", "avatar_url"):
-                        if hasattr(shared, legacy):
-                            setattr(shared, legacy, None)
-                    shared.status = GenerationStatus.PENDING
                 changed = True
             setattr(script, attr, remaining)
         if changed:
@@ -1121,15 +656,9 @@ class ComicGenPipeline:
             raise ValueError("Script not found")
 
         # Use cached extraction if available (from extract_preview)
-        import copy as _copy
         cached = self._extraction_cache.pop(script_id, None)
-        is_fast_path = False
-        if cached and isinstance(cached, (list, tuple)) and len(cached) >= 3:
-            is_fast_path = cached[2]
-        if cached and isinstance(cached, (list, tuple)) and len(cached) >= 2 and (time.time() - cached[0]) < 300:
-            new_script = _copy.deepcopy(cached[1])
-            if is_fast_path:
-                new_script._fast_path = True
+        if cached and (time.time() - cached[0]) < 300:
+            new_script = cached[1]
         else:
             new_script = self.script_processor.parse_novel(existing_script.title, text)
             self._supplement_mentioned_existing_entities(existing_script, new_script, text)
@@ -1160,120 +689,11 @@ class ComicGenPipeline:
         new_script.bgm_url = existing_script.bgm_url
         new_script.mix_settings = existing_script.mix_settings
 
-        # Preserve existing frames and video tasks (re-extracting entities
-        # should not discard already-generated storyboards)
-        new_script.frames = existing_script.frames
-        new_script.video_tasks = existing_script.video_tasks
-
         # Exact-name matches are the same logical entity in this product's
         # cross-episode model. Merge them immediately so confirmation never
         # leaves a transient episode-local duplicate beside the shared card.
         self._merge_exact_series_entities(new_script)
         
-        # Clean up old entity OSS images — orphaned by entity replacement
-        self._cleanup_old_entity_oss_images(existing_script)
-
-        import logging as _lg2
-        _lg2.getLogger(__name__).warning(f"reparse_project: series_id={new_script.series_id}, has_series={new_script.series_id is not None}")
-        # Also clean up SERIES entity images for any entities that MIGHT be
-        # shown in Cast alongside the new episode entities. The Cast page
-        # merges series entities (by ID) and adds series-only entities.
-        # Without this, old series entity images persist after re-extraction.
-        if new_script.series_id:
-            series = self.series_store.get(new_script.series_id)
-            if series:
-                # Collect entity names from BOTH the new episode AND the old episode,
-                # because old extraction runs may have produced slightly different names
-                # (e.g. "晨雾原始森林" vs "原始森林上空") that still need cleanup.
-                target_keys = set()
-                for attr in ("characters", "scenes", "props"):
-                    for e in getattr(new_script, attr, []):
-                        target_keys.add(self._entity_name_key(e.name))
-                    for e in getattr(existing_script, attr, []):
-                        target_keys.add(self._entity_name_key(e.name))
-                # Phase 1: Clean series entities whose names match known episode names
-                for attr in ("characters", "scenes", "props"):
-                    for se in list(getattr(series, attr, [])):
-                        if self._entity_name_key(se.name) in target_keys:
-                            self._cleanup_single_entity_oss_images(se)
-                            for img_field in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset"):
-                                img = getattr(se, img_field, None)
-                                if img:
-                                    img.selected_id = None
-                                    img.variants = []
-                            for stage in (getattr(se, "stages", None) or []):
-                                stage.selected_image_id = None
-                                stage.reference_images = []
-                            for unit_field in ("reference_sheet", "full_body", "three_views", "head_shot"):
-                                unit = getattr(se, unit_field, None)
-                                if unit:
-                                    unit.selected_image_id = None
-                                    unit.image_variants = []
-                            for legacy in ("image_url", "full_body_image_url", "three_view_image_url",
-                                           "headshot_image_url", "avatar_url", "reference_image_url"):
-                                if hasattr(se, legacy):
-                                    setattr(se, legacy, None)
-                            se.status = GenerationStatus.PENDING
-                # Phase 2: Clean series entities that have images but whose names
-                # DON'T appear in the raw script text. These are likely orphaned
-                # artifacts from previous extraction runs (e.g. "铝合金碎片" when
-                # the current script only has "飞机残骸碎片").
-                text_normalized = (text or "").casefold().replace(" ", "").replace("　", "")
-                for attr in ("characters", "scenes", "props"):
-                    for se in list(getattr(series, attr, [])):
-                        se_key = self._entity_name_key(se.name)
-                        # Already handled by Phase 1 (exact name match)
-                        if se_key in target_keys:
-                            continue
-                        has_images = bool(
-                            getattr(se, "image_url", None)
-                            or getattr(se, "full_body_image_url", None)
-                            or getattr(se, "three_view_image_url", None)
-                            or getattr(se, "headshot_image_url", None)
-                            or getattr(se, "avatar_url", None)
-                            or any(
-                                getattr(getattr(se, imgf, None), "variants", None)
-                                for imgf in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset")
-                            )
-                            or any(
-                                getattr(stage, "reference_images", None)
-                                for stage in (getattr(se, "stages", None) or [])
-                            )
-                            or any(
-                                getattr(getattr(se, uf, None), "image_variants", None)
-                                for uf in ("reference_sheet", "full_body", "three_views", "head_shot")
-                            )
-                        )
-                        if not has_images:
-                            continue
-                        # If the entity name doesn't appear in the raw script text,
-                        # it's an orphan from a previous extraction — clean it up.
-                        if text_normalized and se_key not in text_normalized:
-                            import logging as _lg
-                            _lg.getLogger(__name__).warning(f"Phase2 cleanup: attr={attr} name={se.name} se_key={se_key} in_text={se_key in text_normalized}")
-                            self._cleanup_single_entity_oss_images(se)
-                            for img_field in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset"):
-                                img = getattr(se, img_field, None)
-                                if img:
-                                    img.selected_id = None
-                                    img.variants = []
-                            for stage in (getattr(se, "stages", None) or []):
-                                stage.selected_image_id = None
-                                stage.reference_images = []
-                            for unit_field in ("reference_sheet", "full_body", "three_views", "head_shot"):
-                                unit = getattr(se, unit_field, None)
-                                if unit:
-                                    unit.selected_image_id = None
-                                    unit.image_variants = []
-                            for legacy in ("image_url", "full_body_image_url", "three_view_image_url",
-                                           "headshot_image_url", "avatar_url", "reference_image_url"):
-                                if hasattr(se, legacy):
-                                    setattr(se, legacy, None)
-                            se.status = GenerationStatus.PENDING
-
-                series.updated_at = time.time()
-                self._save_series_data()
-
         # Replace the script in memory
         self.scripts[script_id] = new_script
         self._save_data()
@@ -2295,55 +1715,8 @@ class ComicGenPipeline:
             "props": [{"id": p.id, "name": p.name, "description": p.description} for p in all_props],
         }
 
-        # Fast path: try regex-based frame parsing first
-        # The user's script may already have structured **镜头** markers
-        try:
-            regex_frames = self.script_processor._try_parse_frames_from_text(text)
-            logger.info(f"regex fast path: {len(regex_frames)} frames via regex")
-        except Exception as _e3:
-            logger.warning(f"regex fast path error: {_e3}")
-            regex_frames = []
-        
-        if regex_frames and len(regex_frames) >= 2:
-            logger.info(f"Fast path: parsed {len(regex_frames)} frames via regex from structured script")
-            # Run auto-link to associate entity IDs from the resource line
-            self._auto_link_frame_assets(regex_frames, all_characters, all_scenes, all_props)
-            raw_frames = []
-            for f in regex_frames:
-                # Resolve referenced entity names from action_description (resource line)
-                desc = f.action_description or ""
-                scene_ref = ""
-                char_refs = []
-                prop_refs = []
-                # Try to extract from auto-link results
-                if f.scene_id:
-                    scene_obj = next((s for s in all_scenes if s.id == f.scene_id), None)
-                    if scene_obj:
-                        scene_ref = scene_obj.name
-                if f.character_ids:
-                    for cid in f.character_ids:
-                        cobj = next((c for c in all_characters if c.id == cid), None)
-                        if cobj:
-                            char_refs.append(cobj.name)
-                if f.prop_ids:
-                    for pid in f.prop_ids:
-                        pobj = next((p for p in all_props if p.id == pid), None)
-                        if pobj:
-                            prop_refs.append(pobj.name)
-                raw_frames.append({
-                    "scene_ref_name": scene_ref,
-                    "character_ref_names": char_refs,
-                    "prop_ref_names": prop_refs,
-                    "action_summary": desc,
-                    "action_description": desc,
-                    "shot_size": f.shot_size or "中景",
-                    "camera_angle": f.camera_angle or "平视",
-                    "duration": f.duration or 4,
-                })
-        else:
-            # Slow path: LLM-based storyboard analysis
-            logger.info("Slow path: calling LLM for storyboard analysis")
-            raw_frames = self.script_processor.analyze_to_storyboard(text, entities_json)
+        # Call LLM to analyze text (may raise RuntimeError on parse failure)
+        raw_frames = self.script_processor.analyze_to_storyboard(text, entities_json)
 
         if not raw_frames:
             raise RuntimeError("AI 分镜分析未返回任何帧数据，请重试。")

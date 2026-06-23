@@ -400,11 +400,354 @@ class ScriptProcessor:
             characters=[],
             scenes=[],
             props=[],
-            frames=[],
+            frames=self._try_parse_frames_from_text(text),
             created_at=time.time(),
             updated_at=time.time()
         )
 
+    @staticmethod
+    def _parse_duration(s: str) -> Optional[float]:
+        """Parse duration string like '约2s', '3秒', '约2-3s' into float seconds."""
+        if not s:
+            return None
+        # Try range first: "2-3s", "2~3秒"
+        m = re.search(r'(\d+(?:\.\d+)?)\s*[-~]\s*(\d+(?:\.\d+)?)\s*[秒sS]', s)
+        if m:
+            return max(float(m.group(1)), float(m.group(2)))
+        m = re.search(r'(\d+(?:\.\d+)?)\s*[秒sS]', s)
+        if m:
+            return float(m.group(1))
+        return None
+
+    @staticmethod
+    def _detect_camera_angle(text: str) -> str:
+        """Detect camera angle from description text using keyword matching."""
+        if not text:
+            return "平视"
+        text_lower = text.lower()
+        # Ordered by specificity (most specific first)
+        patterns = [
+            ["鸟瞰", "航拍", "aerial", "bird"],
+            ["高空俯瞰", "俯瞰"],
+            ["俯视", "俯拍", "high angle", "从上往下"],
+            ["仰视", "仰拍", "low angle", "从下往上"],
+            ["过肩", "over shoulder"],
+            ["主观视角", "pov", "第一人称"],
+            ["荷兰角", "dutch"],
+            ["蚁视", "worm"],
+        ]
+        angle_names = ["鸟瞰", "俯视", "俯视", "仰视", "过肩", "主观视角", "荷兰角", "蚁视"]
+        for keywords, angle in zip(patterns, angle_names):
+            if any(kw in text or kw in text_lower for kw in keywords):
+                return angle
+        return "平视"
+
+    @staticmethod
+    def _detect_shot_size(text: str) -> Optional[str]:
+        """Detect shot size from description text using keyword matching."""
+        if not text:
+            return None
+        text_lower = text.lower()
+        patterns = [
+            (["大特写", "极端特写", "extreme close"], "大特写"),
+            (["特写", "close.up", "closeup"], "特写"),
+            (["近景", "medium close"], "近景"),
+            (["中景", "medium shot", "mid shot"], "中景"),
+            (["全景", "wide shot", "full shot", "宽景"], "全景"),
+            (["远景", "long shot", "远摄"], "远景"),
+            (["大远景", "extreme long", "extreme wide"], "大远景"),
+        ]
+        for keywords, size in patterns:
+            if any(kw in text or kw in text_lower for kw in keywords):
+                return size
+        return None
+
+    @staticmethod
+    def _extract_header_duration(header_line: str) -> Optional[float]:
+        """Extract duration from a header line like '**镜头 01** | 约2s'."""
+        m = re.search(r'[|｜]\s*(.+)', header_line)
+        if m:
+            dur_str = m.group(1).strip()
+            if not dur_str:
+                return None
+            # Try range first: "2-3s", "2~3秒"
+            rng = re.search(r'(\d+(?:\.\d+)?)\s*[-~]\s*(\d+(?:\.\d+)?)\s*[秒sS]', dur_str)
+            if rng:
+                return max(float(rng.group(1)), float(rng.group(2)))
+            single = re.search(r'(\d+(?:\.\d+)?)\s*[秒sS]', dur_str)
+            if single:
+                return float(single.group(1))
+            return None
+        return None
+
+    @staticmethod
+    def _parse_header_pipe_fields(header_line: str) -> dict:
+        """Parse '**镜头 01** | 约4s | 远景 | 鸟瞰' into {duration, shot_size, camera_angle}."""
+        result = {}
+        parts = re.split(r'\s*[|｜]\s*', header_line.strip())
+        # parts[0] = "**镜头 01**", parts[1+] = field values
+        if len(parts) >= 2:
+            dur = ScriptProcessor._parse_duration(parts[1])
+            if dur:
+                result["duration"] = dur
+        if len(parts) >= 3:
+            result["shot_size"] = parts[2].strip()
+        if len(parts) >= 4:
+            result["camera_angle"] = parts[3].strip()
+        return result
+
+    @staticmethod
+    def _parse_resource_line(content: str) -> dict:
+        """Parse '【场景：原始森林 · 角色：老赵 · 道具：行李箱】' or '【原始森林 · 老赵】' into {scenes, characters, props}.
+
+        Supports two formats:
+          1. Full: 【场景：X · 角色：Y · 道具：Z】 — each segment has a key: prefix
+          2. Compact: 【X · Y · Z】 — segments[key=场景,角色,道具] in order (first=场景, second=角色, third=道具)
+          "无" or empty segments are treated as "no value" and skipped.
+        """
+        result = {"scenes": [], "characters": [], "props": []}
+        m = re.search(r'【([^】]*)】', content)
+        if not m:
+            return result
+        inner = m.group(1).strip()
+        segments = [s.strip() for s in inner.split('·') if s.strip()]
+        
+        # Check if segments have key: prefix or are bare values
+        # A segment with '：' is keyed; otherwise it's a bare value
+        has_keys = any('：' in s for s in segments)
+        
+        if has_keys:
+            # Full format: each segment has a key: prefix
+            for seg in segments:
+                if '：' not in seg:
+                    continue
+                key, val = seg.split('：', 1)
+                key = key.strip()
+                val = val.strip()
+                if val and val != "无":
+                    vals = [s.strip() for s in val.split(',') if s.strip()]
+                    if key == "场景":
+                        result["scenes"] = vals
+                    elif key == "角色":
+                        result["characters"] = vals
+                    elif key == "道具":
+                        result["props"] = vals
+        else:
+            # Compact format: bare values in order [场景, 角色, 道具]
+            labels = ["scenes", "characters", "props"]
+            for i, val in enumerate(segments[:3]):
+                if val and val != "无":
+                    result[labels[i]].append(val)
+        return result
+
+    def _try_parse_frames_from_text(self, text: str) -> list:
+        """
+        Detect pre-defined frame/shot markers in raw text and parse them
+        into StoryboardFrame objects via regex. This is a fast path that
+        handles common patterns without LLM cost. Returns empty list when
+        no clear frame structure is detected.
+
+        Supported patterns (multi-line content captured after each marker):
+          - "分镜N:" / "分镜N："    (Chinese shot N)
+          - "镜头N:" / "镜头N："    (Chinese scene N)
+          - "Shot N:" / "shot N："  (English shot N)
+          - "【分镜N】" / "【镜头N】" (bracketed Chinese)
+          - "**镜头 NN** | ..."     (Markdown bold, structured format)
+          - "INT." / "EXT." / "SCENE N" at line start (screenplay, >=3)
+
+        Structured format (new):
+          **镜头 01** | 约4s | 远景 | 鸟瞰
+          【场景：原始森林 · 角色：老赵 · 道具：行李箱】
+          0-1s: 描述
+          **音效**：...
+          **备注**：...
+
+        Extracts duration, camera_angle, shot_size from the header,
+        and scene/character/prop names from the resource line (matched
+        to assets later by _auto_link_frame_assets).
+        """
+        if not text or not text.strip():
+            return []
+
+        from .models import StoryboardFrame, GenerationStatus
+        _parse_duration = self._parse_duration
+        _detect_camera_angle = self._detect_camera_angle
+        _detect_shot_size = self._detect_shot_size
+
+        frames = []
+
+        def _make_frame(action: str, duration_val: Optional[float] = None,
+                        shot_size: Optional[str] = None,
+                        camera_angle: Optional[str] = None) -> StoryboardFrame:
+            return StoryboardFrame(
+                id=str(uuid.uuid4()),
+                scene_id="",
+                character_ids=[],
+                action_description=action,
+                duration=duration_val,
+                camera_angle=camera_angle or _detect_camera_angle(action),
+                shot_size=shot_size or _detect_shot_size(action),
+                status=GenerationStatus.PENDING,
+            )
+
+        # --- Pattern 4 (checked first): Markdown bold "**镜头 NN** | ..." ---
+        # This is checked before Patterns 1-3 because the structured
+        # format is more specific and should take priority.
+        md_pat = re.compile(
+            r"(?:^|\n)\s*\*\*\s*(?:镜头|Shot|shot)\s*\d+\s*\*\*"
+            r"(?P<header_dur>\s*[|｜]\s*[^\n]*)?\n"
+            r"(?P<shot_content>.*?)(?=\n\s*\*\*\s*(?:镜头|Shot|shot)\s*\d+\s*\*\*|\Z)",
+            re.DOTALL
+        )
+        md_matches = list(md_pat.finditer(text))
+        if len(md_matches) >= 2:
+            for m in md_matches:
+                header_part = m.group("header_dur") or ""
+                header_fields = {}
+                if header_part.strip():
+                    header_line = "**" + header_part  # reconstruct for parsing
+                    header_fields = self._parse_header_pipe_fields(header_line)
+                
+                content = m.group("shot_content").strip()
+                if not content:
+                    continue
+                
+                # Parse resource line for explicit names
+                res = self._parse_resource_line(content)
+                
+                frame = _make_frame(
+                    action=content,
+                    duration_val=header_fields.get("duration"),
+                    shot_size=header_fields.get("shot_size"),
+                    camera_angle=header_fields.get("camera_angle"),
+                )
+                # Store explicitly declared names for _auto_link_frame_assets
+                # (the resource line is already in action_description, so
+                # _auto_link_frame_assets can find names via substring matching)
+                frames.append(frame)
+            return frames
+
+        # --- Pattern 1: "分镜N:" / "镜头N:" ---
+        cn_pat = re.compile(
+            r"(?:^|\n)\s*(?:分镜|镜头)\s*\d+\s*[：:]\s*"
+            r"(.*?)(?=\n\s*(?:分镜|镜头)\s*\d+\s*[：:]|\Z)",
+            re.DOTALL
+        )
+        cn_matches = list(cn_pat.finditer(text))
+        if len(cn_matches) >= 2:
+            for m in cn_matches:
+                action = m.group(1).strip()
+                if action:
+                    frames.append(_make_frame(action))
+            return frames
+
+        # --- Pattern 2: "Shot N:" / "shot N:" ---
+        en_pat = re.compile(
+            r"(?:^|\n)\s*(?:Shot|shot)\s*\d+\s*[：:]\s*"
+            r"(.*?)(?=\n\s*(?:Shot|shot)\s*\d+\s*[：:]|\Z)",
+            re.DOTALL
+        )
+        en_matches = list(en_pat.finditer(text))
+        if len(en_matches) >= 2:
+            for m in en_matches:
+                action = m.group(1).strip()
+                if action:
+                    frames.append(_make_frame(action))
+            return frames
+
+        # --- Pattern 3: "【分镜N】" / "【镜头N】" ---
+        bk_pat = re.compile(
+            r"(?:^|\n)\s*【\s*(?:分镜|镜头)\s*\d+\s*】\s*"
+            r"(.*?)(?=\n\s*【\s*(?:分镜|镜头)\s*\d+\s*】|\Z)",
+            re.DOTALL
+        )
+        bk_matches = list(bk_pat.finditer(text))
+        if len(bk_matches) >= 2:
+            for m in bk_matches:
+                action = m.group(1).strip()
+                if action:
+                    frames.append(_make_frame(action))
+            return frames
+
+        # --- Pattern 5: Screenplay format (INT./EXT./SCENE) ---
+        sp_matches = list(re.finditer(
+            r"^(?:INT\.|EXT\.|INT\.?/EXT\.?|SCENE\s+\d+)",
+            text, re.MULTILINE
+        ))
+        if len(sp_matches) >= 3:
+            for i, m in enumerate(sp_matches):
+                start = m.end()
+                end = sp_matches[i + 1].start() if i + 1 < len(sp_matches) else len(text)
+                block = text[start:end].strip()
+                action = block.split('\n')[0].strip() if block else ""
+                if action:
+                    frames.append(_make_frame(f"{m.group()}. {action}"))
+            return frames
+
+        return []
+
+    def extract_frames_from_text(self, text: str) -> list:
+        """
+        Use LLM to extract pre-defined shots from script text as-is.
+        Unlike the normal storyboard analysis, this does NOT reinterpret
+        or regenerate frames: it preserves the user's shot structure
+        exactly as written (markdown, screenplay, numbered list, etc.).
+
+        Falls back to regex-parsed frames when LLM is unavailable.
+        Returns empty list when no shot structure is detected.
+        """
+        if not self.is_configured:
+            logger.warning("LLM not configured, falling back to regex")
+            return []
+
+        prompt = (
+            "你是一个分镜提取助手。用户已经写好了分镜/镜头列表。\n"
+            "请逐条提取每个分镜的内容，保持原文不动——不要改写、合并或拆分。\n"
+            "同时从原文中提取 duration（时长，如约2s→2.0）、camera_angle（镜头角度，如航拍→鸟瞰、平视、俯视、仰视）、shot_size（景别，如特写、中景、远景）。\n"
+            "如果原文没有明确写明，字段留 null。\n"
+            "\n"
+            f"剧本原文：\n{text[:15000]}\n"
+            "\n"
+            "返回严格 JSON 格式（纯 JSON 对象数组，不要 markdown 代码块）：\n"
+            "[\n"
+            "  {\"action_description\": \"第1个分镜的内容，保持原文\", \"duration\": 2.0, \"camera_angle\": \"鸟瞰\", \"shot_size\": \"远景\"},\n"
+            "  {\"action_description\": \"第2个分镜的内容，保持原文\", \"duration\": null, \"camera_angle\": \"平视\", \"shot_size\": null}\n"
+            "]\n"
+            "\n"
+            "如果原文没有明显的分镜结构，返回 []。不要自己创造分镜。"
+        )
+
+        try:
+            content = self.llm.chat(
+                messages=[{"role": "user", "content": prompt}],
+            )
+            content = _strip_markdown_json(content)
+            data = json.loads(content)
+            if not isinstance(data, list):
+                return []
+
+            from .models import StoryboardFrame, GenerationStatus
+            frames = []
+            for item in data:
+                desc = (item.get("action_description") or "").strip()
+                if desc:
+                    frames.append(StoryboardFrame(
+                        id=str(uuid.uuid4()),
+                        scene_id="",
+                        character_ids=[],
+                        action_description=desc,
+                        duration=item.get("duration"),
+                        camera_angle=item.get("camera_angle") or "平视",
+                        shot_size=item.get("shot_size"),
+                        status=GenerationStatus.PENDING,
+                    ))
+
+            if frames:
+                logger.info(f"LLM extracted {len(frames)} frames from structured text")
+            return frames
+
+        except Exception as e:
+            logger.error(f"LLM frame extraction failed: {e}")
     def split_into_episodes(self, text: str, suggested_episodes: int = 3) -> List[Dict[str, Any]]:
         """
         Uses LLM to split a long text into episodes by narrative rhythm.

@@ -3,6 +3,7 @@
 import { useRef, useCallback, useEffect, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+    Link2,
     Trash2,
     ChevronUp,
     ChevronDown,
@@ -20,10 +21,12 @@ import {
 import { useTranslations } from "next-intl";
 import AssetChipBar from "./AssetChipBar";
 import PromptExpandModal from "./PromptExpandModal";
-import PolishPanel from "./PolishPanel";
+
 import FieldTagChip, { AddFieldButton, type FieldType } from "./FieldTagChip";
 import { buildPromptWithReferenceTags, normalizeReferenceTokensForEditor } from "./buildAssembledPrompt";
 import { PendingTaskAffordance } from "@/components/shared/PendingTaskAffordance";
+import { api } from "@/lib/api";
+import { toast } from "@/store/toastStore";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
 import PreviewVideo from "@/components/shared/preview/PreviewVideo";
 import { useProjectStore } from "@/store/projectStore";
@@ -76,6 +79,8 @@ export interface ShotNode {
     sceneId?: string | null;
     characterIds?: string[];
     propIds?: string[];
+    characterStageRefs?: Record<string, string>;
+    sceneStageRef?: string | null;
 
     // ─── Storyboard Schema v2 fields ────────────────────────────────
     duration?: number | null;
@@ -111,6 +116,7 @@ interface ShotCardProps {
     onUpdatePrompt: (prompt: string) => void;
     onUpdateField: (field: string, value: string | number | null) => void;
     onGenerateT2I: () => void;
+    onAutoLink?: () => void;
     onGenerateVideo: () => void;
     onDelete: () => void;
     onMoveUp: () => void;
@@ -173,16 +179,25 @@ export default function ShotCard({
     onGenerateBatch,
     inFlightCount = 0,
     onRefineFrame,
+    onAutoLink,
 }: ShotCardProps) {
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const cardRef = useRef<HTMLDivElement>(null);
     const t = useTranslations("storyboardR2V");
+    const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+        const rect = cardRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        const x = ((e.clientX - rect.left) / rect.width) * 100;
+        const y = ((e.clientY - rect.top) / rect.height) * 100;
+        cardRef.current?.style.setProperty("--spotlight-x", `${x}%`);
+        cardRef.current?.style.setProperty("--spotlight-y", `${y}%`);
+    }, []);
+
     // Expand modal state (B5). Cmd/Ctrl+E in the small textarea
-    // opens it; saving syncs back via onUpdatePrompt; cancel
     // discards the modal's draft without touching parent state.
     const [expandOpen, setExpandOpen] = useState(false);
+    const [isLinking, setIsLinking] = useState(false);
     const [promptPreviewOpen, setPromptPreviewOpen] = useState(false);
-    // currentProjectId — needed by PolishPanel to look up the
     // project's PromptConfig override server-side.
     const currentProjectId = useProjectStore((state) => state.currentProject?.id);
     const promptWithReferenceTags = useMemo(() => buildPromptWithReferenceTags(shot, characters, scenes, props), [
@@ -191,146 +206,38 @@ export default function ShotCard({
         scenes,
         props,
     ]);
-    const normalizePolishedPromptForEditor = useCallback((text: string) => (
-        normalizeReferenceTokensForEditor(text, promptWithReferenceTags)
-    ), [promptWithReferenceTags]);
 
-    const resolveReferencedAsset = useCallback((name: string) => {
-        const char = characters.find((c: any) => c.name === name);
-        if (char) {
-            return {
-                id: `character:${char.id}`,
-                description: char.description ? `${name}: ${char.description}` : name,
-                imageUrl: char.headshot_image_url || char.image_url || char.full_body_image_url
-                    || char.avatar_url || (char.full_body_asset?.variants?.[0]?.url),
-                avatarUrl: char.avatar_url || char.headshot_image_url || char.image_url
-                    || char.full_body_image_url || (char.full_body_asset?.variants?.[0]?.url),
-                kind: "character" as const,
-                name: char.name,
-            };
+    const castAvatars = useMemo(() => {
+        if (!shot.characterIds?.length || !characters?.length) return [];
+        return shot.characterIds
+            .map((id: string) => characters.find((c: any) => c.id === id))
+            .filter(Boolean)
+            .map((c: any) => ({
+                id: c.id,
+                name: c.name,
+                avatarUrl: c.avatar_url || c.image_url || c.avatarUrl,
+            }));
+    }, [shot.characterIds, characters]);
+
+    const assembledPromptPreview = promptWithReferenceTags || shot.assembledPrompt || shot.prompt || "";
+
+    const handleSingleAutoLink = useCallback(async () => {
+        if (!currentProjectId) return;
+        setIsLinking(true);
+        try {
+            // Regex name matching: match character/scene names in frame text
+            await api.autoLinkSingleFrame(currentProjectId, shot.id);
+            toast.success("已引用资源");
+            // Notify parent to refresh this frame's data
+            onAutoLink?.();
+        } catch (err) {
+            console.error("Auto-link failed", err);
+            toast.error("引用资源失败");
+        } finally {
+            setIsLinking(false);
         }
-        const scene = scenes.find((s: any) => s.name === name);
-        if (scene) {
-            return {
-                id: `scene:${scene.id}`,
-                description: scene.description ? `${name}: ${scene.description}` : name,
-                imageUrl: scene.image_url || scene.image_asset?.variants?.[0]?.url,
-                kind: "scene" as const,
-                name: scene.name,
-            };
-        }
-        const prop = props.find((p: any) => p.name === name);
-        if (prop) {
-            return {
-                id: `prop:${prop.id}`,
-                description: prop.description ? `${name}: ${prop.description}` : name,
-                imageUrl: prop.image_url || prop.image_asset?.variants?.[0]?.url,
-                kind: "prop" as const,
-                name: prop.name,
-            };
-        }
-        return {
-            id: `missing:${name}`,
-            description: name,
-            imageUrl: undefined,
-            kind: "missing" as const,
-            name,
-        };
-    }, [characters, scenes, props]);
+    }, [currentProjectId, shot.id, onAutoLink]);
 
-    // r2vSlots — when R2V tab is active, derive slot context from
-    // structured references / prompt tags so the polish system prompt
-    // knows what character1/character2 ID maps to.
-    const r2vSlots = useCallback((): { description: string }[] => {
-        if (shot.tabMode !== "direct_r2v") return [];
-        const out: { description: string }[] = [];
-        const tagPattern = /\[character\d+:([^\]]+)\]/g;
-        let match;
-        while ((match = tagPattern.exec(promptWithReferenceTags)) !== null) {
-            const [, name] = match;
-            out.push({ description: resolveReferencedAsset(name).description });
-        }
-        return out;
-    }, [shot.tabMode, promptWithReferenceTags, resolveReferencedAsset])();
-
-    // polishImageUrls — feed vision-capable polish (Issue 13) with the
-    // images the polish actually needs to "see":
-    //   • i2v: the active first frame (T2I selection if any, else the
-    //     Storyboard render). No frame yet → empty → text-only polish.
-    //   • r2v: each referenced character's avatar/headshot/full body
-    //     image, dedup'd by id. No references → empty → text-only.
-    const polishImageUrls = useCallback((): string[] => {
-        if (shot.tabMode === "direct_r2v") {
-            const out: string[] = [];
-            const seen = new Set<string>();
-            const tagPattern = /\[character\d*:([^\]]+)\]/g;
-            let m;
-            while ((m = tagPattern.exec(promptWithReferenceTags)) !== null) {
-                const [, name] = m;
-                const asset = resolveReferencedAsset(name);
-                if (seen.has(asset.id)) continue;
-                seen.add(asset.id);
-                if (asset.imageUrl) out.push(asset.imageUrl);
-            }
-            return out.slice(0, 4); // cap at 4 to keep payload reasonable
-        }
-        // i2v: prefer active T2I image; fall back to storyboard frame.
-        const active = (shot.t2iImageUrls && shot.t2iImageUrls.length > 0)
-            ? shot.t2iImageUrls[Math.max(0, Math.min(shot.t2iSelectedIndex ?? 0, shot.t2iImageUrls.length - 1))]
-            : (shot.t2iImageUrl || shot.imageUrl);
-        return active ? [active] : [];
-    }, [shot.tabMode, promptWithReferenceTags, shot.t2iImageUrls, shot.t2iSelectedIndex, shot.t2iImageUrl, shot.imageUrl, resolveReferencedAsset])();
-
-    // castAvatars — character avatar group for the "Cast:" row above
-    // the prompt textarea (L5 borrow from 火山剧创's 出镜角色). De-
-    // duped by id. We accept either [character:name] or [characterN:
-    // name] patterns since the asset chip bar emits both formats.
-    const castAvatars = useCallback((): Array<{ id: string; name: string; avatarUrl?: string }> => {
-        const out: Array<{ id: string; name: string; avatarUrl?: string }> = [];
-        const seen = new Set<string>();
-        const tagPattern = /\[character\d*:([^\]]+)\]/g;
-        let match;
-        while ((match = tagPattern.exec(promptWithReferenceTags)) !== null) {
-            const [, name] = match;
-            const char = characters.find((c: any) => c.name === name);
-            if (!char || seen.has(char.id)) continue;
-            seen.add(char.id);
-            const avatarUrl =
-                char.avatar_url ||
-                char.headshot_image_url ||
-                char.image_url ||
-                char.full_body_image_url ||
-                (char.full_body_asset?.variants?.[0]?.url);
-            out.push({ id: char.id, name: char.name, avatarUrl });
-        }
-        return out;
-    }, [promptWithReferenceTags, characters])();
-
-    const assembledPromptPreview = promptWithReferenceTags;
-
-    useEffect(() => {
-        const ta = textareaRef.current;
-        if (!ta) return;
-        // Reset before measuring so shrinking also works (delete text).
-        ta.style.height = "auto";
-        const next = Math.min(ta.scrollHeight, 260);
-        ta.style.height = `${next}px`;
-    }, [shot.prompt]);
-
-    const statusColor: Record<string, string> = {
-        pending: "text-amber-400",
-        processing: "text-sky-400",
-        completed: "text-emerald-400",
-        failed: "text-rose-400",
-    };
-
-    const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-        const el = cardRef.current;
-        if (!el) return;
-        const rect = el.getBoundingClientRect();
-        el.style.setProperty("--spotlight-x", `${e.clientX - rect.left}px`);
-        el.style.setProperty("--spotlight-y", `${e.clientY - rect.top}px`);
-    }, []);
 
     const renderPreview = () => {
         const fallbackImageUrl = shot.t2iImageUrl || shot.imageUrl;
@@ -715,7 +622,7 @@ export default function ShotCard({
                             />
                         </div>
 
-                        {/* Row: prompt-expand icon + field tags + AI polish trigger (same line) */}
+                        {/* Row: prompt-expand icon + field tags (same line) */}
                         <div className="mt-1 flex flex-wrap items-start gap-2">
                             <div className="flex items-center flex-wrap gap-1.5 min-w-0">
                                 {/* Expand-to-modal icon — moved inline (user requested it to be on this row) */}
@@ -788,21 +695,19 @@ export default function ShotCard({
                                         }}
                                     />
                                 </div>
+                            <button
+                                type="button"
+                                onClick={handleSingleAutoLink}
+                                disabled={isLinking}
+                                className="btn-tip grid h-7 w-7 place-items-center rounded-md border border-white/[0.08] bg-black/25 text-emerald-400 transition-colors hover:bg-emerald-900/30 hover:text-emerald-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/55 shrink-0" data-tip="自动引用资源"
+                                title="自动引用资源（匹配此分镜中的人物/场景名称到已有资产）"
+                            >
+                                {isLinking ? <Loader2 size={13} className="animate-spin" /> : <Link2 size={13} />}
+                            </button>
+
                             </div>
 
-                            {/* AI Polish — trigger sits inline; expanded panel wraps to next line */}
-                            <PolishPanel
-                                prompt={shot.prompt}
-                                tabMode={shot.tabMode}
-                                scriptId={currentProjectId ?? ""}
-                                slots={r2vSlots}
-                                // R2V slots are enough for text polish. Passing reference
-                                // images forces the backend into multimodal chat schema,
-                                // which breaks local text-only LLMs such as Ollama qwen3.
-                                imageUrls={shot.tabMode === "direct_r2v" ? [] : polishImageUrls}
-                                onApply={(text) => onUpdatePrompt(normalizePolishedPromptForEditor(text))}
-                                variant="inline"
-                            />
+
                         </div>
 
                         {/* Dialogue text display (read-only — editing via 配音工作台 modal) */}
@@ -865,6 +770,8 @@ export default function ShotCard({
                             scenes={scenes}
                             props={props}
                             onInsertAsset={handleInsertAssetFromChip}
+                            characterStageRefs={shot.characterStageRefs}
+                            sceneStageRef={shot.sceneStageRef}
                         />
 
                         {/* PR-3c+ · 底部一体化 action 行:

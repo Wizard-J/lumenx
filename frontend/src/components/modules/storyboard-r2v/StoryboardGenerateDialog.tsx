@@ -49,7 +49,17 @@ export default function StoryboardGenerateDialog({
     const t = useTranslations("storyboardGen");
 
     const text = (project as any)?.original_text ?? project?.originalText ?? "";
-    const charsCount = project?.characters?.length ?? 0;
+    // After re-extract, episode characters may be merged to series.
+    // If existing shots already reference characters, the character check
+    // is relaxed — regeneration doesn't need to re-validate entity presence.
+    const charsCount = (project?.characters?.length ?? 0) > 0
+        ? (project?.characters?.length ?? 0)
+        // Fallback: count unique character IDs referenced in existing frames
+        : new Set(
+            (project as any)?.frames?.flatMap(
+                (f: any) => f?.character_ids ?? []
+            ) ?? []
+          ).size;
     const checks = useMemo(() => {
         return [
             {

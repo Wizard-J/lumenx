@@ -7,9 +7,11 @@ interface AssetChipBarProps {
     scenes: any[];
     props: any[];
     onInsertAsset: (type: string, name: string) => void;
+    characterStageRefs?: Record<string, string>;
+    sceneStageRef?: string | null;
 }
 
-export default function AssetChipBar({ characters, scenes, props, onInsertAsset }: AssetChipBarProps) {
+export default function AssetChipBar({ characters, scenes, props, onInsertAsset, characterStageRefs = {}, sceneStageRef }: AssetChipBarProps) {
     const t = useTranslations("storyboardR2V");
 
     if (characters.length === 0 && scenes.length === 0 && props.length === 0) {
@@ -25,7 +27,7 @@ export default function AssetChipBar({ characters, scenes, props, onInsertAsset 
                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-blue-400/30 bg-blue-400/10 text-[11px] text-foreground hover:bg-blue-400/20 transition-colors"
                 >
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-                    {c.name}
+                    {c.name}{c.stages?.find((stage: any) => stage.id === characterStageRefs[c.id]) ? `·${c.stages.find((stage: any) => stage.id === characterStageRefs[c.id]).label}` : ""}
                 </button>
             ))}
             {scenes.map((s: any) => (
@@ -35,7 +37,7 @@ export default function AssetChipBar({ characters, scenes, props, onInsertAsset 
                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-green-400/30 bg-green-400/10 text-[11px] text-foreground hover:bg-green-400/20 transition-colors"
                 >
                     <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                    {s.name}
+                    {s.name}{s.stages?.find((stage: any) => stage.id === sceneStageRef) ? `·${s.stages.find((stage: any) => stage.id === sceneStageRef).label}` : ""}
                 </button>
             ))}
             {props.map((p: any) => (

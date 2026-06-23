@@ -1,0 +1,2078 @@
+from typing import Dict, Any, List, Optional, Tuple
+from ...utils.storage import SQLiteStorageBackend
+import json
+import os
+import re
+import time
+import uuid
+import subprocess
+import threading
+import platform
+from urllib.parse import quote
+from .models import Script, GenerationStatus, VideoTask, Character, Scene, Prop, StoryboardFrame, Series, PromptConfig, ArtDirection, AssetStage, ImageVariant
+from .llm import ScriptProcessor
+from .assets import AssetGenerator
+from .storyboard import StoryboardGenerator
+from .video import VideoGenerator
+from .audio import AudioGenerator
+from .export import ExportManager
+from ...utils import get_logger
+from ...utils.oss_utils import is_object_key
+from ...utils.provider_registry import resolve_provider_backend
+from ...utils.system_check import get_ffmpeg_path, get_ffmpeg_install_instructions
+
+logger = get_logger(__name__)
+
+# --- Security helpers ---
+
+# Allowed pattern for IDs used in file paths (UUID hex + hyphens)
+_SAFE_ID_RE = re.compile(r'^[a-zA-Z0-9_\-]+$')
+
+
+def _validate_safe_id(value: str, label: str = "id") -> str:
+    """Ensure a value is safe to embed in file paths / command args (UUID-like)."""
+    if not value or not _SAFE_ID_RE.match(value):
+        raise ValueError(f"Invalid {label}: contains unsafe characters")
+    return value
+
+
+def _safe_resolve_path(base_dir: str, untrusted_rel: str) -> str:
+    """Resolve *untrusted_rel* under *base_dir* and ensure the result stays inside it.
+
+    Prevents path-traversal attacks (e.g. ``../../etc/passwd``).
+    Returns the resolved absolute path; raises ValueError on escape attempts.
+    """
+    base = os.path.realpath(base_dir)
+    resolved = os.path.realpath(os.path.join(base, untrusted_rel))
+    if not resolved.startswith(base + os.sep) and resolved != base:
+        raise ValueError(f"Path escapes base directory: {untrusted_rel}")
+    return resolved
+
+class ComicGenPipeline:
+    def __init__(self, config: Dict[str, Any] = None, db_path: str = "output/lumenx.db"):
+        self.config = config or {}
+        self.script_processor = ScriptProcessor()
+        self.asset_generator = AssetGenerator(self.config.get('assets'))
+        self.storyboard_generator = StoryboardGenerator(self.config.get('storyboard'))
+        self.video_generator = VideoGenerator(self.config.get('video'))
+        self.audio_generator = AudioGenerator(self.config.get('audio'))
+        self.export_manager = ExportManager(self.config.get('export'))
+        
+        # SQLite storage (replaces JSON files with transactional guarantees)
+        self._storage = SQLiteStorageBackend(db_path)
+        self._save_lock = threading.RLock()
+        
+        # Auto-migrate from legacy JSON files on first run
+        if db_path == "output/lumenx.db" and self._storage.needs_migration():
+            self._storage.migrate_from_json()
+        
+        self.scripts: Dict[str, Script] = self._load_data()
+        self.series_store: Dict[str, Series] = self._load_series_data()
+        self._repair_series_bindings()
+
+        # Extraction preview cache: {project_id: (timestamp, Script)}
+        self._extraction_cache: Dict[str, tuple] = {}
+
+        # Task management for async asset generation
+        # Format: { task_id: { status: str, progress: int, error: str, script_id: str, asset_id: str, created_at: float } }
+        self.asset_generation_tasks: Dict[str, Dict[str, Any]] = {}
+        self.video_generation_tasks: Dict[str, Dict[str, Any]] = {}
+        self._refine_batch_lock = threading.RLock()
+        self._refine_batch_status: Dict[str, Dict[str, Any]] = {}
+        self._render_batch_lock = threading.RLock()
+        self._render_batch_status: Dict[str, Dict[str, Any]] = {}
+        # Temporary cache for file import previews (import_id -> text)
+        self._import_cache: Dict[str, str] = {}
+        # Cached model instances for Kling/Vidu (lazily initialized)
+        self._kling_model = None
+        self._vidu_model = None
+        self._openai_video_model = None
+
+        # Pre-download Demucs model in background so first dub request is fast
+        self._demucs_ready = threading.Event()
+        self._demucs_error: Optional[str] = None
+        threading.Thread(target=self._warmup_demucs_model, daemon=True).start()
+
+        # Recover orphan async tasks. FastAPI BackgroundTasks live in
+        # process memory — any restart between submit + execute leaves
+        # them permanently `pending` (or `processing` if interrupted
+        # mid-call) on disk. We mark such tasks `failed` with a clear
+        # reason so the user sees a Retry affordance instead of an
+        # eternal spinner. We do NOT auto-resume because re-running a
+        # half-completed video task could double-charge providers.
+        try:
+            self._recover_orphan_tasks()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("Orphan task recovery failed: %s", exc)
+
+    _ORPHAN_RECOVERY_REASON = (
+        "Backend was restarted while this task was running. Click Retry to run it again."
+    )
+
+    def get_refine_batch_status(self, script_id: str) -> Dict[str, Any]:
+        """Return in-memory batch-refine progress for a project.
+
+        Batch storyboard refinement is a long synchronous SSE workflow, not a
+        persisted background task. This status gives the frontend enough truth
+        after refresh to avoid duplicate submissions and show live progress.
+        """
+        with self._refine_batch_lock:
+            status = self._refine_batch_status.get(script_id)
+            if status:
+                return dict(status)
+        script = self.scripts.get(script_id)
+        frames = script.frames if script else []
+        refined = sum(1 for f in frames if f.assembled_prompt and f.visual_description)
+        return {
+            "running": False,
+            "total": len(frames),
+            "completed": refined,
+            "success": refined,
+            "failed": 0,
+            "skipped": 0,
+            "remaining": max(0, len(frames) - refined),
+        }
+
+    def get_render_batch_status(self, script_id: str) -> Dict[str, Any]:
+        """Return in-memory batch storyboard-image progress for a project."""
+        with self._render_batch_lock:
+            status = self._render_batch_status.get(script_id)
+            if status:
+                return dict(status)
+        script = self.scripts.get(script_id)
+        frames = script.frames if script else []
+        completed = sum(1 for f in frames if self._frame_has_t2i_image(f))
+        failed = sum(1 for f in frames if f.status == GenerationStatus.FAILED and not self._frame_has_t2i_image(f))
+        return {
+            "running": False,
+            "total": len(frames),
+            "completed": completed,
+            "success": completed,
+            "failed": failed,
+            "skipped": 0,
+            "remaining": max(0, len(frames) - completed),
+        }
+
+    def _recover_orphan_tasks(self) -> None:
+        """Sweep persisted state for video tasks left in pending/processing.
+
+        FastAPI's BackgroundTasks queue lives entirely in process memory:
+        if uvicorn restarts (dev --reload, OOM, OS reboot, ctrl-C) every
+        queued processor is gone but the task records on disk still say
+        "pending" or "processing". The frontend then shows an eternal
+        spinner and the user has no recovery path.
+
+        Strategy: on boot, find every such record and stamp it `failed`
+        with a clear, user-readable reason so the existing Retry button
+        becomes usable. Auto-resume is intentionally NOT done — a
+        half-run video generation may have already incurred provider
+        cost and re-running could double-charge.
+
+        Image asset tasks use the asset's persisted `status` field as the
+        recovery marker: a `processing` asset means a generation task was
+        submitted before the process died.
+        """
+        STUCK = ("pending", "processing")
+        recovered = 0
+
+        for script in self.scripts.values():
+            tasks = getattr(script, "video_tasks", None) or []
+            for task in tasks:
+                if getattr(task, "status", None) in STUCK:
+                    task.status = "failed"
+                    if not getattr(task, "error", None):
+                        try:
+                            task.error = self._ORPHAN_RECOVERY_REASON
+                        except Exception:
+                            pass
+                    recovered += 1
+
+        asset_recovered = self._recover_orphan_image_assets()
+
+        if recovered > 0 or asset_recovered > 0:
+            try:
+                self._save_data()
+                self._save_series_data()
+            except Exception:
+                logger.warning("Orphan recovery: failed to persist sweep")
+            logger.warning(
+                "Orphan task recovery: marked %d video task(s) and %d image asset(s) as failed.",
+                recovered,
+                asset_recovered,
+            )
+        else:
+            logger.debug("Orphan task recovery: no stuck tasks found.")
+
+    def _asset_has_image(self, asset: Any, asset_type: str) -> bool:
+        """Return whether an asset already has at least one persisted image."""
+        if asset_type == "character":
+            containers = [
+                getattr(asset, "reference_sheet", None),
+                getattr(asset, "full_body", None),
+                getattr(asset, "full_body_asset", None),
+                getattr(asset, "three_view_asset", None),
+                getattr(asset, "headshot_asset", None),
+            ]
+            if any(getattr(c, "image_variants", None) for c in containers):
+                return True
+            if any(getattr(c, "variants", None) for c in containers):
+                return True
+            return bool(
+                getattr(asset, "full_body_image_url", None)
+                or getattr(asset, "three_view_image_url", None)
+                or getattr(asset, "headshot_image_url", None)
+                or getattr(asset, "image_url", None)
+                or getattr(asset, "avatar_url", None)
+            )
+
+        image_asset = getattr(asset, "image_asset", None)
+        return bool(getattr(image_asset, "variants", None) or getattr(asset, "image_url", None))
+
+    def _recover_orphan_image_assets(self) -> int:
+        """Mark image assets left in `processing` by a backend restart as failed."""
+        recovered = 0
+
+        def sweep_pool(pool: List[Any], asset_type: str) -> int:
+            count = 0
+            for asset in pool or []:
+                if getattr(asset, "status", None) == GenerationStatus.PROCESSING:
+                    asset.status = (
+                        GenerationStatus.COMPLETED
+                        if self._asset_has_image(asset, asset_type)
+                        else GenerationStatus.FAILED
+                    )
+                    count += 1
+            return count
+
+        for script in self.scripts.values():
+            recovered += sweep_pool(getattr(script, "characters", []), "character")
+            recovered += sweep_pool(getattr(script, "scenes", []), "scene")
+            recovered += sweep_pool(getattr(script, "props", []), "prop")
+
+        for series in self.series_store.values():
+            recovered += sweep_pool(getattr(series, "characters", []), "character")
+            recovered += sweep_pool(getattr(series, "scenes", []), "scene")
+            recovered += sweep_pool(getattr(series, "props", []), "prop")
+
+        return recovered
+
+    def _cleanup_old_entity_oss_images(self, script: "Script") -> None:
+        """Delete orphaned OSS images from entities being replaced."""
+        for char in (script.characters or []):
+            self._cleanup_single_entity_oss_images(char)
+        for scene in (script.scenes or []):
+            self._cleanup_single_entity_oss_images(scene)
+        for prop in (script.props or []):
+            self._cleanup_single_entity_oss_images(prop)
+
+    def _cleanup_single_entity_oss_images(self, entity: Any) -> None:
+        """Delete OSS images for a single character/scene/prop entity."""
+        from ...utils.oss_utils import is_object_key
+        uploader = None
+
+        def _try_delete(url: str) -> None:
+            if not url or not is_object_key(url):
+                return
+            nonlocal uploader
+            if uploader is None:
+                from ...utils.oss_utils import OSSImageUploader
+                uploader = OSSImageUploader()
+                if not uploader.is_configured:
+                    uploader = None
+                    return
+            uploader.delete_object(url)
+
+        _try_delete(getattr(entity, "image_url", None))
+        _try_delete(getattr(entity, "full_body_image_url", None))
+        _try_delete(getattr(entity, "three_view_image_url", None))
+        _try_delete(getattr(entity, "headshot_image_url", None))
+        _try_delete(getattr(entity, "avatar_url", None))
+        for asset_field in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset"):
+            asset = getattr(entity, asset_field, None)
+            if asset:
+                for v in (asset.variants or []):
+                    _try_delete(getattr(v, "url", None))
+        # Also handle stages reference images (Cast page's primary image source)
+        for stage in (getattr(entity, "stages", None) or []):
+            for v in (stage.reference_images or []):
+                _try_delete(getattr(v, "url", None))
+        # Handle AssetUnit fields (reference_sheet, full_body, three_views, head_shot)
+        for unit_field in ("reference_sheet", "full_body", "three_views", "head_shot"):
+            unit = getattr(entity, unit_field, None)
+            if unit:
+                for v in (unit.image_variants or []):
+                    _try_delete(getattr(v, "url", None))
+                for v in (unit.video_variants or []):
+                    _try_delete(getattr(v, "url", None))
+
+    def annotate_video_task(
+        self,
+        script_id: str,
+        task_id: str,
+        is_starred: Optional[bool] = None,
+        label: Optional[str] = None,
+        clear_label: bool = False,
+    ) -> Optional["VideoTask"]:
+        """Set the user's review annotations on a video task. Two fields,
+        both optional so callers can update either independently:
+          - is_starred: shortlist flag, multi-select per shot
+          - label: short free-text note (≤20 chars). Pass clear_label=True
+            to explicitly remove the label (None on its own means "don't
+            change").
+        Returns the updated VideoTask, or None if script/task not found
+        (caller can decide whether that's a 404)."""
+        with self._save_lock:
+            script = self.scripts.get(script_id)
+            if not script:
+                return None
+            tasks = getattr(script, "video_tasks", None) or []
+            task = next((t for t in tasks if getattr(t, "id", None) == task_id), None)
+            if not task:
+                return None
+            if is_starred is not None:
+                task.is_starred = bool(is_starred)
+            if clear_label:
+                task.label = None
+            elif label is not None:
+                trimmed = label.strip()[: self._MAX_LABEL_LEN]
+                task.label = trimmed or None
+            try:
+                self._save_data()
+            except Exception:
+                logger.warning("annotate_video_task: save failed")
+            return task
+
+    _T2I_HISTORY_LIMIT = 10
+    _MAX_GENERATE_COUNT = 6
+    _WORKBENCH_TAB_VALUES = ("t2i_i2v", "direct_r2v")
+
+    def update_frame_workbench(
+        self,
+        script_id: str,
+        frame_id: str,
+        workbench_tab_mode: Optional[str] = None,
+        t2i_image_urls: Optional[List[str]] = None,
+        t2i_selected_index: Optional[int] = None,
+        workbench_generate_count: Optional[int] = None,
+    ) -> Optional["StoryboardFrame"]:
+        """Persist Storyboard R2V workbench state onto a frame.
+
+        Each field is optional; only the ones the caller passes get
+        written. The four fields cover everything the per-shot panel
+        carries that needs to survive refresh/cross-device:
+          - workbench_tab_mode: 't2i_i2v' | 'direct_r2v'
+          - t2i_image_urls: full ordered history (caller is the source
+            of truth, server clamps to _T2I_HISTORY_LIMIT FIFO)
+          - t2i_selected_index: active首帧 index, clamped to range
+          - workbench_generate_count: per-shot batch size, clamped to
+            [1, _MAX_GENERATE_COUNT]
+
+        Returns the updated StoryboardFrame, or None if the
+        script/frame can't be found (caller maps to 404).
+        Unknown enum values for workbench_tab_mode are rejected with
+        ValueError so a typo doesn't silently persist garbage."""
+        with self._save_lock:
+            script = self.scripts.get(script_id)
+            if not script:
+                return None
+            frames = getattr(script, "frames", None) or []
+            frame = next((f for f in frames if getattr(f, "id", None) == frame_id), None)
+            if not frame:
+                return None
+            if workbench_tab_mode is not None:
+                if workbench_tab_mode not in self._WORKBENCH_TAB_VALUES:
+                    raise ValueError(
+                        f"workbench_tab_mode must be one of {self._WORKBENCH_TAB_VALUES}, "
+                        f"got {workbench_tab_mode!r}",
+                    )
+                frame.workbench_tab_mode = workbench_tab_mode
+            if t2i_image_urls is not None:
+                # Filter empties + cap FIFO so the client can't grow the
+                # list unbounded by repeated calls. The client also caps
+                # at the same limit, but defense in depth.
+                cleaned = [u for u in t2i_image_urls if isinstance(u, str) and u.strip()]
+                if len(cleaned) > self._T2I_HISTORY_LIMIT:
+                    cleaned = cleaned[-self._T2I_HISTORY_LIMIT:]
+                frame.t2i_image_urls = cleaned
+            if t2i_selected_index is not None:
+                # Clamp against the resulting URL list, not whatever was
+                # there before — t2i_image_urls may have been written
+                # this same call.
+                urls = frame.t2i_image_urls or []
+                if not urls:
+                    frame.t2i_selected_index = 0
+                else:
+                    frame.t2i_selected_index = max(0, min(int(t2i_selected_index), len(urls) - 1))
+            if workbench_generate_count is not None:
+                frame.workbench_generate_count = max(
+                    1, min(int(workbench_generate_count), self._MAX_GENERATE_COUNT)
+                )
+            frame.updated_at = time.time()
+            try:
+                self._save_data()
+            except Exception:
+                logger.warning("update_frame_workbench: save failed")
+            return frame
+
+    def upload_t2i_frame(
+        self,
+        script_id: str,
+        frame_id: str,
+        file_path: str,
+    ) -> Optional["StoryboardFrame"]:
+        """Append an uploaded image to a frame's T2I history and auto-select it.
+
+        Mirrors `update_frame_workbench`'s clamping rules (≤ _T2I_HISTORY_LIMIT
+        FIFO; t2i_selected_index → index of the newly appended URL). Caller is
+        expected to have already saved the file under output/uploads/ and pass
+        the relative URL path the frontend can resolve via /files.
+
+        Returns the updated frame, or None if script/frame can't be found.
+        """
+        with self._save_lock:
+            script = self.scripts.get(script_id)
+            if not script:
+                return None
+            frames = getattr(script, "frames", None) or []
+            frame = next((f for f in frames if getattr(f, "id", None) == frame_id), None)
+            if not frame:
+                return None
+            current = list(getattr(frame, "t2i_image_urls", None) or [])
+            current.append(file_path)
+            # Same FIFO cap as update_frame_workbench so uploads can't grow
+            # the history unbounded either.
+            if len(current) > self._T2I_HISTORY_LIMIT:
+                current = current[-self._T2I_HISTORY_LIMIT:]
+            frame.t2i_image_urls = current
+            # Newly uploaded image becomes the active首帧 — Issue 10 design
+            # requires the upload immediately unlocks Step 2.
+            frame.t2i_selected_index = len(current) - 1
+            frame.updated_at = time.time()
+            try:
+                self._save_data()
+            except Exception:
+                logger.warning("upload_t2i_frame: save failed")
+            return frame
+
+    def _append_frame_t2i_url(self, frame: "StoryboardFrame", image_url: str) -> None:
+        if not image_url:
+            return
+        current = list(getattr(frame, "t2i_image_urls", None) or [])
+        if image_url in current:
+            frame.t2i_selected_index = current.index(image_url)
+        else:
+            current.append(image_url)
+            if len(current) > self._T2I_HISTORY_LIMIT:
+                current = current[-self._T2I_HISTORY_LIMIT:]
+            frame.t2i_image_urls = current
+            frame.t2i_selected_index = len(current) - 1
+
+    def _frame_has_t2i_image(self, frame: "StoryboardFrame") -> bool:
+        return bool(
+            getattr(frame, "rendered_image_url", None)
+            or getattr(frame, "image_url", None)
+            or getattr(frame, "t2i_image_urls", None)
+        )
+
+    def mark_video_task_failed(
+        self, script_id: str, task_id: str, error_message: str
+    ) -> bool:
+        """Belt-and-suspenders setter used by BG-task wrappers when an
+        exception escapes the pipeline's own try/except. Writes
+        status='failed' + error so the UI never sees an eternal
+        spinner. Also used by the cancel endpoint. Returns True when a
+        task was found and marked."""
+        with self._save_lock:
+            script = self.scripts.get(script_id)
+            if not script:
+                return False
+            tasks = getattr(script, "video_tasks", None) or []
+            task = next((t for t in tasks if getattr(t, "id", None) == task_id), None)
+            if not task:
+                return False
+            if getattr(task, "status", None) == "completed":
+                # Already successfully completed — don't downgrade on a
+                # spurious wrapper exception or a late cancel.
+                return False
+            task.status = "failed"
+            try:
+                if not getattr(task, "error", None):
+                    task.error = error_message
+            except Exception:
+                pass
+            try:
+                self._save_data()
+            except Exception:
+                logger.warning("mark_video_task_failed: save failed")
+            return True
+
+    def _resolve_video_backend(self, model_name: str) -> str:
+        try:
+            return resolve_provider_backend(model_name)
+        except (KeyError, ValueError):
+            logger.debug(
+                "Provider backend not registered for video model %s, defaulting to dashscope.",
+                model_name,
+            )
+            return "dashscope"
+        except Exception as e:
+            logger.warning(
+                "Unexpected error resolving provider backend for video model %s: %s. "
+                "Falling back to dashscope.",
+                model_name,
+                e,
+            )
+            return "dashscope"
+
+    def _get_video_model(self, model_name: Optional[str] = None):
+        """Get video model based on current VIDEO_PROVIDER env var.
+
+        When VIDEO_MODEL starts with 'agnes-', the Agnes Video adapter
+        is selected automatically (even within the 'openai' provider).
+        """
+        if model_name:
+            try:
+                if resolve_provider_backend(model_name) == "dashscope":
+                    return self.video_generator.model
+            except (KeyError, ValueError):
+                pass
+
+        video_provider = os.environ.get("VIDEO_PROVIDER", "dashscope").lower()
+        has_key = bool(os.environ.get("VIDEO_API_KEY", ""))
+        video_config = getattr(self, "config", {}).get("video", {}).get("model", {})
+        video_model_name = os.environ.get("VIDEO_MODEL", "")
+        if video_provider == "openai" and has_key:
+            if video_model_name.startswith("agnes-"):
+                from ...models.agnes_video import AgnesVideoModel
+                logger.info("Using Agnes Video model")
+                return AgnesVideoModel(video_config)
+            from ...models.openai_video import OpenAIVideoModel
+            logger.info("Using OpenAI-compatible video model")
+            return OpenAIVideoModel(video_config)
+        elif video_provider == "comfyui":
+            from ...models.comfyui import ComfyUIVideoModel
+            logger.info("Using ComfyUI video model")
+            return ComfyUIVideoModel(video_config)
+        else:
+            return self.video_generator.model
+
+    # ... (existing methods)
+
+    def export_project(self, script_id: str, options: Dict[str, Any]) -> str:
+        """Step 7: Export project to final video."""
+        script = self.scripts.get(script_id)
+        if not script:
+            raise ValueError("Script not found")
+            
+        export_url = self.export_manager.render_project(script, options)
+        return export_url
+
+    def get_script(self, script_id: str) -> Optional[Script]:
+        return self.scripts.get(script_id)
+
+    def _load_data(self) -> Dict[str, Script]:
+        """Load scripts from SQLite (with automatic JSON migration on first run)."""
+        result: Dict[str, Script] = {}
+        try:
+            for d in self._storage.list_scripts():
+                result[d["id"]] = Script(**d)
+        except Exception as e:
+            logger.error(f"Failed to load scripts: {e}")
+        return result
+
+    def _save_data(self, script_id: Optional[str] = None):
+        """Save scripts to SQLite.  If *script_id* is given, only that script
+        is written; otherwise every script is upserted (faithful to legacy
+        batch-save semantics).
+        """
+        with self._save_lock:
+            try:
+                if script_id:
+                    s = self.scripts.get(script_id)
+                    if s:
+                        self._storage.save_script(s.model_dump())
+                else:
+                    for s in self.scripts.values():
+                        self._storage.save_script(s.model_dump())
+            except Exception as e:
+                logger.error(f"Failed to save data: {e}")
+
+    def _repair_series_bindings(self):
+        """Repair episodes listed in series.episode_ids that have series_id=None."""
+        repaired = False
+        for series_id, series in self.series_store.items():
+            for ep_id in series.episode_ids:
+                script = self.scripts.get(ep_id)
+                if script and not script.series_id:
+                    script.series_id = series_id
+                    if not script.episode_number:
+                        script.episode_number = series.episode_ids.index(ep_id) + 1
+                    repaired = True
+                    logger.info(f"Repaired series binding: episode {ep_id} → series {series_id}")
+        if repaired:
+            self._save_data()
+
+    def create_project(self, title: str, text: str, skip_analysis: bool = False, workflow_mode: str = "i2v_legacy") -> Script:
+        """Step 1: Parse novel and create project."""
+        if skip_analysis:
+            script = self.script_processor.create_draft_script(title, text)
+        else:
+            script = self.script_processor.parse_novel(title, text)
+        
+        script.workflow_mode = workflow_mode
+        self.scripts[script.id] = script
+        self._save_data()
+        return script
+    
+    def extract_preview(self, script_id: str, text: str) -> Script:
+        """Run entity extraction without saving. Cache result for subsequent apply.
+
+        Fast path: if text contains structured `## 角色 / ## 场景 / ## 道具`
+        sections in '{名称}：{描述}' format, parse with regex (no LLM cost).
+        Falls back to LLM parse_novel() when no structured sections are found.
+        """
+        existing_script = self.scripts.get(script_id)
+        if not existing_script:
+            raise ValueError("Script not found")
+
+        # Fast path: try regex-based entity extraction first
+        fast_result = self._fast_parse_entities(text, existing_script.title)
+        if fast_result is not None:
+            self._extraction_cache[script_id] = (time.time(), fast_result, True)
+            fast_result._fast_path = True  # flag for API response
+            return fast_result
+
+        # Slow path: LLM-based extraction
+        new_script = self.script_processor.parse_novel(existing_script.title, text)
+        self._supplement_mentioned_existing_entities(existing_script, new_script, text)
+        self._extraction_cache[script_id] = (time.time(), new_script)
+        return new_script
+
+    def _fast_parse_entities(self, text: str, title: str) -> Optional[Script]:
+        """Try to extract characters/scenes/props from structured sections.
+        Returns a Script object when structured data is found, None otherwise.
+
+        Supports multiple formats:
+
+        **Key:value lines** (compact):
+          ## 角色
+          老赵：35-40岁，普通身材，黑色短发凌乱
+          
+          ## 场景
+          原始森林上空：晨雾笼罩的原始森林鸟瞰
+
+        **List tables** (multi-row, one entity per row):
+          ## 场景环境
+          | 场景 | 出现镜头 | 说明 |
+          |------|---------|------|
+          | 原始森林上空 | 01 | 晨雾笼罩的原始森林鸟瞰 |
+          
+          ## 道具物品
+          | 道具 | 出现镜头 | 说明 |
+          |------|---------|------|
+          | 行李箱 | 03/04 | 弹开状态 |
+
+        **Profile tables** (single-entity, key-value rows):
+          ## 角色定妆参考
+          | 项目 | 描述 |
+          |------|------|
+          | 姓名 | 老赵 |
+          | 年龄 | 35-40岁 |
+
+        Section header matching is flexible — '角色', '角色定妆参考', '场景',
+        '场景环境', '道具', '道具物品' are all recognized.
+        """
+        from .models import Script, Character, Scene, Prop
+        import re as _re
+
+        entities = {"characters": [], "scenes": [], "props": []}
+        found_any = False
+
+        def _parse_table(section_text: str) -> list:
+            """Parse a markdown table and return list of dicts with column headers as keys."""
+            lines = [l for l in section_text.strip().split('\n') if l.strip().startswith('|')]
+            if len(lines) < 3:
+                return []  # need header + separator + at least 1 data row
+            
+            # Parse header
+            headers = [h.strip() for h in lines[0].split('|') if h.strip()]
+            if not headers:
+                return []
+            
+            # Data rows (skip separator line at index 1)
+            rows = []
+            for line in lines[2:]:
+                cells = [c.strip() for c in line.split('|') if c.strip()]
+                if len(cells) >= len(headers):
+                    row = {headers[i]: cells[i] for i in range(len(headers))}
+                    rows.append(row)
+                elif len(cells) == 1 and len(headers) >= 2:
+                    # Single cell — treat as name with empty description
+                    rows.append({headers[0]: cells[0], headers[1]: ""})
+            return rows
+
+        def _is_profile_table(rows: list) -> bool:
+            """Detect if a table is a profile (key-value rows) vs a list (one entity per row).
+            Profile tables have headers like ['项目', '描述'] and rows like [{'项目': '姓名', '描述': '老赵'}]."""
+            if not rows:
+                return False
+            headers = list(rows[0].keys())
+            # Profile pattern: first column is attribute name like "姓名", "年龄"
+            first_vals = [r[headers[0]] for r in rows if r.get(headers[0])]
+            attr_keywords = {'姓名', '年龄', '体型', '发型', '面容', '服装', '特征', '气质', '项目'}
+            if any(v in attr_keywords for v in first_vals):
+                return True
+            return False
+
+        def _build_character_from_profile(rows: list) -> dict:
+            """Build a single character dict from profile table rows."""
+            char = {"name": "", "description": "", "age": "", "gender": "", "clothing": ""}
+            attr_map = {
+                '姓名': 'name', '年龄': 'age', '性别': 'gender', '体型': 'description',
+                '发型': 'description', '面容': 'description', '服装': 'clothing',
+                '特征': 'description', '气质': 'description',
+            }
+            for row in rows:
+                vals = list(row.values())
+                if len(vals) >= 2:
+                    key = vals[0].strip()
+                    val = vals[1].strip()
+                    target = attr_map.get(key)
+                    if target == 'description':
+                        if char['description']:
+                            char['description'] += '，' + val
+                        else:
+                            char['description'] = val
+                    elif target:
+                        char[target] = val
+            return char
+
+        # Section header recognition
+        section_map = {
+            '角色': 'characters', '角色定妆参考': 'characters',
+            '场景': 'scenes', '场景环境': 'scenes',
+            '道具': 'props', '道具物品': 'props',
+        }
+
+        # Split text and find sections
+        lines = text.split('\n')
+        current_section = None
+        current_lines = []
+
+        for line in lines:
+            header_match = _re.match(r'#{1,3}\s*(.+?)\s*$', line.strip())
+            if header_match:
+                raw_header = header_match.group(1).strip()
+                # Try to match section name
+                matched_key = None
+                for key, value in section_map.items():
+                    if key in raw_header or raw_header in key:
+                        matched_key = value
+                        break
+                
+                if matched_key:
+                    # Flush previous
+                    if current_section and current_lines:
+                        section_text = '\n'.join(current_lines)
+                        table_rows = _parse_table(section_text)
+                        
+                        if table_rows:
+                            if current_section == 'characters' and _is_profile_table(table_rows):
+                                # Single character profile
+                                char = _build_character_from_profile(table_rows)
+                                if char['name']:
+                                    entities['characters'].append(char)
+                                    found_any = True
+                            else:
+                                # List table: one entity per row
+                                headers = list(table_rows[0].keys())
+                                name_col = headers[0]
+                                desc_col = headers[1] if len(headers) >= 2 else None
+                                for row in table_rows:
+                                    name = row.get(name_col, "").strip()
+                                    desc = row.get(desc_col, "").strip() if desc_col else ""
+                                    if name and name not in ("场景", "道具", "项目", "描述", "场景名"):
+                                        entities[current_section].append({"name": name, "description": desc})
+                                        found_any = True
+                        else:
+                            # Try key:value line format
+                            for l in section_text.strip().split('\n'):
+                                ll = l.strip()
+                                if not ll or ll.startswith('#') or ll.startswith('>') or ll.startswith('---'):
+                                    continue
+                                kv = _re.match(r'([^：:]+)[：:]\s*(.*)', ll)
+                                if kv:
+                                    name = kv.group(1).strip()
+                                    desc = kv.group(2).strip()
+                                    if name:
+                                        entities[current_section].append({"name": name, "description": desc})
+                                        found_any = True
+                    
+                    current_section = matched_key
+                    current_lines = []
+                else:
+                    # Non-matching header closes current section
+                    if current_section and current_lines:
+                        section_text = '\n'.join(current_lines)
+                        table_rows = _parse_table(section_text)
+                        
+                        if table_rows:
+                            if current_section == 'characters' and _is_profile_table(table_rows):
+                                char = _build_character_from_profile(table_rows)
+                                if char['name']:
+                                    entities['characters'].append(char)
+                                    found_any = True
+                            else:
+                                headers = list(table_rows[0].keys())
+                                name_col = headers[0]
+                                desc_col = headers[1] if len(headers) >= 2 else None
+                                for row in table_rows:
+                                    name = row.get(name_col, "").strip()
+                                    desc = row.get(desc_col, "").strip() if desc_col else ""
+                                    if name and name not in ("场景", "道具", "项目", "描述", "场景名"):
+                                        entities[current_section].append({"name": name, "description": desc})
+                                        found_any = True
+                        else:
+                            for l in section_text.strip().split('\n'):
+                                ll = l.strip()
+                                if not ll or ll.startswith('#') or ll.startswith('>') or ll.startswith('---'):
+                                    continue
+                                kv = _re.match(r'([^：:]+)[：:]\s*(.*)', ll)
+                                if kv:
+                                    name = kv.group(1).strip()
+                                    desc = kv.group(2).strip()
+                                    if name:
+                                        entities[current_section].append({"name": name, "description": desc})
+                                        found_any = True
+                    current_section = None
+                    current_lines = []
+            elif current_section:
+                current_lines.append(line)
+
+        # Flush last section
+        if current_section and current_lines:
+            section_text = '\n'.join(current_lines)
+            table_rows = _parse_table(section_text)
+            
+            if table_rows:
+                if current_section == 'characters' and _is_profile_table(table_rows):
+                    char = _build_character_from_profile(table_rows)
+                    if char['name']:
+                        entities['characters'].append(char)
+                        found_any = True
+                else:
+                    headers = list(table_rows[0].keys())
+                    name_col = headers[0]
+                    desc_col = headers[1] if len(headers) >= 2 else None
+                    for row in table_rows:
+                        name = row.get(name_col, "").strip()
+                        desc = row.get(desc_col, "").strip() if desc_col else ""
+                        if name and name not in ("场景", "道具", "项目", "描述", "场景名"):
+                            entities[current_section].append({"name": name, "description": desc})
+                            found_any = True
+            else:
+                for l in section_text.strip().split('\n'):
+                    ll = l.strip()
+                    if not ll or ll.startswith('#') or ll.startswith('>') or ll.startswith('---'):
+                        continue
+                    kv = _re.match(r'([^：:]+)[：:]\s*(.*)', ll)
+                    if kv:
+                        name = kv.group(1).strip()
+                        desc = kv.group(2).strip()
+                        if name:
+                            entities[current_section].append({"name": name, "description": desc})
+                            found_any = True
+
+        if not found_any:
+            return None
+
+        # Build Script object
+        new_script = Script(
+            id=str(uuid.uuid4()),
+            title=title,
+            original_text=text,
+            characters=[],
+            scenes=[],
+            props=[],
+            frames=[],
+            created_at=time.time(),
+            updated_at=time.time(),
+        )
+
+        for c in entities["characters"]:
+            new_script.characters.append(Character(
+                id=str(uuid.uuid4()),
+                name=c["name"],
+                description=c.get("description", ""),
+                age=c.get("age"),
+                clothing=c.get("clothing", ""),
+            ))
+        for s in entities["scenes"]:
+            new_script.scenes.append(Scene(
+                id=str(uuid.uuid4()),
+                name=s["name"],
+                description=s.get("description", ""),
+            ))
+        for p in entities["props"]:
+            new_script.props.append(Prop(
+                id=str(uuid.uuid4()),
+                name=p["name"],
+                description=p.get("description", ""),
+            ))
+
+        return new_script
+
+    @staticmethod
+    def _entity_name_key(name: str) -> str:
+        return re.sub(r"[\s·•_\-—（）()]+", "", str(name or "")).casefold()
+
+    def _auto_link_frame_assets(self, frames: list, characters: list, scenes: list, props: list = None) -> None:
+        """
+        Auto-link frames to scene/character/prop assets by matching names
+        in the action_description text. This saves the user from having to
+        manually assign reference images in the storyboard editor.
+
+        Priority:
+          1. If action_description contains a resource line like
+             【角色：老赵 · 场景：机舱内 · 道具：行李箱】,
+             do exact name-to-ID matching for those explicitly declared names.
+          2. Fall back to substring matching of all character/scene names
+             anywhere in the description text.
+
+        Mutates frames in-place: fills scene_id, character_ids, prop_ids.
+        """
+        if props is None:
+            props = []
+
+        import re as _re
+
+        for frame in frames:
+            desc = (frame.action_description or "")
+            if not desc:
+                continue
+
+            # Step 1: Try to extract explicitly declared names from resource line
+            # Format: 【场景：X · 角色：Y · 道具：Z】 or 【X · Y · Z】
+            res_m = _re.search(r'【([^】]*)】', desc)
+            declared_scenes = []
+            declared_chars = []
+            declared_props = []
+            if res_m:
+                inner = res_m.group(1).strip()
+                segments = [s.strip() for s in inner.split('·') if s.strip()]
+                has_keys = any('：' in s for s in segments)
+                if has_keys:
+                    for seg in segments:
+                        if '：' not in seg:
+                            continue
+                        key, val = seg.split('：', 1)
+                        key = key.strip()
+                        val = val.strip()
+                        if val and val != "无":
+                            vals = [v.strip() for v in val.split(',') if v.strip()]
+                            if key == "场景":
+                                declared_scenes = vals
+                            elif key == "角色":
+                                declared_chars = vals
+                            elif key == "道具":
+                                declared_props = vals
+                else:
+                    # Compact: first=场景, second=角色, third=道具
+                    labels = [declared_scenes, declared_chars, declared_props]
+                    for i, val in enumerate(segments[:3]):
+                        if val and val != "无":
+                            labels[i].append(val)
+
+            # Step 2: Match characters by name
+            # Use exact match for declared names, substring for the rest
+            desc_normalized = self._entity_name_key(desc)
+            
+            for ch in characters:
+                ch_key = self._entity_name_key(ch.name)
+                if not ch_key:
+                    continue
+                # Check if this character is declared explicitly
+                if ch.name in declared_chars:
+                    if ch.id not in frame.character_ids:
+                        frame.character_ids.append(ch.id)
+                elif ch_key in desc_normalized:
+                    # Fallback: substring matching
+                    if ch.id not in frame.character_ids:
+                        frame.character_ids.append(ch.id)
+
+            # Step 3: Match scene by name
+            for sc in scenes:
+                sc_key = self._entity_name_key(sc.name)
+                if not sc_key:
+                    continue
+                if sc.name in declared_scenes:
+                    frame.scene_id = sc.id
+                    break
+                if sc_key in desc_normalized:
+                    frame.scene_id = sc.id
+                    break
+
+            # Step 4: Match props by name
+            if declared_props:
+                for prop in props:
+                    if prop.name in declared_props and prop.id not in frame.prop_ids:
+                        frame.prop_ids.append(prop.id)
+
+    def _supplement_mentioned_existing_entities(self, existing_script: Script, parsed_script: Script, text: str) -> None:
+        """Keep named existing entities when an extraction pass accidentally omits them.
+
+        LLM extraction is probabilistic. Re-running it must not make an established
+        creature disappear while its exact name is still repeated in the script.
+        Only exact textual mentions are restored; no fuzzy guessing is involved.
+        """
+        series = self.series_store.get(existing_script.series_id) if existing_script.series_id else None
+        specs = (
+            ("characters", Character),
+            ("scenes", Scene),
+            ("props", Prop),
+        )
+        for attr, model_cls in specs:
+            parsed_pool = getattr(parsed_script, attr)
+            known_keys = {self._entity_name_key(item.name) for item in parsed_pool}
+            source_pool = list(getattr(existing_script, attr))
+            if series:
+                source_pool.extend(getattr(series, attr))
+            for item in source_pool:
+                key = self._entity_name_key(item.name)
+                if not key or key in known_keys or item.name not in text:
+                    continue
+                common = {
+                    "id": str(uuid.uuid4()),
+                    "name": item.name,
+                    "description": item.description,
+                    "visual_weight": getattr(item, "visual_weight", 3),
+                    "status": GenerationStatus.PENDING,
+                }
+                if model_cls is Character:
+                    common.update(age=item.age, gender=item.gender, clothing=item.clothing)
+                elif model_cls is Scene:
+                    common.update(time_of_day=item.time_of_day, lighting_mood=item.lighting_mood)
+                parsed_pool.append(model_cls(**common))
+                known_keys.add(key)
+
+
+    @staticmethod
+    def _merge_entity_visual_metadata(target: Any, incoming: Any) -> None:
+        for field_name in ("description", "age", "gender", "clothing", "time_of_day", "lighting_mood"):
+            value = getattr(incoming, field_name, None)
+            if value not in (None, "") and hasattr(target, field_name):
+                setattr(target, field_name, value)
+        if hasattr(target, "visual_weight") and hasattr(incoming, "visual_weight"):
+            target.visual_weight = max(target.visual_weight, incoming.visual_weight)
+
+    def _merge_exact_series_entities(self, script: Script) -> None:
+        """Automatically reconcile exact-name matches into the shared library.
+
+        When a fresh (PENDING) episode entity matches a series entity, the
+        series entity's old image variants are cleared and OSS files deleted
+        so stale images don't persist in Cast after a re-extraction.
+        """
+        series = self.series_store.get(script.series_id) if script.series_id else None
+        if not series:
+            return
+        changed = False
+        for attr in ("characters", "scenes", "props"):
+            shared_by_name = {self._entity_name_key(item.name): item for item in getattr(series, attr)}
+            remaining = []
+            for local in getattr(script, attr):
+                shared = shared_by_name.get(self._entity_name_key(local.name))
+                if not shared:
+                    remaining.append(local)
+                    continue
+                self._merge_entity_visual_metadata(shared, local)
+                # Fresh re-parsed entity is PENDING → clear stale series images
+                if getattr(local, "status", None) == GenerationStatus.PENDING:
+                    # Delete OSS files for stale series entity images
+                    self._cleanup_single_entity_oss_images(shared)
+                    # Reset series entity image variants to avoid stale images
+                    for img_field in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset"):
+                        img = getattr(shared, img_field, None)
+                        if img:
+                            img.selected_id = None
+                            img.variants = []
+                    # Clear stages reference images (Cast page's primary image source)
+                    for stage in (getattr(shared, "stages", None) or []):
+                        stage.selected_image_id = None
+                        stage.reference_images = []
+                    # Clear AssetUnit fields (reference_sheet, full_body, three_views, head_shot)
+                    for unit_field in ("reference_sheet", "full_body", "three_views", "head_shot"):
+                        unit = getattr(shared, unit_field, None)
+                        if unit:
+                            unit.selected_image_id = None
+                            unit.image_variants = []
+                    for legacy in ("image_url", "full_body_image_url", "three_view_image_url",
+                                   "headshot_image_url", "avatar_url"):
+                        if hasattr(shared, legacy):
+                            setattr(shared, legacy, None)
+                    shared.status = GenerationStatus.PENDING
+                changed = True
+            setattr(script, attr, remaining)
+        if changed:
+            series.updated_at = time.time()
+            self._save_series_data()
+
+    def reparse_project(self, script_id: str, text: str) -> Script:
+        """Re-parse the text for an existing project, replacing all entities."""
+        existing_script = self.scripts.get(script_id)
+        if not existing_script:
+            raise ValueError("Script not found")
+
+        # Use cached extraction if available (from extract_preview)
+        import copy as _copy
+        cached = self._extraction_cache.pop(script_id, None)
+        is_fast_path = False
+        if cached and isinstance(cached, (list, tuple)) and len(cached) >= 3:
+            is_fast_path = cached[2]
+        if cached and isinstance(cached, (list, tuple)) and len(cached) >= 2 and (time.time() - cached[0]) < 300:
+            new_script = _copy.deepcopy(cached[1])
+            if is_fast_path:
+                new_script._fast_path = True
+        else:
+            new_script = self.script_processor.parse_novel(existing_script.title, text)
+            self._supplement_mentioned_existing_entities(existing_script, new_script, text)
+        
+        # Preserve the original script ID and timestamps
+        new_script.id = existing_script.id
+        new_script.created_at = existing_script.created_at
+        new_script.updated_at = time.time()
+        
+        # Preserve project-level settings
+        new_script.art_direction = existing_script.art_direction
+        new_script.model_settings = existing_script.model_settings
+        new_script.style_preset = existing_script.style_preset
+        new_script.style_prompt = existing_script.style_prompt
+        new_script.merged_video_url = existing_script.merged_video_url
+        new_script.workflow_mode = existing_script.workflow_mode
+        # Preserve series binding — the freshly parsed Script defaults
+        # series_id/episode_number to None, which would orphan an episode
+        # mid-reparse and break the Reconcile suggestions endpoint
+        # (it returns [] for any project without a series_id). Same for
+        # prompt_config, default_generation_mode, bgm_url, mix_settings —
+        # all project-level fields unrelated to entity extraction.
+        # custom_voices lives on Series, NOT Script — do not touch it here.
+        new_script.series_id = existing_script.series_id
+        new_script.episode_number = existing_script.episode_number
+        new_script.prompt_config = existing_script.prompt_config
+        new_script.default_generation_mode = existing_script.default_generation_mode
+        new_script.bgm_url = existing_script.bgm_url
+        new_script.mix_settings = existing_script.mix_settings
+
+        # Preserve existing frames and video tasks (re-extracting entities
+        # should not discard already-generated storyboards)
+        new_script.frames = existing_script.frames
+        new_script.video_tasks = existing_script.video_tasks
+
+        # Exact-name matches are the same logical entity in this product's
+        # cross-episode model. Merge them immediately so confirmation never
+        # leaves a transient episode-local duplicate beside the shared card.
+        self._merge_exact_series_entities(new_script)
+        
+        # Clean up old entity OSS images — orphaned by entity replacement
+        self._cleanup_old_entity_oss_images(existing_script)
+
+        # Also clean up SERIES entity images for any entities that MIGHT be
+        # shown in Cast alongside the new episode entities. The Cast page
+        # merges series entities (by ID) and adds series-only entities.
+        # Without this, old series entity images persist after re-extraction.
+        if new_script.series_id:
+            series = self.series_store.get(new_script.series_id)
+            if series:
+                # Collect entity names from BOTH the new episode AND the old episode,
+                # because old extraction runs may have produced slightly different names
+                # (e.g. "晨雾原始森林" vs "原始森林上空") that still need cleanup.
+                target_keys = set()
+                for attr in ("characters", "scenes", "props"):
+                    for e in getattr(new_script, attr, []):
+                        target_keys.add(self._entity_name_key(e.name))
+                    for e in getattr(existing_script, attr, []):
+                        target_keys.add(self._entity_name_key(e.name))
+                # Phase 1: Clean series entities whose names match known episode names
+                for attr in ("characters", "scenes", "props"):
+                    for se in list(getattr(series, attr, [])):
+                        if self._entity_name_key(se.name) in target_keys:
+                            self._cleanup_single_entity_oss_images(se)
+                            for img_field in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset"):
+                                img = getattr(se, img_field, None)
+                                if img:
+                                    img.selected_id = None
+                                    img.variants = []
+                            for stage in (getattr(se, "stages", None) or []):
+                                stage.selected_image_id = None
+                                stage.reference_images = []
+                            for unit_field in ("reference_sheet", "full_body", "three_views", "head_shot"):
+                                unit = getattr(se, unit_field, None)
+                                if unit:
+                                    unit.selected_image_id = None
+                                    unit.image_variants = []
+                            for legacy in ("image_url", "full_body_image_url", "three_view_image_url",
+                                           "headshot_image_url", "avatar_url", "reference_image_url"):
+                                if hasattr(se, legacy):
+                                    setattr(se, legacy, None)
+                            se.status = GenerationStatus.PENDING
+                # Phase 2: Clean series entities that have images but whose names
+                # DON'T appear in the raw script text. These are likely orphaned
+                # artifacts from previous extraction runs (e.g. "铝合金碎片" when
+                # the current script only has "飞机残骸碎片").
+                text_normalized = (text or "").casefold().replace(" ", "").replace("　", "")
+                for attr in ("characters", "scenes", "props"):
+                    for se in list(getattr(series, attr, [])):
+                        se_key = self._entity_name_key(se.name)
+                        # Already handled by Phase 1 (exact name match)
+                        if se_key in target_keys:
+                            continue
+                        has_images = bool(
+                            getattr(se, "image_url", None)
+                            or getattr(se, "full_body_image_url", None)
+                            or getattr(se, "three_view_image_url", None)
+                            or getattr(se, "headshot_image_url", None)
+                            or getattr(se, "avatar_url", None)
+                            or any(
+                                getattr(getattr(se, imgf, None), "variants", None)
+                                for imgf in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset")
+                            )
+                            or any(
+                                getattr(stage, "reference_images", None)
+                                for stage in (getattr(se, "stages", None) or [])
+                            )
+                            or any(
+                                getattr(getattr(se, uf, None), "image_variants", None)
+                                for uf in ("reference_sheet", "full_body", "three_views", "head_shot")
+                            )
+                        )
+                        if not has_images:
+                            continue
+                        # If the entity name doesn't appear in the raw script text,
+                        # it's an orphan from a previous extraction — clean it up.
+                        if text_normalized and se_key not in text_normalized:
+                            self._cleanup_single_entity_oss_images(se)
+                            for img_field in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset"):
+                                img = getattr(se, img_field, None)
+                                if img:
+                                    img.selected_id = None
+                                    img.variants = []
+                            for stage in (getattr(se, "stages", None) or []):
+                                stage.selected_image_id = None
+                                stage.reference_images = []
+                            for unit_field in ("reference_sheet", "full_body", "three_views", "head_shot"):
+                                unit = getattr(se, unit_field, None)
+                                if unit:
+                                    unit.selected_image_id = None
+                                    unit.image_variants = []
+                            for legacy in ("image_url", "full_body_image_url", "three_view_image_url",
+                                           "headshot_image_url", "avatar_url", "reference_image_url"):
+                                if hasattr(se, legacy):
+                                    setattr(se, legacy, None)
+                            se.status = GenerationStatus.PENDING
+
+                series.updated_at = time.time()
+                self._save_series_data()
+        return series, task_id
+
+    # Series Storage & CRUD
+    # ============================================================
+
+    def _load_series_data(self) -> Dict[str, Series]:
+        """Load series from SQLite."""
+        result: Dict[str, Series] = {}
+        try:
+            for d in self._storage.list_series():
+                result[d["id"]] = Series(**d)
+        except Exception as e:
+            logger.error(f"Failed to load series data: {e}")
+        return result
+
+    def _save_series_data_unlocked(self):
+        """Save all series to SQLite (caller must hold self._save_lock)."""
+        try:
+            for s in self.series_store.values():
+                self._storage.save_series(s.model_dump())
+        except Exception as e:
+            logger.error(f"Failed to save series data: {e}")
+
+    def _save_series_data(self):
+        """Save series data with thread lock."""
+        with self._save_lock:
+            self._save_series_data_unlocked()
+    
+    def _save_series(self, series_id: Optional[str] = None):
+        """Save a single series or all series to SQLite."""
+        with self._save_lock:
+            try:
+                if series_id:
+                    s = self.series_store.get(series_id)
+                    if s:
+                        self._storage.save_series(s.model_dump())
+                else:
+                    for s in self.series_store.values():
+                        self._storage.save_series(s.model_dump())
+            except Exception as e:
+                logger.error(f"Failed to save series: {e}")
+
+    def create_series(self, title: str, description: str = "", workflow_mode: str = "i2v_legacy", content_mode: str = "scripted", default_generation_mode: str = "r2v") -> Series:
+        """Create a new Series."""
+        with self._save_lock:
+            series = Series(
+                id=str(uuid.uuid4()),
+                title=title,
+                description=description,
+                workflow_mode=workflow_mode,
+                content_mode=content_mode,
+                default_generation_mode=default_generation_mode,
+                created_at=time.time(),
+                updated_at=time.time(),
+            )
+            self.series_store[series.id] = series
+            self._save_series_data_unlocked()
+            return series
+
+    def get_series(self, series_id: str) -> Optional[Series]:
+        return self.series_store.get(series_id)
+
+    def list_series(self) -> List[Series]:
+        return list(self.series_store.values())
+
+    def update_series(self, series_id: str, updates: Dict[str, Any]) -> Series:
+        """Update Series fields (title, description, etc.)."""
+        with self._save_lock:
+            series = self.series_store.get(series_id)
+            if not series:
+                raise ValueError("Series not found")
+            for key, value in updates.items():
+                if hasattr(series, key) and key not in ("id", "created_at", "episode_ids"):
+                    if key == "art_direction" and isinstance(value, dict):
+                        value = ArtDirection(**value)
+                    setattr(series, key, value)
+            series.updated_at = time.time()
+            self.series_store[series_id] = series
+            self._save_series_data_unlocked()
+            return series
+
+    def delete_project(self, script_id: str) -> Script:
+        """Delete a project and its associated data."""
+        with self._save_lock:
+            script = self.scripts.get(script_id)
+            if not script:
+                raise ValueError("Project not found")
+            # If project belongs to a Series, remove from episode_ids
+            if script.series_id:
+                series = self.series_store.get(script.series_id)
+                if series and script_id in series.episode_ids:
+                    series.episode_ids.remove(script_id)
+                    self._save_series_data_unlocked()
+            # Delete from memory and persistent storage
+            del self.scripts[script_id]
+            self._storage.delete_script(script_id)
+            self._save_data()
+            return script
+
+
+    def delete_series(self, series_id: str) -> None:
+        """Delete a Series and disassociate its episodes."""
+        with self._save_lock:
+            series = self.series_store.get(series_id)
+            if not series:
+                raise ValueError("Series not found")
+            # Disassociate episodes
+            for ep_id in series.episode_ids:
+                script = self.scripts.get(ep_id)
+                if script:
+                    script.series_id = None
+                    script.episode_number = None
+            self._save_data()
+            del self.series_store[series_id]
+            self._storage.delete_series(series_id)
+            self._save_series_data_unlocked()
+
+    def _sync_assets_to_series(self, series: Series, episode: Script) -> None:
+        """Merge episode assets into Series. Episode-local assets take priority by ID."""
+        ep_char_ids = {c.id for c in episode.characters}
+        ep_scene_ids = {s.id for s in episode.scenes}
+        ep_prop_ids = {p.id for p in episode.props}
+
+        # Merge characters: episode first, then series (non-duplicate)
+        merged_chars = list(episode.characters)
+        for c in series.characters:
+            if c.id not in ep_char_ids:
+                merged_chars.append(c)
+        series.characters = merged_chars
+
+        # Merge scenes
+        merged_scenes = list(episode.scenes)
+        for s in series.scenes:
+            if s.id not in ep_scene_ids:
+                merged_scenes.append(s)
+        series.scenes = merged_scenes
+
+        # Merge props
+        merged_props = list(episode.props)
+        for p in series.props:
+            if p.id not in ep_prop_ids:
+                merged_props.append(p)
+        series.props = merged_props
+
+
+    def add_episode_to_series(self, series_id: str, script_id: str, episode_number: Optional[int] = None) -> Series:
+        """Add an existing Script/Project as an Episode to a Series."""
+        with self._save_lock:
+            series = self.series_store.get(series_id)
+            if not series:
+                raise ValueError("Series not found")
+            script = self.scripts.get(script_id)
+            if not script:
+                raise ValueError("Script not found")
+            # If script already belongs to another series, remove it from the old one
+            if script.series_id and script.series_id != series_id:
+                old_series = self.series_store.get(script.series_id)
+                if old_series and script_id in old_series.episode_ids:
+                    old_series.episode_ids.remove(script_id)
+            if script_id not in series.episode_ids:
+                series.episode_ids.append(script_id)
+            script.series_id = series_id
+            script.episode_number = episode_number or len(series.episode_ids)
+            series.updated_at = time.time()
+            self._save_data()
+            # Sync episode assets to Series (merge, episode-local takes priority)
+            self._sync_assets_to_series(series, script)
+            self._save_series_data_unlocked()
+            return series
+
+    def remove_episode_from_series(self, series_id: str, script_id: str) -> Series:
+        """Remove an Episode from a Series (does not delete the project)."""
+        with self._save_lock:
+            series = self.series_store.get(series_id)
+            if not series:
+                raise ValueError("Series not found")
+            if script_id in series.episode_ids:
+                series.episode_ids.remove(script_id)
+            script = self.scripts.get(script_id)
+            if script:
+                script.series_id = None
+                script.episode_number = None
+            series.updated_at = time.time()
+            self._save_data()
+            self._save_series_data_unlocked()
+            return series
+
+    # ─────────────────────────────────────────────────────────────
+    # PR-3h/i · Custom voice (clone + design) management
+    # Per Q16.1: series-level pool. Episodes / characters in the series
+    # share access via VoicePickerModal's 我的复刻 / 我的设计 tabs.
+    # ─────────────────────────────────────────────────────────────
+
+    def create_voice_clone(
+        self,
+        series_id: str,
+        audio_url: str,
+        label: str,
+        target_model: str = "cosyvoice-v3.5-plus",
+    ) -> 'CustomVoice':
+        """Clone a voice from a reference audio URL via dashscope customization.
+
+        Calls /services/audio/tts/customization with model='voice-enrollment'
+        action='create_voice'. Persists the returned voice_id under
+        series.custom_voices[]. Returns the CustomVoice entry.
+
+        Per doc: audio must be ≤10MB, MP3/WAV/M4A, ≥16kHz, 10-20s recommended.
+        Frontend should pre-validate before calling.
+        """
+        import requests
+        from .models import CustomVoice  # local import to avoid circular
+
+        with self._save_lock:
+            series = self.series_store.get(series_id)
+            if not series:
+                raise ValueError(f"Series not found: {series_id}")
+
+            api_key = os.getenv("DASHSCOPE_API_KEY")
+            if not api_key:
+                raise RuntimeError("DASHSCOPE_API_KEY not configured")
+
+            # Dashscope customization endpoint (Beijing region; intl uses
+            # dashscope-intl URL — TODO when LumenX supports intl deployment)
+            url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
+            payload = {
+                "model": "voice-enrollment",
+                "input": {
+                    "action": "create_voice",
+                    "target_model": target_model,
+                    "prefix": label[:20],  # API has prefix length limit
+                    "url": audio_url,
+                },
+            }
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+            logger.info(f"[voice/clone] creating voice for series={series_id} label='{label}' target={target_model}")
+            resp = requests.post(url, json=payload, headers=headers, timeout=60)
+            if resp.status_code != 200:
+                logger.error(f"[voice/clone] dashscope error {resp.status_code}: {resp.text[:500]}")
+                raise RuntimeError(f"Voice clone failed: HTTP {resp.status_code} — {resp.text[:200]}")
+
+            data = resp.json()
+            # Per doc shape: output.voice (CosyVoice) or output.voice_id (Qwen-TTS)
+            voice_id = (
+                data.get("output", {}).get("voice")
+                or data.get("output", {}).get("voice_id")
+                or data.get("voice")
+            )
+            if not voice_id:
+                logger.error(f"[voice/clone] no voice_id in response: {data}")
+                raise RuntimeError(f"Voice clone succeeded but voice_id missing in response: {data}")
+
+            custom = CustomVoice(
+                id=str(voice_id),
+                label=label,
+                origin="clone",
+                target_model=target_model,
+                family="cosyvoice",  # PR-3h hardcodes CosyVoice clone target
+                source_audio_url=audio_url,
+            )
+            if series.custom_voices is None:
+                series.custom_voices = []
+            series.custom_voices.append(custom)
+            series.updated_at = time.time()
+            self._save_series_data_unlocked()
+            logger.info(f"[voice/clone] success voice_id={voice_id} stored on series={series_id}")
+            return custom
+
+    def list_custom_voices(self, series_id: str) -> List['CustomVoice']:
+        """Return all custom voices in a series (clones + designs).
+        Empty list if series has none or doesn't exist."""
+        series = self.series_store.get(series_id)
+        if not series:
+            return []
+        return list(series.custom_voices or [])
+
+    def delete_custom_voice(self, series_id: str, voice_id: str) -> bool:
+        """Remove a custom voice entry. Returns True if removed, False if
+        not found. Note: does NOT call dashscope to delete the underlying
+        voice (the platform allows re-use for 24h; cleanup is best-effort)."""
+        with self._save_lock:
+            series = self.series_store.get(series_id)
+            if not series or not series.custom_voices:
+                return False
+            before = len(series.custom_voices)
+            series.custom_voices = [v for v in series.custom_voices if v.id != voice_id]
+            removed = before != len(series.custom_voices)
+            if removed:
+                series.updated_at = time.time()
+                self._save_series_data_unlocked()
+            return removed
+
+    def find_custom_voice(self, voice_id: str) -> Optional['CustomVoice']:
+        """Search all series for a custom voice by voice_id. Used by
+        /voice/preview to resolve target_model for cloned/designed voices
+        (which aren't in the static TTS_VOICE_REGISTRY)."""
+        for series in self.series_store.values():
+            for cv in (series.custom_voices or []):
+                if cv.id == voice_id:
+                    return cv
+        return None
+
+    # ─────────────────────────────────────────────────────────────
+    # PR-3i · Voice design (iterate: prompt → preview → accept)
+    # Unlike clone (audio-driven, 1 shot), design is text-driven and
+    # users naturally iterate. Each preview mints a new voice on
+    # dashscope; we only persist the voice the user explicitly accepts.
+    # ─────────────────────────────────────────────────────────────
+
+    def voice_design_preview(
+        self,
+        voice_prompt: str,
+        preview_text: str,
+        target_model: str = "cosyvoice-v3.5-plus",
+    ) -> Dict[str, Any]:
+        """Mint a new design voice via dashscope (preview returned inline).
+
+        Per dashscope contract: create_voice with voice_prompt MUST be paired
+        with preview_text in the same call; the API returns both the voice_id
+        and a preview audio URL. We download the URL into our cache dir so
+        the frontend can play it through the same /files static mount used
+        by /voice/preview.
+
+        Does NOT persist; user iterates by re-calling with tweaked params.
+        """
+        import requests
+        import hashlib
+
+        api_key = os.getenv("DASHSCOPE_API_KEY")
+        if not api_key:
+            raise RuntimeError("DASHSCOPE_API_KEY not configured")
+
+        url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
+        payload = {
+            "model": "voice-enrollment",
+            "input": {
+                "action": "create_voice",
+                "target_model": target_model,
+                "prefix": "design",
+                "voice_prompt": voice_prompt[:500],
+                "preview_text": (preview_text or "你好，这是一段音色测试。")[:200],
+            },
+        }
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+        logger.info(f"[voice/design] preview voice_prompt='{voice_prompt[:60]}…' target={target_model}")
+        # dashscope voice design has variable latency (10-60s); the customization
+        # service occasionally returns its own timeout. Retry once on 5xx/timeout.
+        resp = None
+        last_err = None
+        for attempt in range(2):
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=120)
+                if resp.status_code == 200:
+                    break
+                last_err = f"HTTP {resp.status_code} — {resp.text[:200]}"
+                if resp.status_code < 500 and "Timeout" not in (resp.text or ""):
+                    break  # client error, don't retry
+                logger.warning(f"[voice/design] attempt {attempt+1} failed: {last_err}; retrying")
+            except requests.RequestException as e:
+                last_err = str(e)
+                logger.warning(f"[voice/design] attempt {attempt+1} network error: {e}; retrying")
+        if resp is None or resp.status_code != 200:
+            logger.error(f"[voice/design] all attempts failed: {last_err}")
+            raise RuntimeError(f"Voice design failed: {last_err}")
+
+        data = resp.json()
+        output = data.get("output", {}) or {}
+        voice_id = output.get("voice") or output.get("voice_id") or data.get("voice")
+        remote_preview = output.get("preview_audio") or output.get("preview_audio_url") or output.get("audio_url")
+        if not voice_id:
+            logger.error(f"[voice/design] no voice_id in response: {data}")
+            raise RuntimeError(f"Voice design API returned no voice_id: {data}")
+
+        voice_id_str = str(voice_id)
+
+        cache_dir = "output/cache/voice_design_preview"
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_key = hashlib.md5(f"{voice_id_str}|{preview_text}".encode("utf-8")).hexdigest()
+        cache_path = os.path.join(cache_dir, f"{cache_key}.mp3")
+
+        if remote_preview:
+            # Download the dashscope-served preview into our cache.
+            try:
+                audio_resp = requests.get(remote_preview, timeout=60)
+                audio_resp.raise_for_status()
+                with open(cache_path, "wb") as f:
+                    f.write(audio_resp.content)
+            except Exception as e:
+                logger.warning(f"[voice/design] preview download failed, falling back to local TTS: {e}")
+                remote_preview = None
+
+        if not remote_preview:
+            if not self.audio_generator.tts:
+                raise RuntimeError("TTS unavailable; cannot synthesize preview")
+            self.audio_generator.tts.synthesize(
+                text=preview_text,
+                output_path=cache_path,
+                voice=voice_id_str,
+                model_override=target_model,
+                family_override="cosyvoice",
+            )
+
+        preview_url = f"cache/voice_design_preview/{cache_key}.mp3"
+        return {"voice_id": voice_id_str, "preview_url": preview_url, "target_model": target_model}
+
+    def voice_design_save(
+        self,
+        series_id: str,
+        voice_id: str,
+        voice_prompt: str,
+        label: str,
+        target_model: str = "cosyvoice-v3.5-plus",
+    ) -> 'CustomVoice':
+        """Persist a previewed design voice into series.custom_voices[]."""
+        from .models import CustomVoice
+
+        with self._save_lock:
+            series = self.series_store.get(series_id)
+            if not series:
+                raise ValueError(f"Series not found: {series_id}")
+
+            existing = next(
+                (cv for cv in (series.custom_voices or []) if cv.id == voice_id),
+                None,
+            )
+            if existing:
+                logger.info(f"[voice/design] save: voice_id={voice_id} already exists; returning existing")
+                return existing
+
+            custom = CustomVoice(
+                id=voice_id,
+                label=label,
+                origin="design",
+                target_model=target_model,
+                family="cosyvoice",
+                voice_prompt=voice_prompt[:500],
+            )
+            if series.custom_voices is None:
+                series.custom_voices = []
+            series.custom_voices.append(custom)
+            series.updated_at = time.time()
+            self._save_series_data_unlocked()
+            logger.info(f"[voice/design] saved voice_id={voice_id} to series={series_id}")
+            return custom
+
+    def translate_character_to_voice_prompt(self, description: str) -> str:
+        """LLM helper: convert a character description into a CosyVoice
+        voice_prompt suitable for /services/audio/tts/customization.
+
+        The prompt should describe vocal qualities (timbre, pace, age, mood)
+        in concise Chinese. CosyVoice voice_prompt cap is 500 chars; we
+        target ~120-200 to leave headroom for tone hints.
+        """
+        from .llm_adapter import LLMAdapter
+
+        adapter = LLMAdapter()
+        if not adapter.is_configured:
+            raise RuntimeError("LLM adapter not configured (missing DASHSCOPE_API_KEY)")
+
+        system_prompt = (
+            "你是一个语音设计师，擅长将角色设定转化为简洁的中文音色描述。"
+            "输出要求："
+            "1. 只描述音色、语速、年龄、情绪，不要描写外貌或剧情。"
+            "2. 用 100-200 字中文，单段无标题，不带引号或多余说明。"
+            "3. 重点：性别·年龄·音色质感·语速·气质氛围。"
+        )
+        user_prompt = f"角色设定：\n{description.strip()[:1000]}\n\n请输出音色描述。"
+
+        text = adapter.chat(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        return (text or "").strip()[:500]
+
+    def get_series_episodes(self, series_id: str) -> List[Script]:
+        """Get all Episodes belonging to a Series, in order."""
+        series = self.series_store.get(series_id)
+        if not series:
+            raise ValueError("Series not found")
+        # Use the storage layer for proper ordering (episode_number, created_at)
+        episodes = []
+        try:
+            for d in self._storage.get_series_episodes(series_id):
+                episodes.append(Script(**d))
+        except Exception:
+            # Fallback to in-memory ordering by episode_ids
+            for ep_id in series.episode_ids:
+                script = self.scripts.get(ep_id)
+                if script:
+                    episodes.append(script)
+        return episodes
+
+    def resolve_episode_assets(self, episode: Script, series: Optional[Series] = None) -> Dict[str, List]:
+        """Merge Episode-local assets with Series shared assets.
+        Episode-local assets take priority (by ID) over Series assets."""
+        if not series:
+            # Auto-lookup series if episode has series_id
+            if episode.series_id:
+                series = self.series_store.get(episode.series_id)
+        if not series:
+            return {
+                "characters": episode.characters,
+                "scenes": episode.scenes,
+                "props": episode.props,
+            }
+        # Build lookup by ID for episode-local assets
+        ep_char_ids = {c.id for c in episode.characters}
+        ep_scene_ids = {s.id for s in episode.scenes}
+        ep_prop_ids = {p.id for p in episode.props}
+
+        merged_characters = list(episode.characters) + [c for c in series.characters if c.id not in ep_char_ids]
+        merged_scenes = list(episode.scenes) + [s for s in series.scenes if s.id not in ep_scene_ids]
+        merged_props = list(episode.props) + [p for p in series.props if p.id not in ep_prop_ids]
+
+        return {
+            "characters": merged_characters,
+            "scenes": merged_scenes,
+            "props": merged_props,
+        }
+
+    # ============================================================
+    # File Import & Episode Splitting
+    # ============================================================
+
+    def import_file_and_split(self, text: str, suggested_episodes: int = 3) -> List[Dict]:
+        """Split text into episodes using LLM. Returns episode preview data."""
+        return self.script_processor.split_into_episodes(text, suggested_episodes)
+
+    def create_series_from_import(self, title: str, text: str, episodes_data: List[Dict],
+                                   description: str = "") -> Dict:
+        """Create a Series with Episodes from import data.
+        episodes_data: list of dicts with episode_number, title, start_marker, end_marker."""
+        # Create the Series (already acquires lock internally)
+        series = self.create_series(title, description)
+
+        # Split text into episode chunks based on markers
+        episode_texts = self._split_text_by_markers(text, episodes_data)
+
+        with self._save_lock:
+            # Create Episode (Script) for each chunk
+            created_episodes = []
+            for idx, ep_data in enumerate(episodes_data):
+                ep_text = episode_texts[idx] if idx < len(episode_texts) else ""
+                ep_title = ep_data.get("title", f"第{idx+1}集")
+                episode_number = ep_data.get("episode_number", idx + 1)
+
+                # Create draft script (no LLM analysis yet — user can trigger later)
+                script = self.script_processor.create_draft_script(ep_title, ep_text)
+                script.series_id = series.id
+                script.episode_number = episode_number
+                self.scripts[script.id] = script
+
+                series.episode_ids.append(script.id)
+                created_episodes.append({
+                    "id": script.id,
+                    "title": ep_title,
+                    "episode_number": episode_number,
+                    "text_length": len(ep_text),
+                })
+
+            self._save_data()
+            self._save_series_data_unlocked()
+
+        return {
+            "series": series.model_dump(),
+            "episodes": created_episodes,
+        }
+
+    def _split_text_by_markers(self, text: str, episodes_data: List[Dict]) -> List[str]:
+        """Split text into chunks using start/end markers from LLM.
+        Searches sequentially to avoid overlapping chunks."""
+        chunks = []
+        search_from = 0  # Track position to avoid overlap
+
+        for ep in episodes_data:
+            start_marker = ep.get("start_marker", "")
+            end_marker = ep.get("end_marker", "")
+
+            start_idx = search_from
+            end_idx = len(text)
+
+            if start_marker:
+                found = text.find(start_marker, search_from)
+                if found >= 0:
+                    start_idx = found
+
+            if end_marker:
+                found = text.find(end_marker, start_idx)
+                if found >= 0:
+                    end_idx = found + len(end_marker)
+
+            chunks.append(text[start_idx:end_idx])
+            search_from = end_idx  # Next episode starts after this one
+
+        # Fallback: if markers produced empty/overlapping chunks, do equal split
+        if not chunks or all(len(c.strip()) == 0 for c in chunks):
+            chunk_size = max(1, len(text) // len(episodes_data))
+            chunks = []
+            for i in range(len(episodes_data)):
+                start = i * chunk_size
+                end = start + chunk_size if i < len(episodes_data) - 1 else len(text)
+                chunks.append(text[start:end])
+
+        return chunks
+
+    # ============================================================
+    # Series Asset Operations
+    # ============================================================
+
+    def _find_series_asset(self, series_id: str, asset_id: str, asset_type: str):
+        """Find an asset in a Series. Returns (series, asset) tuple."""
+        if asset_type not in ("character", "scene", "prop"):
+            raise ValueError(f"Invalid asset type: {asset_type}")
+        series = self.series_store.get(series_id)
+        if not series:
+            raise ValueError("Series not found")
+        target_asset = None
+        if asset_type == "character":
+            target_asset = next((c for c in series.characters if c.id == asset_id), None)
+        elif asset_type == "scene":
+            target_asset = next((s for s in series.scenes if s.id == asset_id), None)
+        elif asset_type == "prop":
+            target_asset = next((p for p in series.props if p.id == asset_id), None)
+        if not target_asset:
+            raise ValueError(f"Asset {asset_id} of type {asset_type} not found in series")
+        return series, target_asset
+
+    def toggle_series_asset_lock(self, series_id: str, asset_id: str, asset_type: str) -> Series:
+        """Toggle the locked status of a Series asset."""
+        with self._save_lock:
+            series, target_asset = self._find_series_asset(series_id, asset_id, asset_type)
+            target_asset.locked = not target_asset.locked
+            self._save_series_data_unlocked()
+            return series
+
+    def update_series_asset_image(self, series_id: str, asset_id: str, asset_type: str, image_url: str) -> Series:
+        """Updates the image URL of a Series asset."""
+        with self._save_lock:
+            series, target_asset = self._find_series_asset(series_id, asset_id, asset_type)
+            target_asset.image_url = image_url
+            if asset_type == "character":
+                target_asset.avatar_url = image_url
+            self._save_series_data_unlocked()
+            return series
+
+    def update_series_asset_attributes(self, series_id: str, asset_id: str, asset_type: str, attributes: Dict[str, Any]) -> Series:
+        """Updates arbitrary attributes of a Series asset."""
+        with self._save_lock:
+            series, target_asset = self._find_series_asset(series_id, asset_id, asset_type)
+            for key, value in attributes.items():
+                if hasattr(target_asset, key) and key not in ("id", "status", "locked"):
+                    setattr(target_asset, key, value)
+            series.updated_at = time.time()
+            self._save_series_data_unlocked()
+            return series
+
+    def generate_series_asset(self, series_id: str, asset_id: str, asset_type: str,
+                              style_preset: str = None, reference_image_url: str = None,
+                              style_prompt: str = None, generation_type: str = "all",
+                              prompt: str = None, apply_style: bool = True,
+                              negative_prompt: str = None, batch_size: int = 1,
+                              model_name: str = None, aspect_ratio: str = None) -> tuple:
+        """Generate a Series asset. Creates an async task like project asset generation.
+        Returns (series, task_id)."""
+        series = self.series_store.get(series_id)
+        if not series:
+            raise ValueError("Series not found")
+
+        if asset_type not in ("character", "scene", "prop"):
+            raise ValueError(f"Invalid asset_type: {asset_type}")
+
+        pool = (
+            series.characters if asset_type == "character"
+            else series.scenes if asset_type == "scene"
+            else series.props
+        )
+        target_asset = next((a for a in pool if a.id == asset_id), None)
+        if not target_asset:
+            raise ValueError(f"{asset_type.capitalize()} {asset_id} not found in series")
+
+        t2i_model = model_name or series.model_settings.t2i_model
+
+        from .assets import ASPECT_RATIO_TO_SIZE
+        if asset_type == "character":
+            effective_aspect_ratio = aspect_ratio or series.model_settings.character_aspect_ratio
+            default_size = "576*1024"
+        elif asset_type == "scene":
+            effective_aspect_ratio = aspect_ratio or series.model_settings.scene_aspect_ratio
+            default_size = "1024*576"
+        else:
+            effective_aspect_ratio = aspect_ratio or series.model_settings.prop_aspect_ratio
+            default_size = "1024*1024"
+        effective_size = ASPECT_RATIO_TO_SIZE.get(effective_aspect_ratio, default_size)
+
+        effective_positive_prompt = ""
+        effective_negative_prompt = negative_prompt or ""
+        resolved_art_dir = series.art_direction
+        if isinstance(resolved_art_dir, dict):
+            resolved_art_dir = ArtDirection(**resolved_art_dir)
+        if apply_style:
+            if resolved_art_dir and resolved_art_dir.style_config:
+                effective_positive_prompt = resolved_art_dir.style_config.get('positive_prompt', '')
+                global_neg = resolved_art_dir.style_config.get('negative_prompt', '')
+                if global_neg:
+                    effective_negative_prompt = f"{effective_negative_prompt}, {global_neg}" if effective_negative_prompt else global_neg
+            elif style_prompt:
+                effective_positive_prompt = style_prompt
+            elif style_preset:
+                effective_positive_prompt = f"{style_preset} style"
+
+        task_id = str(uuid.uuid4())
+        self.asset_generation_tasks[task_id] = {
+            "status": "pending",
+            "progress": 0,
+            "error": None,
+            "script_id": series_id,  # reuse field name for task lookup
+            "asset_id": asset_id,
+            "asset_type": asset_type,
+            "created_at": time.time(),
+            "is_series": True,
+            "params": {
+                "style_preset": style_preset,
+                "reference_image_url": reference_image_url,
+                "effective_positive_prompt": effective_positive_prompt,
+                "effective_negative_prompt": effective_negative_prompt,
+                "generation_type": generation_type,
+                "prompt": prompt,
+                "apply_style": apply_style,
+                "batch_size": batch_size,
+                "t2i_model": t2i_model,
+                "effective_size": effective_size,
+                "aspect_ratio": effective_aspect_ratio,
+            }
+        }
+        target_asset.status = GenerationStatus.PROCESSING
+        series.updated_at = time.time()
+        self._save_series_data()
+        return series, task_id
+
+    def import_assets_from_series(self, target_series_id: str, source_series_id: str, asset_ids: List[str]) -> Tuple[Series, List[str], List[str]]:
+        """Deep-copy selected assets from source Series to target Series.
+        Returns (target_series, imported_ids, skipped_ids)."""
+        with self._save_lock:
+            target = self.series_store.get(target_series_id)
+            if not target:
+                raise ValueError("Target series not found")
+            source = self.series_store.get(source_series_id)
+            if not source:
+                raise ValueError("Source series not found")
+
+            # Build lookup of all source assets
+            source_assets = {}
+            for c in source.characters:
+                source_assets[c.id] = ("character", c)
+            for s in source.scenes:
+                source_assets[s.id] = ("scene", s)
+            for p in source.props:
+                source_assets[p.id] = ("prop", p)
+
+            imported_ids = []
+            skipped_ids = []
+            for aid in asset_ids:
+                if aid not in source_assets:
+                    skipped_ids.append(aid)
+                    continue
+                asset_type, asset = source_assets[aid]
+                # Deep copy with new ID
+                import copy
+                new_asset = copy.deepcopy(asset)
+                new_asset.id = str(uuid.uuid4())
+                if asset_type == "character":
+                    target.characters.append(new_asset)
+                elif asset_type == "scene":
+                    target.scenes.append(new_asset)
+                elif asset_type == "prop":
+                    target.props.append(new_asset)
+                imported_ids.append(aid)
+
+            target.updated_at = time.time()
+            self._save_series_data_unlocked()
+            return target, imported_ids, skipped_ids
+
+
+    def get_effective_prompt(self, prompt_type: str, episode: Script, series: Optional[Series] = None) -> str:
+        """Three-level fallback: Episode -> Series -> system default."""
+        valid_prompt_types = ("storyboard_polish", "video_polish", "r2v_polish")
+        if prompt_type not in valid_prompt_types:
+            raise ValueError(f"Invalid prompt_type: {prompt_type}. Must be one of {valid_prompt_types}")
+        from .llm import DEFAULT_STORYBOARD_POLISH_PROMPT, DEFAULT_VIDEO_POLISH_PROMPT, DEFAULT_R2V_POLISH_PROMPT
+        defaults = {
+            "storyboard_polish": DEFAULT_STORYBOARD_POLISH_PROMPT,
+            "video_polish": DEFAULT_VIDEO_POLISH_PROMPT,
+            "r2v_polish": DEFAULT_R2V_POLISH_PROMPT,
+        }
+        episode_value = getattr(episode.prompt_config, prompt_type, "")
+        if episode_value.strip():
+            return episode_value
+        if series:
+            series_value = getattr(series.prompt_config, prompt_type, "")
+            if series_value.strip():
+                return series_value
+        return defaults.get(prompt_type, "")

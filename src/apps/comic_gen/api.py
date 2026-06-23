@@ -50,7 +50,7 @@ from .llm import ScriptProcessor, DEFAULT_STORYBOARD_POLISH_PROMPT, DEFAULT_VIDE
 from ...utils.oss_utils import OSSImageUploader, sign_oss_urls_in_data
 from ...utils.op_logger import get_recent, clear as clear_operations
 from ...utils import setup_logging
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from dotenv import load_dotenv, set_key
 
 app = FastAPI(title="AI Comic Gen API")
@@ -79,12 +79,23 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],  # Allow browsers to access Content-Disposition for downloads
 )
 
-# Middleware to add cache headers to static files
+# Middleware to add cache headers
 @app.middleware("http")
 async def add_cache_control_header(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/files/"):
+    path = request.url.path
+    # Media files (/files/) have unique UUIDs in filenames → immutable.
+    # Safe to cache for 24 hours to reduce bandwidth.
+    if path.startswith("/files/"):
         response.headers["Cache-Control"] = "public, max-age=86400"
+    # Frontend static build (/static/) has content-hashed filenames → immutable.
+    elif path.startswith("/static/"):
+        response.headers["Cache-Control"] = "public, max-age=86400"
+    else:
+        # API responses: always fetch fresh data to avoid cache inconsistency.
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 # Create output directory if it doesn't exist
@@ -101,6 +112,32 @@ app.mount("/files/outputs", StaticFiles(directory="output"), name="files_outputs
 app.mount("/files/videos", StaticFiles(directory="output/video"), name="files_videos")
 app.mount("/files/assets", StaticFiles(directory="output/assets"), name="files_assets")
 app.mount("/files", StaticFiles(directory="output"), name="files")
+
+
+# ── Local file serving for Agnes video (no OSS dependency) ────────────
+_LOCAL_FILE_ALLOWED_PREFIXES = ("assets/", "output/")
+
+
+@app.get("/local-file/{filepath:path}")
+def serve_local_file(filepath: str):
+    """Serve local files for models that need HTTP URLs (e.g. Agnes video).
+    
+    Only serves files under the allowed prefixes (assets/, output/) to
+    prevent path traversal. Uses FileResponse for efficient streaming.
+    """
+    # Security: normalize and prevent path traversal
+    normalized = os.path.normpath(filepath).lstrip("/")
+    if normalized.startswith(".."):
+        raise HTTPException(403, "Path traversal not allowed")
+    if not any(normalized.startswith(p) for p in _LOCAL_FILE_ALLOWED_PREFIXES):
+        raise HTTPException(
+            403,
+            f"Only {', '.join(_LOCAL_FILE_ALLOWED_PREFIXES)} paths are allowed",
+        )
+    abs_path = os.path.abspath(normalized)
+    if not os.path.isfile(abs_path):
+        raise HTTPException(404, f"File not found: {filepath}")
+    return FileResponse(abs_path)
 
 
 # Initialize pipeline
@@ -388,6 +425,115 @@ def update_script_text(script_id: str, request: UpdateScriptTextRequest):
     return signed_response(script)
 
 
+class MergePropRequest(BaseModel):
+    source_id: str
+    target_id: str
+
+
+@app.post("/projects/{script_id}/props/merge")
+def merge_prop(script_id: str, request: MergePropRequest):
+    """Merge source prop into target prop.
+
+    Handles both episode-level props (script.props) and
+    series-level shared props (series.props). If the script
+    belongs to a series and the props are found in the series,
+    the merge happens at series level. Frame references are
+    re-wired in the episode script in either case.
+
+    - Re-wires all frame.prop_ids references
+    - Merges image_asset variants (source → target, keeps target first)
+    - Merges description (source appended to target if different)
+    - Deletes the source prop
+    """
+    try:
+        script = pipeline.get_script(script_id)
+        if not script:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Try episode-level props first, then series-level
+        found_source = None
+        found_target = None
+        series = None
+        source_container = None  # "episode" or "series"
+        target_container = None
+
+        logger.info(f"=== merge_prop: source_id={request.source_id} target_id={request.target_id} ===")
+        logger.info(f"=== script.props count={len(script.props)}, props ids: {[p.id for p in script.props]} ===")
+
+        # Search episode props
+        source = next((p for p in script.props if p.id == request.source_id), None)
+        target = next((p for p in script.props if p.id == request.target_id), None)
+        if source:
+            source_container = "episode"
+            found_source = source
+        if target:
+            target_container = "episode"
+            found_target = target
+
+        # Search series props if needed
+        if (not source or not target) and script.series_id:
+            series = pipeline.get_series(script.series_id)
+            if series:
+                logger.info(f"=== merge_prop: series_id={script.series_id}, series.props count={len(series.props)}, props ids: {[p.id for p in series.props]} ===")
+                if not source:
+                    source = next((p for p in series.props if p.id == request.source_id), None)
+                    if source:
+                        source_container = "series"
+                        found_source = source
+                if not target:
+                    target = next((p for p in series.props if p.id == request.target_id), None)
+                    if target:
+                        target_container = "series"
+                        found_target = target
+
+        if not found_source or not found_target:
+            raise HTTPException(status_code=404, detail="Source or target prop not found")
+        if found_source.id == found_target.id:
+            raise HTTPException(status_code=400, detail="Cannot merge a prop into itself")
+
+        # 1. Re-wire frame references (always in episode script)
+        for frame in script.frames:
+            if request.source_id in frame.prop_ids:
+                frame.prop_ids = [
+                    request.target_id if pid == request.source_id else pid
+                    for pid in frame.prop_ids
+                ]
+
+        # 2. Merge image_asset variants
+        if found_source.image_asset and found_target.image_asset:
+            target_variant_urls = {v.url for v in found_target.image_asset.variants if v.url}
+            for v in found_source.image_asset.variants:
+                if v.url and v.url not in target_variant_urls:
+                    found_target.image_asset.variants.append(v)
+            if not found_target.image_asset.selected_id and found_source.image_asset.selected_id:
+                found_target.image_asset.selected_id = found_source.image_asset.selected_id
+
+        # 3. Merge description
+        if found_source.description and found_source.description != found_target.description:
+            found_target.description = (
+                f"{found_target.description}\n--- merged from {found_source.name} ---\n{found_source.description}"
+            )
+
+        # 4. Remove source prop from its container
+        if source_container == "episode":
+            script.props = [p for p in script.props if p.id != request.source_id]
+        if series and source_container == "series":
+            series.props = [p for p in series.props if p.id != request.source_id]
+
+        script.updated_at = time.time()
+        pipeline._save_data(script_id)
+        if series:
+            pipeline.series_store[script.series_id] = series
+            pipeline._save_series_data()
+
+        return signed_response(script)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to merge props: {e}")
+        raise HTTPException(status_code=500, detail=f"Merge failed: {str(e)}")
+
+
 @app.put("/projects/{script_id}/reparse", response_model=Script)
 async def reparse_project(script_id: str, request: ReparseProjectRequest):
     """Re-parses the text for an existing project, replacing all entities."""
@@ -398,7 +544,12 @@ async def reparse_project(script_id: str, request: ReparseProjectRequest):
             None,  # Use default executor
             partial(pipeline.reparse_project, script_id, request.text)
         )
-        return signed_response(result)
+        resp = signed_response(result)
+        # Signal frontend to skip ReconcileModal for deterministic regex extraction
+        result_obj = result
+        if getattr(result_obj, "_fast_path", False):
+            resp._fast_path = True
+        return resp
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -415,11 +566,15 @@ async def extract_preview(script_id: str, request: ReparseProjectRequest):
             None,
             partial(pipeline.extract_preview, script_id, request.text)
         )
-        return {
+        resp = {
             "characters": [c.dict() for c in result.characters],
             "scenes": [s.dict() for s in result.scenes],
             "props": [p.dict() for p in result.props],
         }
+        # Signal frontend to skip ReconcileModal for deterministic regex extraction
+        if getattr(result, "_fast_path", False):
+            resp["_fastPath"] = True
+        return resp
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -902,6 +1057,7 @@ class EnvConfig(ProviderRoutingConfig):
     OSS_BUCKET_NAME: Optional[str] = None
     OSS_ENDPOINT: Optional[str] = None
     OSS_BASE_PATH: Optional[str] = None
+    OSS_REGION: Optional[str] = None
     KLING_ACCESS_KEY: Optional[str] = None
     KLING_SECRET_KEY: Optional[str] = None
     VIDU_API_KEY: Optional[str] = None
@@ -918,6 +1074,9 @@ class EnvConfig(ProviderRoutingConfig):
     VIDEO_MODEL: Optional[str] = None
     COMFYUI_BASE_URL: Optional[str] = None
     COMFYUI_API_KEY: Optional[str] = None
+    TTS_BACKEND: Optional[str] = None
+    LOCAL_QWEN3_TTS_PYTHON: Optional[str] = None
+    LOCAL_QWEN3_TTS_MODEL: Optional[str] = None
     endpoint_overrides: Dict[str, str] = Field(default_factory=dict)
 
 
@@ -1136,6 +1295,13 @@ def update_env_config(config: EnvConfig):
         except Exception as oss_e:
             # OSS reset failure should not block config saving
             logger.warning(f"OSS reset failed (non-critical): {oss_e}")
+
+        if any(key in config_dict for key in ("TTS_BACKEND", "LOCAL_QWEN3_TTS_PYTHON", "LOCAL_QWEN3_TTS_MODEL")):
+            from .audio import AudioGenerator
+            previous_tts = getattr(pipeline.audio_generator, "tts", None)
+            if previous_tts and hasattr(previous_tts, "close"):
+                previous_tts.close()
+            pipeline.audio_generator = AudioGenerator(pipeline.config.get("audio"))
 
         config_path = get_user_config_path()
         return {"status": "success", "message": f"Configuration saved to {config_path}"}
@@ -1456,6 +1622,21 @@ def reconcile_apply(script_id: str, request: ApplyReconcileRequest):
                 series_pool.append(local_item)
                 local_pool.remove(local_item)
             elif act.action == "merge_into_series" and act.target_series_id:
+                target_item = next((x for x in series_pool if x.id == act.target_series_id), None)
+                if target_item:
+                    # Reconciliation used to discard all freshly extracted visual
+                    # metadata and keep the stale shared-library description.  A
+                    # merge should update descriptive fields while retaining the
+                    # target's generated images, stages, locks and voice binding.
+                    for field_name in (
+                        "description", "age", "gender", "clothing",
+                        "time_of_day", "lighting_mood",
+                    ):
+                        incoming = getattr(local_item, field_name, None)
+                        if incoming not in (None, "") and hasattr(target_item, field_name):
+                            setattr(target_item, field_name, incoming)
+                    if hasattr(target_item, "visual_weight") and hasattr(local_item, "visual_weight"):
+                        target_item.visual_weight = max(target_item.visual_weight, local_item.visual_weight)
                 # Rewire frame references then drop local
                 if frame_ref_attr:
                     for frame in script.frames:
@@ -1958,8 +2139,9 @@ class AnalyzeToStoryboardRequest(BaseModel):
 @app.post("/projects/{script_id}/storyboard/analyze")
 def analyze_to_storyboard(script_id: str, request: AnalyzeToStoryboardRequest):
     """
-    Analyzes script text and generates storyboard frames using AI (Prompt B).
-    Replaces existing frames with newly generated ones.
+    Analyzes script text and generates storyboard frames.
+    Priority: 1) parse pre-defined shot markers from text
+              2) LLM analysis (fallback).
     """
     try:
         updated_script = pipeline.analyze_text_to_frames(script_id, request.text)
@@ -2453,6 +2635,29 @@ def update_asset_attributes(script_id: str, request: UpdateAssetAttributesReques
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class AssetStageRequest(BaseModel):
+    asset_id: str
+    asset_type: str
+    action: str
+    stage_id: Optional[str] = None
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+
+@app.post("/projects/{script_id}/assets/stages")
+def mutate_asset_stage(script_id: str, request: AssetStageRequest, background_tasks: BackgroundTasks):
+    try:
+        script, task_id = pipeline.update_asset_stage(
+            script_id, request.asset_id, request.asset_type, request.action, request.stage_id, request.data
+        )
+        if task_id:
+            background_tasks.add_task(pipeline.process_asset_generation_task, task_id)
+        payload = script.model_dump()
+        payload["_task_id"] = task_id
+        return signed_response(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 
@@ -3089,6 +3294,43 @@ class UpdateFrameRequest(BaseModel):
     shot_size: Optional[str] = None
     camera_movement_description: Optional[str] = None
     transition_hint: Optional[str] = None
+
+@app.post("/projects/{script_id}/frames/auto_link_assets")
+def auto_link_frame_assets(script_id: str):
+    """Re-run asset linking for all frames in the project.
+    Scans each frame's action_description for character/scene names
+    and fills in character_ids / scene_id accordingly.
+    """
+    script = pipeline.get_script(script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Project not found")
+    resolved = pipeline.resolve_episode_assets(script)
+    pipeline._auto_link_frame_assets(
+        script.frames, resolved["characters"], resolved["scenes"], resolved.get("props")
+    )
+    pipeline._save_data()
+    return signed_response(script)
+
+
+@app.post("/projects/{script_id}/frames/{frame_id}/auto_link_assets")
+def auto_link_single_frame_assets(script_id: str, frame_id: str):
+    """Re-run asset linking for a single frame.
+    Scans the frame's action_description for character/scene names
+    and fills in character_ids / scene_id accordingly.
+    """
+    script = pipeline.get_script(script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Project not found")
+    frame = next((f for f in script.frames if f.id == frame_id), None)
+    if not frame:
+        raise HTTPException(status_code=404, detail="Frame not found")
+    resolved = pipeline.resolve_episode_assets(script)
+    pipeline._auto_link_frame_assets(
+        [frame], resolved["characters"], resolved["scenes"], resolved.get("props")
+    )
+    pipeline._save_data()
+    return signed_response(script)
+
 
 @app.post("/projects/{script_id}/frames/update", response_model=Script)
 def update_frame(script_id: str, request: UpdateFrameRequest):
@@ -3733,6 +3975,7 @@ def get_env_config():
             "OSS_BUCKET_NAME": _env("OSS_BUCKET_NAME"),
             "OSS_ENDPOINT": _env("OSS_ENDPOINT"),
             "OSS_BASE_PATH": _env("OSS_BASE_PATH"),
+            "OSS_REGION": _env("OSS_REGION", "us-east-1"),
             "KLING_ACCESS_KEY": _env("KLING_ACCESS_KEY"),
             "KLING_SECRET_KEY": _env("KLING_SECRET_KEY"),
             "VIDU_API_KEY": _env("VIDU_API_KEY"),
@@ -3752,6 +3995,9 @@ def get_env_config():
             "VIDEO_MODEL": _env("VIDEO_MODEL"),
             "COMFYUI_BASE_URL": _env("COMFYUI_BASE_URL"),
             "COMFYUI_API_KEY": _env("COMFYUI_API_KEY"),
+            "TTS_BACKEND": _env("TTS_BACKEND", "dashscope"),
+            "LOCAL_QWEN3_TTS_PYTHON": _env("LOCAL_QWEN3_TTS_PYTHON", "~/.lumen-x/qwen3-tts/.venv/bin/python"),
+            "LOCAL_QWEN3_TTS_MODEL": _env("LOCAL_QWEN3_TTS_MODEL", "~/.lumen-x/qwen3-tts/models/Qwen3-TTS-12Hz-0.6B-CustomVoice"),
             "endpoint_overrides": endpoint_overrides,
         }
     except Exception as e:

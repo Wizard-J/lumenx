@@ -46,6 +46,14 @@ ASPECT_RATIO_TO_SIZE = {
     "16:9": "1024*576",   # Landscape
 }
 
+
+# Default negative prompt for asset generation — suppresses QR codes, watermarks, text, etc.
+# AI image models (especially Wanx) sometimes embed unwanted artifacts in asset images.
+DEFAULT_ASSET_NEGATIVE_PROMPT = (
+    "logo, watermark, signature, username, social media handle, weibo watermark, "
+    "text overlay, subtitles, caption, credits, QR code, brand mark, app icon, "
+    "corner bug, UI elements, frame border, poster text, illegible text"
+)
 class AssetGenerator:
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
@@ -68,7 +76,7 @@ class AssetGenerator:
         else:
             return WanxImageModel(self.config.get('model', {}))
 
-    def generate_character(self, character: Character, generation_type: str = "all", prompt: str = "", positive_prompt: str = None, negative_prompt: str = "", batch_size: int = 1, model_name: str = None, i2i_model_name: str = None, size: str = None) -> Character:
+    def generate_character(self, character: Character, generation_type: str = "all", prompt: str = "", positive_prompt: str = None, negative_prompt: str = None, batch_size: int = 1, model_name: str = None, i2i_model_name: str = None, size: str = None) -> Character:
         """
         Generates character assets based on generation_type.
         Types: 'full_body', 'three_view', 'headshot', 'all'
@@ -81,6 +89,9 @@ class AssetGenerator:
         # Default size if not provided
         effective_size = size or "576*1024"  # Default to portrait for characters
         
+
+        # Use default negative prompt when none is provided
+        effective_negative = negative_prompt if negative_prompt is not None else DEFAULT_ASSET_NEGATIVE_PROMPT
         try:
             # 1. Full Body (Master)
             if generation_type in ["all", "full_body"]:
@@ -164,7 +175,7 @@ class AssetGenerator:
                                 effective_generation_prompt = f"{reverse_enhancement}{generation_prompt}"
                                 logger.debug(f"Reverse generation enhanced prompt: {effective_generation_prompt[:100]}...")
                         
-                        self._get_model().generate(effective_generation_prompt, fullbody_path, ref_image_path=ref_image_path, negative_prompt=negative_prompt, model_name=effective_model_name, size=effective_size)
+                        self._get_model().generate(effective_generation_prompt, fullbody_path, ref_image_path=ref_image_path, negative_prompt=effective_negative, model_name=effective_model_name, size=effective_size)
                         
                         rel_fullbody_path = os.path.relpath(fullbody_path, "output")
                         
@@ -304,7 +315,7 @@ class AssetGenerator:
                 # Generate with style suffix appended
                 generation_prompt = f"{base_prompt}, {style_suffix}" if style_suffix and style_suffix not in base_prompt else base_prompt
                 
-                sheet_negative = negative_prompt + ", background, scenery, landscape, shadows, complex background, text, watermark, messy, distorted, extra limbs"
+                sheet_negative = effective_negative + ", background, scenery, landscape, shadows, complex background, text, watermark, messy, distorted, extra limbs"
 
                 successful_generations = 0
                 for i in range(batch_size):
@@ -388,7 +399,7 @@ class AssetGenerator:
                         variant_id = str(uuid.uuid4())
                         avatar_path = os.path.join(self.output_dir, 'characters', f"{character.id}_avatar_{variant_id}.png")
                         
-                        self._get_model().generate(generation_prompt, avatar_path, ref_image_path=fullbody_path, negative_prompt=negative_prompt, ref_strength=0.8, model_name=i2i_model_name)
+                        self._get_model().generate(generation_prompt, avatar_path, ref_image_path=fullbody_path, negative_prompt=effective_negative, ref_strength=0.8, model_name=i2i_model_name)
                         
                         rel_avatar_path = os.path.relpath(avatar_path, "output")
                         
@@ -460,7 +471,7 @@ class AssetGenerator:
             
         return character
 
-    def generate_scene(self, scene: Scene, positive_prompt: str = None, negative_prompt: str = "", batch_size: int = 1, model_name: str = None, size: str = None) -> Scene:
+    def generate_scene(self, scene: Scene, positive_prompt: str = None, negative_prompt: str = None, batch_size: int = 1, model_name: str = None, size: str = None) -> Scene:
         """Generates a scene reference image."""
         scene.status = GenerationStatus.PROCESSING
         
@@ -471,6 +482,9 @@ class AssetGenerator:
         # Default size for scenes (landscape)
         effective_size = size or "1024*576"
         
+
+        # Use default negative prompt when none is provided
+        effective_negative = negative_prompt if negative_prompt is not None else DEFAULT_ASSET_NEGATIVE_PROMPT
         prompt = f"Scene Concept Art: {scene.name}. {scene.description}. High quality, detailed. {positive_prompt}"
         
         try:
@@ -479,7 +493,7 @@ class AssetGenerator:
                 output_path = os.path.join(self.output_dir, 'scenes', f"{scene.id}_{variant_id}.png")
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 
-                image_path, _ = self._get_model().generate(prompt, output_path, negative_prompt=negative_prompt, model_name=model_name, size=effective_size)
+                image_path, _ = self._get_model().generate(prompt, output_path, negative_prompt=effective_negative, model_name=model_name, size=effective_size)
                 
                 rel_path = os.path.relpath(output_path, "output")
                 
@@ -522,7 +536,7 @@ class AssetGenerator:
             
         return scene
 
-    def generate_prop(self, prop: Prop, positive_prompt: str = None, negative_prompt: str = "", batch_size: int = 1, model_name: str = None, size: str = None) -> Prop:
+    def generate_prop(self, prop: Prop, positive_prompt: str = None, negative_prompt: str = None, batch_size: int = 1, model_name: str = None, size: str = None) -> Prop:
         """Generates a prop reference image."""
         prop.status = GenerationStatus.PROCESSING
         
@@ -533,6 +547,9 @@ class AssetGenerator:
         # Default size for props (square)
         effective_size = size or "1024*1024"
         
+
+        # Use default negative prompt when none is provided
+        effective_negative = negative_prompt if negative_prompt is not None else DEFAULT_ASSET_NEGATIVE_PROMPT
         prompt = f"Prop Design: {prop.name}. {prop.description}. Isolated on white background, high quality, detailed. {positive_prompt}"
         
         try:
@@ -541,7 +558,7 @@ class AssetGenerator:
                 output_path = os.path.join(self.output_dir, 'props', f"{prop.id}_{variant_id}.png")
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 
-                image_path, _ = self._get_model().generate(prompt, output_path, negative_prompt=negative_prompt, model_name=model_name, size=effective_size)
+                image_path, _ = self._get_model().generate(prompt, output_path, negative_prompt=effective_negative, model_name=model_name, size=effective_size)
                 
                 rel_path = os.path.relpath(output_path, "output")
                 

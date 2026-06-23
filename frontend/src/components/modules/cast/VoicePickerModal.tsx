@@ -50,7 +50,7 @@ interface VoicePickerModalProps {
      *  (Q5 A3 preferred). When null/undefined, uses character-name template. */
     previewText?: string;
     currentVoiceId?: string;
-    onApply: (voiceId: string, voiceName: string) => void;
+    onApply: (voiceId: string, voiceName: string) => void | Promise<void>;
     /** PR-3h · Series id enables the 我的复刻 / 我的设计 tabs. When null,
      *  those tabs show "请先关联到系列" message (orphan projects). */
     seriesId?: string | null;
@@ -78,6 +78,7 @@ export default function VoicePickerModal({
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [selectedId, setSelectedId] = useState<string | undefined>(currentVoiceId);
+    const [applying, setApplying] = useState(false);
     const [playingId, setPlayingId] = useState<string | null>(null);
     const [previewingId, setPreviewingId] = useState<string | null>(null);
     const [cloneModalOpen, setCloneModalOpen] = useState(false);
@@ -160,7 +161,7 @@ export default function VoicePickerModal({
     const sampleText = previewText || SAMPLE_TEXT_TEMPLATE(characterName);
 
     // PR-3h · unified preview-by-id (works for both system VoiceMeta and CustomVoice)
-    const handlePreviewById = async (voiceId: string) => {
+    const handlePreviewById = async (voiceId: string, fixedPreviewText?: string | null) => {
         if (audioRef.current) {
             audioRef.current.pause();
             audioRef.current = null;
@@ -174,7 +175,7 @@ export default function VoicePickerModal({
         try {
             const { url } = await api.previewVoice({
                 voice_id: voiceId,
-                text: sampleText,
+                text: fixedPreviewText || sampleText,
             });
             const audio = new Audio(getAssetUrl(url));
             audio.onended = () => {
@@ -195,7 +196,7 @@ export default function VoicePickerModal({
         }
     };
 
-    const handlePreview = (voice: VoiceMeta) => handlePreviewById(voice.id);
+    const handlePreview = (voice: VoiceMeta) => handlePreviewById(voice.id, voice.preview_text);
     const handlePreviewCustom = (cv: CustomVoice) => handlePreviewById(cv.id);
 
     // L1.5 recommended subset based on character gender
@@ -388,19 +389,27 @@ export default function VoicePickerModal({
                             {t("cancel")}
                         </button>
                         <button
-                            onClick={() => {
+                            onClick={async () => {
                                 if (!selectedId) return;
                                 // PR-3h · lookup in both system + custom pools
                                 const systemMeta = voices.find(v => v.id === selectedId);
                                 const customMeta = customVoices.find(cv => cv.id === selectedId);
                                 const name = systemMeta?.name || customMeta?.label || selectedId;
-                                onApply(selectedId, name);
-                                onClose();
+                                setApplying(true);
+                                setError(null);
+                                try {
+                                    await onApply(selectedId, name);
+                                    onClose();
+                                } catch (e: any) {
+                                    setError(e?.message || "保存音色失败");
+                                } finally {
+                                    setApplying(false);
+                                }
                             }}
-                            disabled={!selectedId || selectedId === currentVoiceId}
+                            disabled={!selectedId || selectedId === currentVoiceId || applying}
                             className="inline-flex items-center px-4 py-2 rounded-md bg-primary text-white border border-[rgba(100,108,255,0.65)] shadow-[inset_0_1.5px_0_rgba(255,255,255,0.14)] hover:bg-[#7a82ff] disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-[12px] font-semibold"
                         >
-                            {t("apply")}
+                            {applying && <Loader2 size={13} className="mr-1.5 animate-spin" />}{t("apply")}
                         </button>
                     </div>
                 </div>

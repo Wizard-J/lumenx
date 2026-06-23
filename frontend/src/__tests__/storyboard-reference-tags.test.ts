@@ -3,6 +3,7 @@ import {
     buildAssembledPrompt,
     buildPromptWithReferenceTags,
     normalizeReferenceTokensForEditor,
+    resolveAssetReferenceImage,
 } from "@/components/modules/storyboard-r2v/buildAssembledPrompt";
 import type { ShotNode } from "@/components/modules/storyboard-r2v/ShotCard";
 
@@ -35,8 +36,11 @@ describe("storyboard prompt reference tags", () => {
             propIds: ["prop-1"],
         } satisfies ShotNode;
 
+        // Scene "棚户区-林砚棚屋门口" is filtered because the prompt only
+        // contains "棚屋门口" (partial match). Characters and props always
+        // remain. No rename — HappyHorse handles sparse slot arrays.
         expect(buildPromptWithReferenceTags(shot, characters, scenes, props)).toBe(
-            "[character1:林砚] [character2:暗变蜥蜴] [character3:棚户区-林砚棚屋门口] [character4:骨片] 林砚蹲在棚屋门口，用骨片刮鞋底裂口",
+            "[character1:林砚] [character2:暗变蜥蜴] [character4:骨片] 林砚蹲在棚屋门口，用骨片刮鞋底裂口",
         );
     });
 
@@ -50,8 +54,10 @@ describe("storyboard prompt reference tags", () => {
             propIds: ["prop-1"],
         } satisfies ShotNode;
 
+        // Scene name doesn't appear in prompt → filtered.
+        // Only the manually placed [character2:林砚] + auto prop remain.
         expect(buildPromptWithReferenceTags(shot, characters, scenes, props)).toBe(
-            "[character2:林砚] [character3:棚户区-林砚棚屋门口] [character4:骨片] 林砚蹲在棚屋门口",
+            "[character2:林砚] [character4:骨片] 林砚蹲在棚屋门口",
         );
     });
 
@@ -61,6 +67,22 @@ describe("storyboard prompt reference tags", () => {
 
         expect(normalizeReferenceTokensForEditor(polished, taggedPrompt)).toBe(
             "棚户区-林砚棚屋门口的黄沙棚屋门口，林砚蹲坐门边，右手用骨片刮除鞋底磨损。",
+        );
+    });
+
+    it("resolves the frozen stage image before legacy base image fields", () => {
+        const scene = {
+            image_url: "assets/legacy-scene.png",
+            stages: [{
+                id: "stage-forest",
+                selected_image_id: "stage-image",
+                reference_images: [
+                    { id: "stage-image", url: "assets/stages/forest.png" },
+                ],
+            }],
+        };
+        expect(resolveAssetReferenceImage(scene, "scene", "stage-forest")).toBe(
+            "assets/stages/forest.png",
         );
     });
 });

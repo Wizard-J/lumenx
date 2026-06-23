@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
-import { Plus, Palette, Film, Loader2, Sparkles, RefreshCw } from "lucide-react";
+import { Plus, Palette, Film, Loader2, Link2, Sparkles, RefreshCw } from "lucide-react";
 import StepHeader from "@/components/shared/StepHeader";
 import PreviousEpisodeFramesRail from "./storyboard-r2v/PreviousEpisodeFramesRail";
 import { useTranslations } from "next-intl";
@@ -13,7 +13,7 @@ import { debugLog } from "@/lib/debugLog";
 import type { BatchSummary } from "./storyboard-r2v/shot-panel/CandidatesSection";
 import { getR2vRouteModelId, isR2vImageBased, VIDEO_I2V_MODELS, VIDEO_R2V_MODELS, DEFAULT_I2V_MODEL_ID, DEFAULT_R2V_MODEL_ID, DEFAULT_MODEL_SETTINGS, type I2VModelConfig } from "@/lib/modelCatalog";
 import ShotCard, { type ShotNode } from "./storyboard-r2v/ShotCard";
-import { buildAssembledPrompt, buildPromptWithReferenceTags } from "./storyboard-r2v/buildAssembledPrompt";
+import { buildAssembledPrompt, buildPromptWithReferenceTags, resolveAssetReferenceImage } from "./storyboard-r2v/buildAssembledPrompt";
 import DialogueAudioRow from "./storyboard-r2v/DialogueAudioRow";
 import StoryboardGenerateDialog from "./storyboard-r2v/StoryboardGenerateDialog";
 import { toast } from "@/store/toastStore";
@@ -125,6 +125,8 @@ function frameToBaseShotNode(frame: any, defaultMode: "t2i_i2v" | "direct_r2v"):
         sceneId: frame.scene_id ?? null,
         characterIds: Array.isArray(frame.character_ids) ? frame.character_ids : [],
         propIds: Array.isArray(frame.prop_ids) ? frame.prop_ids : [],
+        characterStageRefs: frame.character_stage_refs || {},
+        sceneStageRef: frame.scene_stage_ref ?? null,
         t2iImageUrls: Array.isArray(frame.t2i_image_urls) ? frame.t2i_image_urls : [],
         t2iSelectedIndex: typeof frame.t2i_selected_index === "number" ? frame.t2i_selected_index : 0,
         t2iStatus: deriveT2IStatus(frame),
@@ -328,11 +330,6 @@ export default function StoryboardR2V() {
     const findR2vModel = useCallback(
         (modelId?: string | null) => r2vModelList.find((model) => model.id === modelId),
         [r2vModelList],
-    );
-    const missingRefsMessage = useCallback(
-        (modelLabel: string) =>
-            t("missingRefs", { model: modelLabel }),
-        [t],
     );
 
     // Per-shot seed override. The Seed advanced param doesn't live in
@@ -596,6 +593,8 @@ export default function StoryboardR2V() {
     const [generating, setGenerating] = useState(false);
     const [refining, setRefining] = useState(false);
     const [renderingFrames, setRenderingFrames] = useState(false);
+    const [isLinking, setIsLinking] = useState(false);
+
     const [bannerState, setBannerState] = useState<BannerState>(
         () => (currentProject?.frames?.length ?? 0) > 0 ? "summary" : "idle"
     );
@@ -719,11 +718,16 @@ export default function StoryboardR2V() {
             toast.warning(t("genToastNoScript"));
             return;
         }
+
+        const existingCount = currentProject?.frames?.length || 0;
+
         setGenerating(true);
         setBannerState("phase1");
-        setShots([]);
+        if (existingCount === 0) {
+            setShots([]);
+        }
         try {
-            // Phase 1: generate coarse frames
+            // Phase 1: generate coarse frames (backend preserves existing frames by default)
             const updated = await api.analyzeToStoryboard(projectId, scriptText);
             const newFrameCount = Array.isArray(updated?.frames) ? updated.frames.length : 0;
             updateProject(projectId, updated);
@@ -731,7 +735,12 @@ export default function StoryboardR2V() {
                 setShots(updated.frames.map(frameToShotNode));
             }
             setBannerState("summary");
-            toast.success(`已生成 ${newFrameCount} 帧分镜，可点击「全部润色」继续精修。`);
+            if (newFrameCount > 0) {
+                const source = existingCount > 0 && newFrameCount === existingCount ? '解析' : '生成';
+                toast.success(`${source} ${newFrameCount} 帧分镜，可点击「全部润色」继续精修。`);
+            } else {
+                toast.warning("暂未生成分镜，请检查剧本内容。");
+            }
         } catch (err: any) {
             const detail = err?.response?.data?.detail || err?.message || t("genToastErrUnknown");
             toast.error(`${t("genToastErr")}: ${String(detail).slice(0, 200)}`);
@@ -762,6 +771,7 @@ export default function StoryboardR2V() {
         let keepTrackingExistingRun = false;
         try {
             const batchResult = { total: targetTotal, success: 0, failed: 0, skipped: 0 };
+            let receivedBatchComplete = false;
             await api.refineBatchFrames(projectId, (event: RefineSSEEvent) => {
                 if (event.type === "frame_refine_complete" || event.type === "frame_refine_error") {
                     setRefineProgress({
@@ -770,6 +780,7 @@ export default function StoryboardR2V() {
                     });
                     void refreshProjectFrames();
                 } else if (event.type === "batch_complete") {
+                    receivedBatchComplete = true;
                     batchResult.total = event.total ?? targetTotal;
                     batchResult.success = event.success ?? 0;
                     batchResult.failed = event.failed ?? 0;
@@ -780,6 +791,13 @@ export default function StoryboardR2V() {
                     });
                 }
             });
+            if (!receivedBatchComplete) {
+                const status = await api.getRefineBatchStatus(projectId);
+                batchResult.total = status.total ?? targetTotal;
+                batchResult.success = status.success ?? 0;
+                batchResult.failed = status.failed ?? 0;
+                batchResult.skipped = status.skipped ?? 0;
+            }
             await refreshProjectFrames();
             setBannerState("summary");
             const failed = batchResult.failed;
@@ -789,8 +807,12 @@ export default function StoryboardR2V() {
                 toast.success("所有分镜都已润色完成");
             } else if (failed > 0) {
                 toast.warning(`润色完成：${success} 帧成功，${failed} 帧失败`);
-            } else {
+            } else if (success > 0) {
                 toast.success(`润色完成：${success} 帧成功`);
+            } else if (skipped > 0) {
+                toast.success("所有分镜都已润色完成");
+            } else {
+                toast.error("润色未产生有效结果，请查看请求日志后重试");
             }
         } catch (err: any) {
             if (err?.status === 409) {
@@ -812,9 +834,29 @@ export default function StoryboardR2V() {
         }
     }, [currentProject, shots.length, refineStats.remaining, refreshProjectFrames]);
 
+
+    const handleBatchAutoLink = useCallback(async () => {
+        if (!currentProject?.id) return;
+        try {
+            setIsLinking(true);
+            const updated = await api.autoLinkFrameAssets(currentProject.id);
+            updateProject(currentProject.id, updated);
+            if (Array.isArray(updated?.frames)) {
+                setShots(updated.frames.map(frameToShotNode));
+            }
+            toast.success("已自动引用资源");
+        } catch (err) {
+            console.error("Auto-link assets failed", err);
+            toast.error("自动引用资源失败");
+        } finally {
+            setIsLinking(false);
+        }
+    }, [currentProject, frameToShotNode, updateProject]);
+
     const handleBatchRenderFrames = useCallback(async () => {
         if (!currentProject?.id) return;
         const projectId = currentProject.id;
+
         const frameCount = currentProject.frames?.length ?? shots.length;
         if (frameCount <= 0) {
             toast.warning("暂无可生成分镜图的分镜，请先生成分镜。");
@@ -826,9 +868,12 @@ export default function StoryboardR2V() {
         setRenderProgress({ current: 0, total: targetTotal });
         let keepTrackingExistingRun = false;
         try {
-            const batchResult = { total: targetTotal, success: 0, failed: 0, skipped: 0 };
+            const batchResult = { total: targetTotal, success: 0, failed: 0, skipped: 0, firstError: "" };
             await api.renderBatchFrames(projectId, (event: RenderSSEEvent) => {
                 if (event.type === "frame_render_complete" || event.type === "frame_render_error") {
+                    if (event.type === "frame_render_error" && event.error && !batchResult.firstError) {
+                        batchResult.firstError = event.error;
+                    }
                     setRenderProgress({
                         current: event.completed ?? ((event.success ?? 0) + (event.failed ?? 0)),
                         total: event.total ?? targetTotal,
@@ -852,7 +897,7 @@ export default function StoryboardR2V() {
             if (batchResult.total === 0 && skipped > 0) {
                 toast.success("所有分镜图都已生成");
             } else if (failed > 0) {
-                toast.warning(`分镜图生成完成：${success} 帧成功，${failed} 帧失败`);
+                toast.warning(`分镜图生成完成：${success} 帧成功，${failed} 帧失败${batchResult.firstError ? `：${batchResult.firstError.slice(0, 120)}` : ""}`);
             } else {
                 toast.success(`分镜图生成完成：${success} 帧成功`);
             }
@@ -947,6 +992,8 @@ export default function StoryboardR2V() {
                             sceneId: frame.scene_id ?? null,
                             characterIds: Array.isArray(frame.character_ids) ? frame.character_ids : [],
                             propIds: Array.isArray(frame.prop_ids) ? frame.prop_ids : [],
+                            characterStageRefs: frame.character_stage_refs || {},
+                            sceneStageRef: frame.scene_stage_ref ?? null,
                             t2iImageUrls: Array.isArray(frame.t2i_image_urls) ? frame.t2i_image_urls : [],
                             t2iSelectedIndex: typeof frame.t2i_selected_index === "number"
                                 ? frame.t2i_selected_index : 0,
@@ -1161,7 +1208,7 @@ export default function StoryboardR2V() {
     }, [currentProject?.series_id]);
 
     // Parse asset tags from prompt and resolve to URLs
-    const parseAssetTags = useCallback((prompt: string): string[] => {
+    const parseAssetTags = useCallback((prompt: string, shot?: ShotNode): string[] => {
         // HappyHorse uses [characterN:name] as generic reference-image slots.
         // N determines the position in the URL array: character1 → image[0], etc.
         // The "name" can be a character, scene, or prop — we look up all three.
@@ -1177,37 +1224,23 @@ export default function StoryboardR2V() {
             const char = characters.find((c: any) => c.name === name)
                 || seriesAssets?.characters?.find((c: any) => c.name === name);
             if (char) {
-                const asset = char.full_body_asset;
-                if (asset?.selected_id && asset.variants?.length) {
-                    const selected = asset.variants.find((v: any) => v.id === asset.selected_id);
-                    if (selected) url = selected.url;
-                } else if (asset?.variants?.[0]) {
-                    url = asset.variants[0].url;
-                }
+                url = resolveAssetReferenceImage(
+                    char,
+                    "character",
+                    shot?.characterStageRefs?.[char.id],
+                );
             }
             // Try scene (Episode-level, then Series-level fallback)
             if (!url) {
                 const scene = scenes.find((s: any) => s.name === name)
                     || seriesAssets?.scenes?.find((s: any) => s.name === name);
-                const sceneAsset = scene?.image_asset;
-                if (sceneAsset?.selected_id && sceneAsset.variants?.length) {
-                    const selected = sceneAsset.variants.find((v: any) => v.id === sceneAsset.selected_id);
-                    if (selected) url = selected.url;
-                } else if (sceneAsset?.variants?.[0]) {
-                    url = sceneAsset.variants[0].url;
-                }
+                url = resolveAssetReferenceImage(scene, "scene", shot?.sceneStageRef);
             }
             // Try prop (Episode-level, then Series-level fallback)
             if (!url) {
                 const prop = props.find((p: any) => p.name === name)
                     || seriesAssets?.props?.find((p: any) => p.name === name);
-                const propAsset = prop?.image_asset;
-                if (propAsset?.selected_id && propAsset.variants?.length) {
-                    const selected = propAsset.variants.find((v: any) => v.id === propAsset.selected_id);
-                    if (selected) url = selected.url;
-                } else if (propAsset?.variants?.[0]) {
-                    url = propAsset.variants[0].url;
-                }
+                url = resolveAssetReferenceImage(prop, "prop");
             }
 
             if (url) slots.push({ idx: slotNum, url });
@@ -1264,7 +1297,7 @@ export default function StoryboardR2V() {
         ));
 
         // Build reference_image_urls from R2V asset tags
-        const refUrls = parseAssetTags(taggedPrompt);
+        const refUrls = parseAssetTags(taggedPrompt, shot);
         const compositionData: any = {};
         if (refUrls.length > 0) {
             compositionData.reference_image_urls = refUrls;
@@ -1346,13 +1379,17 @@ export default function StoryboardR2V() {
                 // is kept as a fallback when the explicit r2vModel is
                 // missing or invalid (which can only happen if the
                 // catalog flipped under our feet).
-                const referenceUrls = parseAssetTags(taggedPrompt);
+                let referenceUrls = parseAssetTags(taggedPrompt, shot);
                 const explicitR2v = videoConfig.r2vModel;
                 const explicitOk = !!findR2vModel(explicitR2v) || isExternalVideoModel(explicitR2v);
                 const routeModelId = explicitOk
                     ? explicitR2v
                     : getR2vRouteModelId(videoConfig.model);
                 const imageBased = isExternalVideoModel(routeModelId) || isR2vImageBased(routeModelId);
+                if (referenceUrls.length === 0 && imageBased) {
+                    const storyboardImage = getActiveT2IImageUrl(shot) || shot.imageUrl;
+                    if (storyboardImage) referenceUrls = [storyboardImage];
+                }
 
                 const tasks = await api.createVideoTask(
                     currentProject.id,
@@ -1497,7 +1534,15 @@ export default function StoryboardR2V() {
         // "排队中..." until the failure surfaced. Cheaper to validate
         // here and show inline error in the ParamsSection.
         if (tabMode === "direct_r2v") {
-            const refs = parseAssetTags(taggedPrompt);
+            let refs = parseAssetTags(taggedPrompt, shot);
+            const r2vModelId = params?.model ?? videoConfig.r2vModel;
+            const r2vModel = findR2vModel(r2vModelId);
+            const routeModelId = r2vModel ? r2vModelId : getR2vRouteModelId(videoConfig.model);
+            const imageBased = isExternalVideoModel(routeModelId) || isR2vImageBased(routeModelId);
+            if (refs.length === 0 && imageBased) {
+                const storyboardImage = getActiveT2IImageUrl(shot) || shot.imageUrl;
+                if (storyboardImage) refs = [storyboardImage];
+            }
             if (refs.length === 0) {
                 const hasTags = hasAssetTags(taggedPrompt);
                 let errMsg: string;
@@ -1505,10 +1550,8 @@ export default function StoryboardR2V() {
                     const unresolved = getUnresolvedAssetNames(taggedPrompt);
                     errMsg = `引用的「${unresolved.join("、")}」尚未生成图片，请先到素材步骤生成。`;
                 } else {
-                    const r2vModelId = params?.model ?? videoConfig.r2vModel;
-                    const r2vModel = findR2vModel(r2vModelId);
                     const modelLabel = r2vModel?.name ?? r2vModelId;
-                    errMsg = missingRefsMessage(modelLabel);
+                    errMsg = `当前分镜只有润色后的文字提示词，没有可用图片。请先生成分镜图，或为 ${modelLabel} 添加带参考图的角色/场景/道具。`;
                 }
                 setShotErrors(prev => ({ ...prev, [shot.id]: errMsg }));
                 toast.warning(errMsg);
@@ -1557,13 +1600,17 @@ export default function StoryboardR2V() {
             // BG-task wrapper handles their lifecycle independently).
             const createOne = async (): Promise<string | null> => {
                 if (tabMode === "direct_r2v") {
-                    const referenceUrls = parseAssetTags(taggedPrompt);
+                    let referenceUrls = parseAssetTags(taggedPrompt, shot);
                     const explicitR2v = params?.model ?? videoConfig.r2vModel;
                     const explicitOk = !!findR2vModel(explicitR2v) || isExternalVideoModel(explicitR2v);
                     const routeModelId = explicitOk
                         ? explicitR2v
                         : getR2vRouteModelId(videoConfig.model);
                     const imageBased = isExternalVideoModel(routeModelId) || isR2vImageBased(routeModelId);
+                    if (referenceUrls.length === 0 && imageBased) {
+                        const storyboardImage = getActiveT2IImageUrl(shot) || shot.imageUrl;
+                        if (storyboardImage) referenceUrls = [storyboardImage];
+                    }
                     const tasks = await api.createVideoTask(
                         currentProject.id,
                         "",
@@ -1673,7 +1720,7 @@ export default function StoryboardR2V() {
                 i === index ? { ...s, videoStatus: "failed" as const } : s
             ));
         }
-    }, [shots, currentProject, characters, scenes, props, videoConfig, parseAssetTags, missingRefsMessage, findR2vModel, isExternalVideoModel]);
+    }, [shots, currentProject, characters, scenes, props, videoConfig, parseAssetTags, findR2vModel, isExternalVideoModel]);
 
     // Project-level task refresh: when any task on any shot is in
     // flight, refetch the whole project every 5s. The candidates
@@ -2193,19 +2240,12 @@ export default function StoryboardR2V() {
                 {shots.length > 0 ? (
                     <button
                         type="button"
-                        onClick={handleBatchRefineFrames}
-                        disabled={generating || refining || renderingFrames || refineStats.remaining === 0}
-                        className="inline-flex h-7 items-center gap-1.5 rounded px-2.5 font-mono text-[10.5px] uppercase tracking-[0.14em] font-medium text-amber-200 border border-amber-300/30 bg-amber-300/5 hover:bg-amber-300/10 transition-colors disabled:opacity-40"
+                        onClick={handleBatchAutoLink}
+                        disabled={generating || isLinking}
+                        className="inline-flex h-7 items-center gap-1.5 rounded px-2.5 font-mono text-[10.5px] uppercase tracking-[0.14em] font-medium text-emerald-200 border border-emerald-300/30 bg-emerald-300/5 hover:bg-emerald-300/10 transition-colors disabled:opacity-40"
                     >
-                        {refining ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
-                        {refining
-                            ? "润色中"
-                            : refineStats.remaining === 0
-                                ? "已润色"
-                                : refineStats.refined > 0
-                                    ? `继续润色 · ${refineStats.remaining}`
-                                    : "全部润色"
-                        }
+                        {isLinking ? <Loader2 size={11} className="animate-spin" /> : <Link2 size={11} />}
+                        自动引用资源
                     </button>
                 ) : null}
                 {shots.length > 0 ? (
@@ -2354,6 +2394,9 @@ export default function StoryboardR2V() {
                                     }
                                     : undefined
                             }
+                            onAutoLink={async () => {
+                                await refreshProjectFrames();
+                            }}
                             expanded={expandedShots.has(shot.id)}
                             onToggleExpanded={() => toggleShotExpanded(shot.id)}
                             /* PR-3c · 闭环生成: ShotCard 内全宽生成行 + count selector.

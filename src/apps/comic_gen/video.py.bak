@@ -13,19 +13,10 @@ class VideoGenerator:
         self.output_dir = self.config.get('output_dir', 'output/video')
 
     def _resolve_model(self):
-        """Dynamically select video model based on VIDEO_PROVIDER env var.
-
-        When VIDEO_MODEL starts with 'agnes-', the Agnes Video adapter
-        is selected automatically (even within the 'openai' provider).
-        """
+        """Dynamically select video model based on VIDEO_PROVIDER env var."""
         video_provider = os.environ.get("VIDEO_PROVIDER", "dashscope").lower()
         has_key = bool(os.environ.get("VIDEO_API_KEY", ""))
-        video_model_name = os.environ.get("VIDEO_MODEL", "")
         if video_provider == "openai" and has_key:
-            if video_model_name.startswith("agnes-"):
-                from ...models.agnes_video import AgnesVideoModel
-                logger.info("VideoGenerator: Using Agnes Video model")
-                return AgnesVideoModel(self.config.get('model', {}))
             from ...models.openai_video import OpenAIVideoModel
             logger.info("VideoGenerator: Using OpenAI-compatible video model")
             return OpenAIVideoModel(self.config.get('model', {}))

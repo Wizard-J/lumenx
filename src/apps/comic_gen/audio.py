@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional
 from .models import StoryboardFrame, Character, GenerationStatus
 from ...utils import get_logger
 from ...audio.tts import TTSProcessor
+from ...audio.local_qwen3_tts import LocalQwen3TTSProcessor
 
 logger = get_logger(__name__)
 
@@ -80,8 +81,9 @@ class AudioGenerator:
         
         # Initialize TTS Processor
         try:
-            self.tts = TTSProcessor()
-            logger.info("TTS Processor initialized successfully")
+            backend = os.getenv("TTS_BACKEND", "dashscope").strip().lower()
+            self.tts = LocalQwen3TTSProcessor() if backend == "local_qwen3" else TTSProcessor()
+            logger.info("TTS Processor initialized successfully (backend=%s)", backend)
         except Exception as e:
             logger.warning(f"Failed to initialize TTS Processor: {e}. Using mock mode.")
             self.tts = None
@@ -95,7 +97,7 @@ class AudioGenerator:
         sub-groupings inside 系统音色.
         """
         if self.tts:
-            voices_dict = TTSProcessor.list_voices()
+            voices_dict = self.tts.list_voices()
             return [
                 {
                     # Use actual model_id (server sends "Cherry" not "qwen3_cherry")
@@ -109,6 +111,7 @@ class AudioGenerator:
                     "dialect": meta.get('dialect'),
                     "lang_primary": meta.get('lang_primary'),
                     "origin": "system",  # custom voices (clone/design) come from a separate endpoint
+                    "preview_text": meta.get('preview_text'),
                 }
                 for meta in voices_dict.values()
             ]
@@ -145,7 +148,7 @@ class AudioGenerator:
 
         if not self.tts:
             frame.status = GenerationStatus.FAILED
-            frame.audio_error = "TTS service not available. Check DASHSCOPE_API_KEY configuration."
+            frame.audio_error = "TTS service not available. Check the selected TTS backend configuration."
             logger.warning(f"TTS not initialized, cannot generate audio for frame {frame.id}")
             return frame
 

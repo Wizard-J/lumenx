@@ -22,6 +22,19 @@ export interface ImageVariant {
     prompt_used?: string;
 }
 
+export interface AssetStage {
+    id: string;
+    label: string;
+    from_episode: number;
+    to_episode: number;
+    visual_delta: string;
+    reference_images: ImageVariant[];
+    selected_image_id?: string | null;
+    locked: boolean;
+    status: string;
+    last_generation_prompt?: string | null;
+}
+
 export interface ImageAsset {
     selected_id: string | null;
     variants: ImageVariant[];
@@ -51,6 +64,7 @@ export interface Character {
     gender?: string;
     clothing?: string;
     visual_weight?: number;
+    stages?: AssetStage[];
 
     // Legacy fields
     image_url?: string;
@@ -100,6 +114,7 @@ export interface Scene {
     time_of_day?: string;
     lighting_mood?: string;
     source?: "episode" | "series";
+    stages?: AssetStage[];
 }
 
 export interface Prop {
@@ -124,6 +139,9 @@ export interface StoryboardFrame {
     rendered_image_asset?: ImageAsset;
     status?: string;
     locked?: boolean;
+    character_stage_refs?: Record<string, string>;
+    scene_stage_ref?: string;
+    overlay_video_url?: string;
     // ... other fields
 }
 
@@ -343,11 +361,13 @@ export const useProjectStore = create<ProjectStore>()(
                 set({ isAnalyzing: true });
                 try {
                     const project = await api.reparseProject(currentProject.id, pendingExtractionScript);
+                    // Reload from getProject to get series-merged view (episode + series entities)
+                    const merged = await api.getProject(project.id).catch(() => project);
                     set((state) => ({
                         projects: state.projects.map((p) =>
-                            p.id === project.id ? { ...project, updatedAt: new Date().toISOString() } : p
+                            p.id === merged.id ? { ...merged, updatedAt: new Date().toISOString() } : p
                         ),
-                        currentProject: { ...project, updatedAt: new Date().toISOString() },
+                        currentProject: { ...merged, updatedAt: new Date().toISOString() },
                         pendingExtraction: null,
                         pendingExtractionScript: null,
                         isAnalyzing: false,
@@ -421,36 +441,34 @@ export const useProjectStore = create<ProjectStore>()(
                     set({ currentProject: cachedProject });
                 }
 
-                // Then fetch latest data from backend
+                // Then fetch latest data from backend (uses axios, no browser caching)
                 try {
-                    const response = await fetch(`${API_URL}/projects/${id}`);
-                    if (response.ok) {
-                        const rawData = await response.json();
-                        // Transform data to match frontend model (snake_case -> camelCase for specific fields)
-                        const latestProject = {
-                            ...rawData,
-                            originalText: rawData.original_text
-                        };
+                    const latestProject = await api.getProject(id);
+                    if (!latestProject) return;
 
-                        // Update both currentProject and projects array with latest data
-                        set((state) => ({
-                            currentProject: latestProject,
-                            projects: state.projects.map((p) =>
-                                p.id === id ? latestProject : p
-                            ),
-                        }));
+                    // Ensure originalText is synced
+                    if (latestProject.original_text !== undefined) {
+                        latestProject.originalText = latestProject.original_text;
+                    }
 
-                        // Auto-load parent series for style inheritance (always fetch fresh for up-to-date art_direction)
-                        const seriesId = latestProject.series_id;
-                        if (seriesId) {
-                            const cached = get().seriesList.find((s) => s.id === seriesId);
-                            if (cached) {
-                                set({ currentSeries: cached });
-                            }
-                            get().fetchSeries(seriesId);
-                        } else {
-                            set({ currentSeries: null });
+                    // Update both currentProject and projects array with latest data
+                    set((state) => ({
+                        currentProject: latestProject,
+                        projects: state.projects.map((p) =>
+                            p.id === id ? latestProject : p
+                        ),
+                    }));
+
+                    // Auto-load parent series for style inheritance (always fetch fresh for up-to-date art_direction)
+                    const seriesId = latestProject.series_id;
+                    if (seriesId) {
+                        const cached = get().seriesList.find((s) => s.id === seriesId);
+                        if (cached) {
+                            set({ currentSeries: cached });
                         }
+                        get().fetchSeries(seriesId);
+                    } else {
+                        set({ currentSeries: null });
                     }
                 } catch (error) {
                     console.error("Failed to fetch latest project data:", error);
@@ -640,11 +658,19 @@ export const useProjectStore = create<ProjectStore>()(
         }),
         {
             name: 'project-storage',
+            version: 1,
             partialize: (state) => ({
                 projects: state.projects,
-
-                generatingTasks: state.generatingTasks // Now persisting this to maintain state across refreshes
+                generatingTasks: state.generatingTasks,
             }),
+            // Discard stale cache on version mismatch so frontend never shows
+            // outdated project data after a schema change.
+            migrate: (persisted: unknown, version: number) => {
+                if (version < 1) {
+                    return { projects: [], generatingTasks: [], state: {} };
+                }
+                return persisted as Partial<ProjectStore>;
+            },
         }
     )
 );

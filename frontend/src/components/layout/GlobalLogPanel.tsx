@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Terminal, Trash2, RefreshCw, CheckCircle, XCircle, Loader2, X } from "lucide-react";
+import { Terminal, Trash2, RefreshCw, CheckCircle, XCircle, Loader2, X, ChevronDown, ChevronRight } from "lucide-react";
 
 interface OpEntry {
+  id?: number;
   ts: number;
   type: string;
   status: string;
@@ -36,6 +37,7 @@ export default function GlobalLogSidebar({ open, onClose }: GlobalLogSidebarProp
   const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [activeTab, setActiveTab] = useState<"all" | "llm" | "image" | "video">("all");
+  const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     try {
@@ -92,6 +94,16 @@ export default function GlobalLogSidebar({ open, onClose }: GlobalLogSidebarProp
   const filteredEntries = activeTab === "all" ? entries : entries.filter((e) => e.type === (activeTab === "llm" ? "llm_call" : activeTab));
   const successCount = filteredEntries.filter((e) => e.status === "success").length;
   const errorCount = filteredEntries.filter((e) => e.status === "error").length;
+
+  const formatExtra = (extra: Record<string, unknown>) => {
+    try {
+      return JSON.stringify(extra, null, 2);
+    } catch {
+      return String(extra);
+    }
+  };
+
+  const hasExtra = (extra: Record<string, unknown>) => extra && Object.keys(extra).length > 0;
 
   if (!open) return null;
 
@@ -161,8 +173,13 @@ export default function GlobalLogSidebar({ open, onClose }: GlobalLogSidebarProp
           </div>
         ) : (
           filteredEntries.map((e, i) => (
+            (() => {
+              const rowKey = String(e.id ?? `${e.ts}-${i}`);
+              const expanded = !!expandedKeys[rowKey];
+              const expandable = hasExtra(e.extra);
+              return (
             <div
-              key={i}
+              key={rowKey}
               className={`px-3 py-2 border-b border-glass-border/20 hover:bg-white/[0.02] transition-colors ${
                 e.status === "error" ? "bg-red-500/[0.04]" : ""
               }`}
@@ -179,9 +196,28 @@ export default function GlobalLogSidebar({ open, onClose }: GlobalLogSidebarProp
                 <span className="text-text-muted shrink-0 text-right">
                   {e.duration_ms > 0 ? `${e.duration_ms}ms` : "-"}
                 </span>
+                {expandable && (
+                  <button
+                    onClick={() => setExpandedKeys((prev) => ({ ...prev, [rowKey]: !prev[rowKey] }))}
+                    className="ml-auto flex items-center gap-1 text-[10px] text-text-muted hover:text-foreground transition-colors"
+                  >
+                    {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    详情
+                  </button>
+                )}
               </div>
               <div className="text-text-secondary break-all mt-1 pl-[172px]">{e.detail}</div>
+              {expanded && expandable && (
+                <div className="mt-2 pl-[172px]">
+                  <div className="text-[10px] uppercase tracking-wide text-purple-300/80 mb-1">Extra</div>
+                  <pre className="whitespace-pre-wrap break-all rounded-md bg-black/25 border border-white/5 p-2 text-[10px] leading-relaxed text-slate-300 overflow-x-auto">
+                    {formatExtra(e.extra)}
+                  </pre>
+                </div>
+              )}
             </div>
+              );
+            })()
           ))
         )}
       </div>

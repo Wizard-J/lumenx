@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion";
 import { useTranslations } from "next-intl";
-import { Settings, Sliders, Image as ImageIcon, Type, FileText, Users, Layout, Video, Mic, Music, Film, Info, Paintbrush, Wand2, Sparkles } from "lucide-react";
+import { Settings, Sliders, Image as ImageIcon, Type, FileText, Users, Layout, Video, Mic, Music, Film, Info, Paintbrush, Wand2, Sparkles, Link2, Loader2 } from "lucide-react";
 import { useProjectStore } from "@/store/projectStore";
 import { useState, useEffect } from "react";
 import { api, API_URL } from "@/lib/api";
@@ -356,56 +356,21 @@ function StoryboardInspector() {
         updateFrame({ character_ids: newIds });
     };
 
-    // State for bilingual polish results
-    const [polishedPrompts, setPolishedPrompts] = useState<Record<string, { cn: string; en: string }>>({});
-    const [isPolishing, setIsPolishing] = useState(false);
-    const [feedbackText, setFeedbackText] = useState("");
+    // Auto-link frame assets — matches characters/scenes by name in frame text
+    const [isLinking, setIsLinking] = useState(false);
 
-    const polishedPrompt = selectedFrame ? polishedPrompts[selectedFrame.id] : null;
-
-    const handlePolish = async (feedback: string = "") => {
-        if (!selectedFrame || !currentProject) return;
-        setIsPolishing(true);
-
-        // Construct assets list for context
-        const assets = [];
-        if (selectedFrame.scene_id) {
-            const scene = currentProject.scenes?.find((s: any) => s.id === selectedFrame.scene_id);
-            if (scene) assets.push({ type: 'Scene', name: scene.name, description: scene.description });
-        }
-        if (selectedFrame.character_ids) {
-            selectedFrame.character_ids.forEach((cid: string) => {
-                const char = currentProject.characters?.find((c: any) => c.id === cid);
-                if (char) assets.push({ type: 'Character', name: char.name, description: char.description });
-            });
-        }
-        if (selectedFrame.prop_ids) {
-            selectedFrame.prop_ids.forEach((pid: string) => {
-                const prop = currentProject.props?.find((p: any) => p.id === pid);
-                if (prop) assets.push({ type: 'Prop', name: prop.name, description: prop.description });
-            });
-        }
-
-        // Use current polished result as draft when refining with feedback
-        const draft = feedback
-            ? (polishedPrompt?.en || selectedFrame.image_prompt || selectedFrame.action_description)
-            : (selectedFrame.image_prompt || selectedFrame.action_description);
-
+    const handleAutoLinkAssets = async () => {
+        if (!currentProject?.id || !currentProject?.frames) return;
+        setIsLinking(true);
         try {
-            // Use new bilingual refine API
-            const res = await api.refineFramePrompt(currentProject.id, selectedFrame.id, draft, assets, feedback);
-            if (res.prompt_cn && res.prompt_en) {
-                setPolishedPrompts(prev => ({
-                    ...prev,
-                    [selectedFrame.id]: { cn: res.prompt_cn, en: res.prompt_en }
-                }));
-                setFeedbackText("");
+            const updated = await api.autoLinkFrameAssets(currentProject.id);
+            if (updated) {
+                updateProject(currentProject.id, updated);
             }
         } catch (err) {
-            console.error("Polish failed", err);
-            alert("Prompt polishing failed");
+            console.error("Auto-link assets failed", err);
         } finally {
-            setIsPolishing(false);
+            setIsLinking(false);
         }
     };
 
@@ -669,12 +634,12 @@ function StoryboardInspector() {
                         <Wand2 size={10} /> Auto-Compose
                     </button>
                     <button
-                        onClick={() => handlePolish()}
-                        disabled={isPolishing}
-                        className="flex items-center gap-1 text-[10px] bg-purple-600 hover:bg-purple-700 px-2 py-1 rounded text-white transition-colors ml-2 disabled:opacity-50"
-                        title="AI Polish Prompt"
+                        onClick={handleAutoLinkAssets}
+                        disabled={isLinking}
+                        className="flex items-center gap-1 text-[10px] bg-emerald-600 hover:bg-emerald-700 px-2 py-1 rounded text-white transition-colors ml-2 disabled:opacity-50"
+                        title="Auto-assign reference images by matching names in frame text"
                     >
-                        {isPolishing ? <Sparkles size={10} className="animate-spin" /> : <Sparkles size={10} />} Polish
+                        {isLinking ? <Loader2 size={10} className="animate-spin" /> : <Link2 size={10} />} 自动引用资源
                     </button>
                 </div>
                 <textarea
@@ -684,117 +649,6 @@ function StoryboardInspector() {
                     placeholder="Full image generation prompt..."
                 />
 
-                {/* Polished Result Display - Bilingual */}
-                {polishedPrompt && (
-                    <motion.div
-                        initial={{ opacity: 0, y: -10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -10 }}
-                        className="bg-purple-900/20 border border-purple-500/30 rounded-lg p-3 mt-2 space-y-3"
-                    >
-                        <div className="flex justify-between items-start">
-                            <span className="text-xs font-bold text-purple-400 flex items-center gap-1">
-                                <Wand2 size={12} /> AI Bilingual Polish
-                            </span>
-                            <button
-                                onClick={() => {
-                                    setPolishedPrompts(prev => {
-                                        const newState = { ...prev };
-                                        delete newState[selectedFrame.id];
-                                        return newState;
-                                    });
-                                    setFeedbackText("");
-                                }}
-                                className="text-[10px] text-text-secondary hover:text-foreground"
-                            >
-                                ✕
-                            </button>
-                        </div>
-
-                        {/* Chinese Prompt */}
-                        <div className="space-y-1">
-                            <div className="flex justify-between items-center">
-                                <span className="text-[10px] font-bold text-text-muted uppercase">CN (Preview)</span>
-                                <button
-                                    onClick={() => {
-                                        navigator.clipboard.writeText(polishedPrompt.cn);
-                                        alert("CN prompt copied");
-                                    }}
-                                    className="text-[10px] text-text-secondary hover:text-foreground bg-surface px-2 py-0.5 rounded"
-                                >
-                                    复制
-                                </button>
-                            </div>
-                            <p className="text-xs text-text-secondary leading-relaxed whitespace-pre-wrap bg-surface p-2 rounded">
-                                {polishedPrompt.cn}
-                            </p>
-                        </div>
-
-                        {/* English Prompt */}
-                        <div className="space-y-1">
-                            <div className="flex justify-between items-center">
-                                <span className="text-[10px] font-bold text-text-muted uppercase">EN (Generation)</span>
-                                <div className="flex gap-1">
-                                    <button
-                                        onClick={() => {
-                                            navigator.clipboard.writeText(polishedPrompt.en);
-                                            alert("English prompt copied");
-                                        }}
-                                        className="text-[10px] text-text-secondary hover:text-foreground bg-surface px-2 py-0.5 rounded"
-                                    >
-                                        Copy
-                                    </button>
-                                    <button
-                                        onClick={() => {
-                                            updateFrame({
-                                                image_prompt: polishedPrompt.en,
-                                                image_prompt_cn: polishedPrompt.cn,
-                                                image_prompt_en: polishedPrompt.en
-                                            });
-                                            setPolishedPrompts(prev => {
-                                                const newState = { ...prev };
-                                                delete newState[selectedFrame.id];
-                                                return newState;
-                                            });
-                                        }}
-                                        className="text-[10px] text-white bg-purple-600 hover:bg-purple-500 px-2 py-0.5 rounded font-bold"
-                                    >
-                                        应用
-                                    </button>
-                                </div>
-                            </div>
-                            <p className="text-xs text-text-secondary leading-relaxed whitespace-pre-wrap bg-surface p-2 rounded font-mono">
-                                {polishedPrompt.en}
-                            </p>
-                        </div>
-
-                        {/* Feedback for iterative refinement */}
-                        <div className="space-y-2 pt-2 border-t border-purple-500/20">
-                            <div className="flex gap-2">
-                                <input
-                                    type="text"
-                                    value={feedbackText}
-                                    onChange={(e) => setFeedbackText(e.target.value)}
-                                    onKeyDown={(e) => {
-                                        if (e.key === "Enter" && feedbackText.trim() && !isPolishing) {
-                                            handlePolish(feedbackText.trim());
-                                        }
-                                    }}
-                                    placeholder="Feedback for refinement..."
-                                    className="flex-1 text-[10px] bg-input-bg border border-purple-500/20 rounded px-2 py-1.5 text-foreground placeholder-text-muted focus:outline-none focus:border-purple-500/50"
-                                />
-                                <button
-                                    onClick={() => handlePolish(feedbackText.trim())}
-                                    disabled={isPolishing || !feedbackText.trim()}
-                                    className="text-[10px] text-white bg-purple-600 hover:bg-purple-500 px-2 py-1.5 rounded font-medium flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-                                >
-                                    {isPolishing ? <Sparkles size={8} className="animate-spin" /> : <Sparkles size={8} />}
-                                    再润色
-                                </button>
-                            </div>
-                        </div>
-                    </motion.div>
-                )}
             </div>
         </div >
     );

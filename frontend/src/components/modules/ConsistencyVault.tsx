@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import { motion, AnimatePresence } from "framer-motion";
-import { Paintbrush, User, Users, MapPin, Box, Lock, Unlock, RefreshCw, Upload, Image as ImageIcon, X, Check, Settings, ChevronRight, Trash2, Plus, Link as LinkIcon } from "lucide-react";
+import { Paintbrush, User, Users, MapPin, Box, Lock, Unlock, RefreshCw, Upload, Image as ImageIcon, X, Check, Settings, ChevronRight, Trash2, Plus, Link as LinkIcon, GitMerge } from "lucide-react";
 import { useProjectStore } from "@/store/projectStore";
 import { api, API_URL, crudApi } from "@/lib/api";
 import { getAssetUrl } from "@/lib/utils";
@@ -183,6 +183,32 @@ export default function ConsistencyVault() {
         } catch (error) {
             console.error("Failed to delete asset:", error);
             alert("Failed to delete asset");
+        }
+    };
+
+    // Merge mode state (props only)
+    const [mergeSource, setMergeSource] = useState<{ id: string; name: string } | null>(null);
+
+    const handleStartMerge = (sourceId: string, sourceName: string) => {
+        setMergeSource({ id: sourceId, name: sourceName });
+    };
+
+    const handleCancelMerge = () => {
+        setMergeSource(null);
+    };
+
+    const handleConfirmMerge = async (targetId: string, targetName: string) => {
+        if (!currentProject || !mergeSource) return;
+        if (!confirm(`Merge "${mergeSource.name}" → "${targetName}"?\n\nThis will move all references and variants, then delete "${mergeSource.name}".`)) return;
+        try {
+            const updated = await crudApi.mergeProp(
+                currentProject.id, mergeSource.id, targetId,
+            );
+            updateProject(currentProject.id, updated);
+            setMergeSource(null);
+        } catch (err: any) {
+            console.error("Merge failed:", err);
+            alert(err?.response?.data?.detail || "Merge failed");
         }
     };
 
@@ -406,6 +432,20 @@ export default function ConsistencyVault() {
             </div>
 
             {/* Content Grid */}
+            {/* Merge banner (prop tab only) */}
+            {activeTab === "prop" && mergeSource && (
+                <div className="mx-6 mt-4 px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-between">
+                    <p className="text-sm text-amber-100">
+                        Merging <strong>"{mergeSource.name}"</strong> → select a target prop below
+                    </p>
+                    <button
+                        onClick={handleCancelMerge}
+                        className="text-xs text-amber-300 hover:text-amber-100 underline"
+                    >
+                        Cancel
+                    </button>
+                </div>
+            )}
             {currentProject?.workflow_mode !== "i2v_legacy" && (
                 <div className="mx-6 mt-4 px-4 py-3 rounded-lg bg-primary/5 border border-primary/20 flex items-start gap-3">
                     <Paintbrush size={16} className="text-primary mt-0.5 shrink-0" />
@@ -431,22 +471,33 @@ export default function ConsistencyVault() {
                     </div>
                 ) : (
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-                        {assets?.map((asset: any) => (
-                            <AssetCard
-                                key={asset.id}
-                                asset={asset}
-                                type={activeTab}
-                                isGenerating={isAssetGenerating(asset.id)}
-                                onGenerate={() => handleGenerate(asset.id, activeTab)}
-                                onToggleLock={() => api.toggleAssetLock(currentProject.id, asset.id, activeTab).then(updated => updateProject(currentProject.id, updated))}
-                                onClick={() => {
-                                    setSelectedAssetId(asset.id);
-                                    setSelectedAssetType(activeTab);
-                                }}
-                                onDelete={() => handleDeleteAsset(asset.id, activeTab)}
-                                onUpload={() => handleOpenUploadModal(asset, activeTab)}
-                            />
-                        ))}
+                        {assets?.map((asset: any) => {
+                            const isMergeSource = mergeSource?.id === asset.id;
+                            const isMergeTargetable = mergeSource && !isMergeSource && activeTab === "prop";
+                            return (
+                                <AssetCard
+                                    key={asset.id}
+                                    asset={asset}
+                                    type={activeTab}
+                                    isGenerating={isAssetGenerating(asset.id)}
+                                    onGenerate={() => handleGenerate(asset.id, activeTab)}
+                                    onToggleLock={() => api.toggleAssetLock(currentProject.id, asset.id, activeTab).then(updated => updateProject(currentProject.id, updated))}
+                                    onClick={() => {
+                                        if (isMergeTargetable) {
+                                            handleConfirmMerge(asset.id, asset.name);
+                                            return;
+                                        }
+                                        setSelectedAssetId(asset.id);
+                                        setSelectedAssetType(activeTab);
+                                    }}
+                                    onDelete={() => handleDeleteAsset(asset.id, activeTab)}
+                                    onUpload={() => handleOpenUploadModal(asset, activeTab)}
+                                    mergeSource={mergeSource}
+                                    onMerge={() => handleStartMerge(asset.id, asset.name)}
+                                    showMergeOption={activeTab === "prop" && !mergeSource}
+                                />
+                            );
+                        })}
                         {/* Create New Asset Button */}
                         <motion.div
                             layout
@@ -847,11 +898,13 @@ function ImageWithRetry({ src, alt, className }: { src: string, alt: string, cla
     );
 }
 
-function AssetCard({ asset, type, isGenerating, onGenerate, onToggleLock, onClick, onDelete, onUpload }: any) {
+function AssetCard({ asset, type, isGenerating, onGenerate, onToggleLock, onClick, onDelete, onUpload, mergeSource, onMerge, showMergeOption }: any) {
     const tv = useTranslations("vault");
     const isLocked = asset.locked || false;
     const currentProject = useProjectStore((state) => state.currentProject);
     const updateProject = useProjectStore((state) => state.updateProject);
+    const isMergeTargetable = mergeSource && mergeSource.id !== asset.id;
+    const isMergeSource = mergeSource?.id === asset.id;
 
     const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -881,7 +934,12 @@ function AssetCard({ asset, type, isGenerating, onGenerate, onToggleLock, onClic
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             onClick={onClick}
-            className={`group relative aspect-[3/4] bg-surface rounded-2xl border overflow-hidden transition-colors cursor-pointer ${isLocked ? 'border-primary/60 border-dashed' : 'border-glass-border hover:border-primary/50'
+            className={`group relative aspect-[3/4] bg-surface rounded-2xl border overflow-hidden transition-colors cursor-pointer ${
+                isMergeSource
+                    ? 'border-amber-500 border-2'
+                    : isLocked
+                        ? 'border-primary/60 border-dashed'
+                        : 'border-glass-border hover:border-primary/50'
                 }`}
         >
             {/* Image Area */}
@@ -907,8 +965,35 @@ function AssetCard({ asset, type, isGenerating, onGenerate, onToggleLock, onClic
                 </div>
             )}
 
+            {/* Merge target overlay */}
+            {isMergeTargetable && (
+                <div className="absolute inset-0 z-20 bg-amber-500/10 backdrop-blur-[2px] border-2 border-amber-500/40 rounded-2xl flex items-center justify-center pointer-events-none">
+                    <span className="text-amber-200 text-xs font-bold px-3 py-1.5 rounded-full bg-amber-500/20 backdrop-blur-md">
+                        Merge → here
+                    </span>
+                </div>
+            )}
+
             {/* Top Actions Overlay */}
             <div className="absolute top-2 right-2 z-30 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                {/* Merge source indicator or action button */}
+                {isMergeSource && (
+                    <span className="px-2 py-1 rounded-full backdrop-blur-md bg-amber-500/30 text-amber-200 text-[11px] font-medium flex items-center gap-1">
+                        <GitMerge size={11} /> Source
+                    </span>
+                )}
+                {!isMergeSource && showMergeOption && (
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onMerge?.();
+                        }}
+                        className="p-2 rounded-full backdrop-blur-md bg-amber-500/20 text-amber-300 hover:bg-amber-500/40 transition-colors"
+                        title="Merge"
+                    >
+                        <GitMerge size={14} />
+                    </button>
+                )}
                 <button
                     onClick={(e) => {
                         e.stopPropagation();

@@ -18,11 +18,11 @@
  *   · NO `+ new asset` / generation modal yet (Phase 5)
  *   · NO inspector right rail yet (Q9 decision: 3-section flat, no inspector)
  */
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Users, MapPin, Box, AlertTriangle, Sparkles, Plus, Upload, X, Loader2, Play, Pause, Volume2, Wand2, Layers, Maximize2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Users, MapPin, Box, AlertTriangle, Sparkles, Plus, Upload, X, Loader2, Play, Pause, Volume2, Wand2, Layers, Maximize2, GitMerge } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useProjectStore } from "@/store/projectStore";
-import { api } from "@/lib/api";
+import { api, crudApi } from "@/lib/api";
 import { getAssetUrl } from "@/lib/utils";
 import { useLightbox } from "@/components/shared/preview/LightboxProvider";
 import StepHeader from "@/components/shared/StepHeader";
@@ -30,6 +30,7 @@ import PreviewImage from "@/components/shared/preview/PreviewImage";
 import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
 import VoicePickerModal from "./cast/VoicePickerModal";
 import CastWorkbenchModal, { hasActivePoll } from "./cast/CastWorkbenchModal";
+import AssetStageDialog, { type StageAction } from "@/components/common/AssetStageDialog";
 
 type AssetKind = "character" | "scene" | "prop";
 
@@ -41,6 +42,7 @@ interface CastItem {
     referenceImageUrl?: string;     // 参考图（优先 reference_sheet → full_body fallback）
     status: "ready" | "pending" | "new";
     persona?: string;               // R2V v2 P1-a — characters only; groups visual variants of same person
+    asset: any;
 }
 
 /**
@@ -49,7 +51,14 @@ interface CastItem {
  * schema is `full_body / three_views / head_shot`. Read with fallback
  * so existing data keeps rendering during migration.
  */
-function resolveCharacterImage(c: any): string | undefined {
+function resolveCharacterImage(c: any, episodeNumber?: number): string | undefined {
+    const activeStage = c?.stages?.find((stage: any) =>
+        episodeNumber && stage.from_episode <= episodeNumber && episodeNumber <= stage.to_episode,
+    );
+    const stageImage = activeStage?.reference_images?.find(
+        (image: any) => image.id === activeStage.selected_image_id,
+    )?.url;
+    if (stageImage) return stageImage;
     // New unified field (v2, not yet populated)
     const sheet = c?.reference_sheet?.image_variants?.find(
         (v: any) => v.id === c.reference_sheet.selected_image_id,
@@ -64,13 +73,35 @@ function resolveCharacterImage(c: any): string | undefined {
     return c?.full_body_image_url || c?.three_view_image_url || c?.headshot_image_url || c?.image_url;
 }
 
-function resolveSceneImage(s: any): string | undefined {
-    return s?.image_url || s?.reference_image_url;
+function resolveSceneImage(s: any, episodeNumber?: number): string | undefined {
+    const activeStage = s?.stages?.find((stage: any) =>
+        episodeNumber && stage.from_episode <= episodeNumber && episodeNumber <= stage.to_episode,
+    );
+    const stageImage = activeStage?.reference_images?.find(
+        (image: any) => image.id === activeStage.selected_image_id,
+    )?.url;
+    if (stageImage) return stageImage;
+    const selectedAssetImage = s?.image_asset?.variants?.find(
+        (image: any) => image.id === s.image_asset.selected_id,
+    )?.url;
+    return selectedAssetImage || s?.image_url || s?.reference_image_url;
 }
 
 function resolvePropImage(p: any): string | undefined {
     return p?.image_url || p?.reference_image_url;
 }
+
+  /** Safe merge: episode fields override series ONLY when non-null and non-undefined.
+   *  Prevents Pydantic `null` serialization from wiping out series-level
+   *  reference_sheet, full_body, or other critical image fields. */
+  function safeMerge(base: Record<string, any>, override: Record<string, any>): Record<string, any> {
+    const out = { ...base };
+    for (const key of Object.keys(override)) {
+      if (override[key] != null) out[key] = override[key];
+    }
+    return out;
+  }
+
 
 export default function Cast() {
     const tStep = useTranslations("stepHeader");
@@ -79,16 +110,40 @@ export default function Cast() {
     
     // Series-level asset fallback — Episode characters may lack image variants
     const [seriesAssets, setSeriesAssets] = useState<{ characters: any[]; scenes: any[]; props: any[] } | null>(null);
-    useEffect(() => {
+    const loadSeriesAssets = useCallback(() => {
         const sid = currentProject?.series_id;
         if (sid) {
-            import("@/lib/api").then(({ api }) => {
-                api.getSeries(sid).then((s: any) => {
-                    setSeriesAssets({ characters: s.characters || [], scenes: s.scenes || [], props: s.props || [] });
-                }).catch(() => {});
+            return api.getSeries(sid).then((s: any) => {
+                setSeriesAssets({ characters: s.characters || [], scenes: s.scenes || [], props: s.props || [] });
             });
         }
-    }, [currentProject?.series_id]);
+        return Promise.resolve();
+    }, [currentProject?.series_id, currentProject?.updatedAt]);
+    useEffect(() => { loadSeriesAssets().catch(() => {}); }, [loadSeriesAssets]);
+
+    const handleStageAction: StageAction = async (asset, action, stage, data = {}) => {
+        if (!currentProject?.id) throw new Error("当前剧集未加载");
+        const isCharacter = [...(currentProject.characters || []), ...(seriesAssets?.characters || [])].some((item: any) => item.id === asset.id);
+        const assetType = isCharacter ? "character" : "scene";
+        const trackGeneration = action === "generate";
+        if (trackGeneration) {
+            useProjectStore.getState().setRunningOp(`stage:${asset.id}`, true);
+        }
+        try {
+            const response = await api.mutateAssetStage(currentProject.id, asset.id, assetType, action, stage?.id, data);
+            if (response?._task_id) {
+                for (let attempt = 0; attempt < 120; attempt += 1) {
+                    await new Promise((resolve) => setTimeout(resolve, 1000));
+                    const status = await api.getTaskStatus(response._task_id);
+                    if (status?.status === "completed") break;
+                    if (status?.status === "failed") throw new Error(status.error || "阶段生成失败");
+                }
+            }
+            await Promise.all([loadSeriesAssets(), useProjectStore.getState().selectProject(currentProject.id)]);
+        } finally {
+            if (trackGeneration) useProjectStore.getState().setRunningOp(`stage:${asset.id}`, false);
+        }
+    };
 
     // R2V v2 Phase 5 — add new asset modal (placeholder for full
     // generation flow which lands in a follow-up patch). For now this
@@ -97,6 +152,34 @@ export default function Cast() {
     // PR-3* · Cast redesign — tab filter + workbench launcher.
     const [activeTab, setActiveTab] = useState<"all" | "character" | "scene" | "prop">("all");
     const [workbench, setWorkbench] = useState<{ kind: "character" | "scene" | "prop"; entityId: string } | null>(null);
+
+    const updateProject = useProjectStore((s) => s.updateProject);
+
+    // Merge mode state (props only)
+    const [mergeSource, setMergeSource] = useState<{ id: string; name: string } | null>(null);
+
+    const handleStartMerge = (sourceId: string, sourceName: string) => {
+        setMergeSource({ id: sourceId, name: sourceName });
+    };
+
+    const handleCancelMerge = () => {
+        setMergeSource(null);
+    };
+
+    const handleConfirmMerge = async (targetId: string, targetName: string) => {
+        if (!currentProject || !mergeSource) return;
+        if (!confirm(`Merge "${mergeSource.name}" → "${targetName}"?\n\nThis will move all references and variants, then delete "${mergeSource.name}".`)) return;
+        try {
+            const updated = await crudApi.mergeProp(currentProject.id, mergeSource.id, targetId);
+            updateProject(currentProject.id, updated);
+            setMergeSource(null);
+        } catch (error: any) {
+            const detail = error?.response?.data?.detail || error?.message || "Unknown error";
+            console.error("Failed to merge prop:", detail, error);
+            alert(`Merge failed: ${detail}`);
+            setMergeSource(null);
+        }
+    };
 
     const removeGeneratingTask = useProjectStore((s) => s.removeGeneratingTask);
     const generatingTasks = useProjectStore((s) => s.generatingTasks);
@@ -148,7 +231,8 @@ export default function Cast() {
             if (sc) {
                 const epHasImg = !!(ec?.full_body_asset?.variants?.length || ec?.full_body?.image_variants?.length);
                 const scHasImg = !!(sc?.full_body_asset?.variants?.length || sc?.full_body?.image_variants?.length);
-                if (!epHasImg && scHasImg) return { ...ec, full_body_asset: sc.full_body_asset, full_body: sc.full_body, image_url: sc.image_url };
+                if (!epHasImg && scHasImg) return { ...ec, ...sc };
+                return { ...safeMerge(sc, ec), stages: sc.stages || ec.stages || [] };
             }
             return ec;
         });
@@ -162,7 +246,7 @@ export default function Cast() {
 
         const scenePool: any[] = epScenes.map((es: any) => {
             const ss = seriesScenes.find((s: any) => s.id === es.id);
-            if (ss && !es.image_url && ss.image_url) return { ...es, image_url: ss.image_url, image_asset: ss.image_asset };
+            if (ss) return { ...ss, ...es, image_url: es.image_url || ss.image_url, image_asset: es.image_asset?.variants?.length ? es.image_asset : ss.image_asset, stages: ss.stages || es.stages || [] };
             return es;
         });
         const epSceneIds = new Set(scenePool.map((s: any) => s.id));
@@ -181,7 +265,7 @@ export default function Cast() {
         }
 
         const characters: CastItem[] = characterPool.map((c: any) => {
-            const imageUrl = resolveCharacterImage(c);
+            const imageUrl = resolveCharacterImage(c, currentProject?.episode_number);
             return {
                 id: c.id,
                 name: c.name ?? c.id,
@@ -190,11 +274,12 @@ export default function Cast() {
                 referenceImageUrl: imageUrl,
                 status: (imageUrl ? "ready" : "pending") as "ready" | "pending",
                 persona: c.persona ?? "",
+                asset: c,
             };
         }).sort((a, b) => b.appearances - a.appearances || a.name.localeCompare(b.name));
 
         const scenes: CastItem[] = scenePool.map((s: any) => {
-            const imageUrl = resolveSceneImage(s);
+            const imageUrl = resolveSceneImage(s, currentProject?.episode_number);
             return {
                 id: s.id,
                 name: s.name ?? s.id,
@@ -202,6 +287,7 @@ export default function Cast() {
                 appearances: sceneCounts.get(s.id) ?? 0,
                 referenceImageUrl: imageUrl,
                 status: (imageUrl ? "ready" : "pending") as "ready" | "pending",
+                asset: s,
             };
         }).sort((a, b) => b.appearances - a.appearances || a.name.localeCompare(b.name));
 
@@ -214,11 +300,12 @@ export default function Cast() {
                 appearances: propCounts.get(p.id) ?? 0,
                 referenceImageUrl: imageUrl,
                 status: (imageUrl ? "ready" : "pending") as "ready" | "pending",
+                asset: p,
             };
         }).sort((a, b) => b.appearances - a.appearances || a.name.localeCompare(b.name));
 
         return { characters, scenes, props };
-    }, [currentProject?.frames, currentProject?.characters, currentProject?.scenes, currentProject?.props, seriesAssets]);
+    }, [currentProject?.frames, currentProject?.characters, currentProject?.scenes, currentProject?.props, currentProject?.episode_number, seriesAssets]);
 
     const totalCast = characters.length + scenes.length + props.length;
 
@@ -286,6 +373,21 @@ export default function Cast() {
                         ))}
                     </div>
 
+                    {/* Merge banner (props only) */}
+                    {(activeTab === "prop" || activeTab === "all") && mergeSource && (
+                        <div className="mx-8 mt-2 px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-between shrink-0">
+                            <p className="text-sm text-amber-100">
+                                Merging <strong>"{mergeSource.name}"</strong> → select a target prop below
+                            </p>
+                            <button
+                                onClick={handleCancelMerge}
+                                className="text-xs text-amber-300 hover:text-amber-100 underline"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    )}
+
                     <div className="flex-1 overflow-y-auto bg-surface px-8 py-6 space-y-10 custom-scrollbar">
                         {(activeTab === "all" || activeTab === "character") && (
                             <CastSection
@@ -299,6 +401,7 @@ export default function Cast() {
                                 groupByPersona
                                 onOpenWorkbench={(id) => setWorkbench({ kind: "character", entityId: id })}
                                 hideHeader={activeTab === "character"}
+                                onStageAction={handleStageAction}
                             />
                         )}
                         {(activeTab === "all" || activeTab === "scene") && (
@@ -312,6 +415,7 @@ export default function Cast() {
                                 addLabel={t("addScene")}
                                 onOpenWorkbench={(id) => setWorkbench({ kind: "scene", entityId: id })}
                                 hideHeader={activeTab === "scene"}
+                                onStageAction={handleStageAction}
                             />
                         )}
                         {(activeTab === "all" || activeTab === "prop") && (
@@ -325,6 +429,10 @@ export default function Cast() {
                                 addLabel={t("addProp")}
                                 onOpenWorkbench={(id) => setWorkbench({ kind: "prop", entityId: id })}
                                 hideHeader={activeTab === "prop"}
+                                mergeSource={mergeSource}
+                                onStartMerge={handleStartMerge}
+                                onConfirmMerge={handleConfirmMerge}
+                                onCancelMerge={handleCancelMerge}
                             />
                         )}
                     </div>
@@ -336,7 +444,16 @@ export default function Cast() {
                 isOpen={workbench !== null}
                 kind={workbench?.kind ?? null}
                 entityId={workbench?.entityId ?? null}
-                onClose={() => setWorkbench(null)}
+                onClose={async () => {
+                    setWorkbench(null);
+                    // Refresh project data so the card thumbnail updates
+                    if (currentProject?.id) {
+                        await Promise.all([
+                            loadSeriesAssets(),
+                            useProjectStore.getState().selectProject(currentProject.id),
+                        ]);
+                    }
+                }}
             />
 
             {/* R2V v2 Phase 5 — real Add new cast modal (AI / upload tabs). */}
@@ -625,7 +742,7 @@ interface CastSectionProps {
     addLabel?: string;
     /** P1-a: when true, characters with shared `persona` cluster under
      *  a sub-header showing the persona label (only applies when at
-     *  least one item has a non-empty persona). */
+     *  at least one item has a non-empty persona). */
     groupByPersona?: boolean;
     /** Cast redesign — clicking a card (or its empty CTA) launches the
      *  per-entity generation workbench in the parent. */
@@ -633,9 +750,15 @@ interface CastSectionProps {
     /** When the parent's tab filter is already focused on this kind,
      *  the section's own header becomes redundant — hide it. */
     hideHeader?: boolean;
+    onStageAction?: StageAction;
+    /** Prop merge mode */
+    mergeSource?: { id: string; name: string } | null;
+    onStartMerge?: (sourceId: string, sourceName: string) => void;
+    onConfirmMerge?: (targetId: string, targetName: string) => void;
+    onCancelMerge?: () => void;
 }
 
-function CastSection({ kind, icon, title, items, emptyLabel, onAddNew, addLabel, groupByPersona, onOpenWorkbench, hideHeader }: CastSectionProps) {
+function CastSection({ kind, icon, title, items, emptyLabel, onAddNew, addLabel, groupByPersona, onOpenWorkbench, hideHeader, onStageAction, mergeSource, onStartMerge, onConfirmMerge, onCancelMerge }: CastSectionProps) {
     const t = useTranslations("cast");
     // R2V v2 P1-a — persona grouping (characters only)
     const groups = useMemo(() => {
@@ -721,37 +844,38 @@ function CastSection({ kind, icon, title, items, emptyLabel, onAddNew, addLabel,
                                 </div>
                             )}
                             <div className={`grid gap-3 ${gridCols}`}>
-                                {group.items.map(item => <CastCard key={item.id} item={item} onOpenWorkbench={() => onOpenWorkbench?.(item.id)} />)}
+                                {group.items.map(item => <CastCard key={item.id} item={item} onOpenWorkbench={() => onOpenWorkbench?.(item.id)} onStageAction={onStageAction} mergeSource={mergeSource} onStartMerge={onStartMerge} onConfirmMerge={onConfirmMerge} />)}
                             </div>
                         </div>
                     ))}
                 </div>
             ) : (
                 <div className={`grid gap-3 ${gridCols}`}>
-                    {items.map(item => <CastCard key={item.id} item={item} onOpenWorkbench={() => onOpenWorkbench?.(item.id)} />)}
+                    {items.map(item => <CastCard key={item.id} item={item} onOpenWorkbench={() => onOpenWorkbench?.(item.id)} onStageAction={onStageAction} mergeSource={mergeSource} onStartMerge={onStartMerge} onConfirmMerge={onConfirmMerge} />)}
                 </div>
             )}
         </section>
     );
 }
 
-function CastCard({ item, onOpenWorkbench }: { item: CastItem; onOpenWorkbench?: () => void }) {
+function CastCard({ item, onOpenWorkbench, onStageAction, mergeSource, onStartMerge, onConfirmMerge }: { item: CastItem; onOpenWorkbench?: () => void; onStageAction?: StageAction; mergeSource?: { id: string; name: string } | null; onStartMerge?: (sourceId: string, sourceName: string) => void; onConfirmMerge?: (targetId: string, targetName: string) => void }) {
     const t = useTranslations("cast");
     const { open: openLightbox } = useLightbox();
-    const updateProject = useProjectStore((state) => state.updateProject);
     const currentProject = useProjectStore((state) => state.currentProject);
     const generatingTasks = useProjectStore((state) => state.generatingTasks);
-    const isGenerating = generatingTasks.some((task) => task.assetId === item.id);
+    const stageGenerating = useProjectStore((state) => !!state.runningOps[`stage:${item.id}`]);
+    const isGenerating = stageGenerating || generatingTasks.some((task) => task.assetId === item.id);
     const [historyOpen, setHistoryOpen] = useState(false);
     const [pickerOpen, setPickerOpen] = useState(false);
     const [previewing, setPreviewing] = useState(false);
     const [playing, setPlaying] = useState(false);
+    const [stageOpen, setStageOpen] = useState(false);
     const audioRef = useRef<HTMLAudioElement | null>(null);
 
     // Look up full character to read voice_id / voice_name (CastItem is a
     // read-only aggregation, doesn't carry voice fields).
     const character = item.kind === "character"
-        ? currentProject?.characters?.find((c: any) => c.id === item.id)
+        ? currentProject?.characters?.find((c: any) => c.id === item.id) || item.asset
         : null;
     const voiceId: string | undefined = character?.voice_id;
     const voiceName: string | undefined = character?.voice_name;
@@ -760,11 +884,11 @@ function CastCard({ item, onOpenWorkbench }: { item: CastItem; onOpenWorkbench?:
     const handleApplyVoice = async (newVoiceId: string, newVoiceName: string) => {
         if (!currentProject || !character) return;
         try {
-            const updated = await api.bindVoice(currentProject.id, character.id, newVoiceId, newVoiceName);
-            // Backend returns the updated script - sync to store
-            updateProject(currentProject.id, updated);
+            await api.bindVoice(currentProject.id, character.id, newVoiceId, newVoiceName);
+            await useProjectStore.getState().selectProject(currentProject.id);
         } catch (e) {
             console.error("Failed to bind voice:", e);
+            throw e;
         }
     };
 
@@ -868,12 +992,43 @@ function CastCard({ item, onOpenWorkbench }: { item: CastItem; onOpenWorkbench?:
     };
     const k = kindStyles[item.kind];
 
+    const isMergeSource = mergeSource?.id === item.id;
+    const isMergeTargetable = mergeSource && mergeSource.id !== item.id && item.kind === "prop";
+    const showMergeOption = !mergeSource && item.kind === "prop";
+
     const cardRadius = item.kind === "scene" ? "rounded-md" : "rounded-lg";
+
+    const handleCardClick = () => {
+        if (isMergeTargetable && onConfirmMerge) {
+            onConfirmMerge(item.id, item.name);
+            return;
+        }
+        if (item.kind === "prop") {
+            onOpenWorkbench?.();
+        } else {
+            setStageOpen(true);
+        }
+    };
+
+    const handleImageClick = () => {
+        if (isMergeTargetable) return;
+        if (item.kind === "prop") {
+            onOpenWorkbench?.();
+        } else {
+            setStageOpen(true);
+        }
+    };
 
     return (
         <>
             <div
-                className={`group/cast-card relative flex flex-col gap-2 ${cardRadius} border border-glass-border bg-glass p-2 transition-[border-color,background-color] duration-fast ease-out-quart hover:border-white/15`}
+                className={`group/cast-card relative flex flex-col gap-2 ${cardRadius} border p-2 transition-[border-color,background-color] duration-fast ease-out-quart ${
+                    isMergeSource
+                        ? 'border-amber-500/70 bg-amber-500/5'
+                        : isMergeTargetable
+                            ? 'border-amber-500/30 bg-amber-500/[0.03] hover:border-amber-500/50 cursor-pointer'
+                            : 'border-glass-border bg-glass hover:border-white/15'
+                }`}
             >
                 {/* Kind chip — top-right, near-mono. Sits on TOP of the thumb
                     so it works for both empty and ready states without
@@ -888,15 +1043,16 @@ function CastCard({ item, onOpenWorkbench }: { item: CastItem; onOpenWorkbench?:
                     style={{ background: k.hoverAccent }}
                 />
                 <div
-                    className={`${k.aspect} overflow-hidden rounded-md bg-black/40 relative cursor-pointer`}
-                    onClick={() => item.referenceImageUrl && onOpenWorkbench?.()}
+                    className={`${k.aspect} overflow-hidden rounded-md bg-black/40 relative ${isMergeTargetable ? 'cursor-pointer' : 'cursor-pointer'}`}
+                    onClick={(e) => { if (isMergeTargetable) { e.stopPropagation(); handleCardClick(); return; } handleImageClick(); }}
                 >
                     {item.referenceImageUrl ? (
                         <>
-                            <PreviewImage src={item.referenceImageUrl} alt={item.name} className="h-full w-full object-cover object-top" noLightbox />
+                            <PreviewImage src={item.referenceImageUrl} alt={item.name} className="h-full w-full bg-white/[.03] object-contain object-top" noLightbox />
                             <button
                                 onClick={(e) => {
                                     e.stopPropagation();
+                                    if (isMergeTargetable) return;
                                     openLightbox({ src: getAssetUrl(item.referenceImageUrl!), alt: item.name, kind: "image" });
                                 }}
                                 aria-label="放大查看"
@@ -908,7 +1064,7 @@ function CastCard({ item, onOpenWorkbench }: { item: CastItem; onOpenWorkbench?:
                         </>
                     ) : (
                         <button
-                            onClick={() => onOpenWorkbench?.()}
+                            onClick={(e) => { e.stopPropagation(); handleImageClick(); }}
                             className="relative grid h-full w-full place-items-center bg-black/20 text-text-secondary hover:text-foreground transition-colors overflow-hidden"
                             style={k.emptyPattern}
                         >
@@ -926,6 +1082,33 @@ function CastCard({ item, onOpenWorkbench }: { item: CastItem; onOpenWorkbench?:
                                 {k.ctaIcon}
                                 <span className="text-[10px] font-medium tracking-wide">{k.ctaLabel}</span>
                             </span>
+                        </button>
+                    )}
+                    {/* Merge target overlay */}
+                    {isMergeTargetable && (
+                        <div className="absolute inset-0 z-20 bg-amber-500/10 backdrop-blur-[2px] border-2 border-amber-500/40 rounded-md flex items-center justify-center pointer-events-none">
+                            <span className="text-amber-200 text-xs font-bold px-3 py-1.5 rounded-full bg-amber-500/20 backdrop-blur-md">
+                                Merge → here
+                            </span>
+                        </div>
+                    )}
+                    {/* Merge source badge */}
+                    {isMergeSource && (
+                        <div className="absolute top-2 left-2 z-20 px-2 py-1 rounded-full backdrop-blur-md bg-amber-500/30 text-amber-200 text-[11px] font-medium flex items-center gap-1">
+                            <GitMerge size={11} /> Source
+                        </div>
+                    )}
+                    {/* Merge floating button — top-right of the image area */}
+                    {showMergeOption && (
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onStartMerge?.(item.id, item.name);
+                            }}
+                            className="absolute right-1.5 top-1.5 z-20 grid h-7 w-7 place-items-center rounded bg-amber-500/25 text-amber-300 backdrop-blur opacity-0 group-hover/cast-card:opacity-100 transition-opacity hover:bg-amber-500/40"
+                            title="Merge"
+                        >
+                            <GitMerge size={13} />
                         </button>
                     )}
                     {isGenerating && (
@@ -1009,6 +1192,9 @@ function CastCard({ item, onOpenWorkbench }: { item: CastItem; onOpenWorkbench?:
                     seriesId={currentProject?.series_id || null}
                     characterDescription={character.description}
                 />
+            )}
+            {item.kind !== "prop" && (
+                <AssetStageDialog open={stageOpen} asset={item.asset} assetType={item.kind} currentEpisode={currentProject?.episode_number} onClose={() => setStageOpen(false)} onAction={onStageAction}/>
             )}
         </>
     );

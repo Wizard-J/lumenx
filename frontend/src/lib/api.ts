@@ -813,6 +813,21 @@ export const api = {
         return res.data;
     },
 
+    autoLinkFrameAssets: async (scriptId: string) => {
+        const res = await axios.post(`${API_URL}/projects/${scriptId}/frames/auto_link_assets`);
+        return res.data;
+    },
+
+    autoLinkSingleFrame: async (scriptId: string, frameId: string) => {
+        const res = await axios.post(`${API_URL}/projects/${scriptId}/frames/${frameId}/auto_link_assets`);
+        return res.data;
+    },
+
+    refineFrame: async (scriptId: string, frameId: string) => {
+        const res = await axios.post(`${API_URL}/projects/${scriptId}/frames/${frameId}/refine`);
+        return res.data;
+    },
+
     /**
      * Refines a raw prompt into bilingual (CN/EN) prompts using AI.
      * Returns { prompt_cn, prompt_en, frame_updated }.

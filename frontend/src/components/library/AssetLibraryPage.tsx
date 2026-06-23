@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 import { Search, Users, MapPin, Package, Image as ImageIcon, ChevronDown, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
 import AssetCard from "@/components/common/AssetCard";
-import type { Series, Project, Character, Scene, Prop } from "@/store/projectStore";
+import type { Series, Project, Character, Scene, Prop, AssetStage } from "@/store/projectStore";
 
 type AssetTab = "characters" | "scenes" | "props";
 
@@ -16,6 +16,8 @@ interface AssetSource {
   characters: Character[];
   scenes: Scene[];
   props: Prop[];
+  projectId?: string;
+  episodeNumber?: number;
 }
 
 export default function AssetLibraryPage() {
@@ -64,6 +66,8 @@ export default function AssetLibraryPage() {
             characters: p.characters || [],
             scenes: p.scenes || [],
             props: p.props || [],
+            projectId: p.id,
+            episodeNumber: p.episode_number,
           });
         }
       }
@@ -109,6 +113,26 @@ export default function AssetLibraryPage() {
       else next.add(sourceId);
       return next;
     });
+  };
+
+  const mutateStage = async (source: AssetSource, asset: Character | Scene | Prop, action: string, stage: AssetStage | undefined, data: Record<string, unknown> = {}) => {
+    let projectId = source.projectId;
+    if (!projectId && source.type === "series") {
+      const episodes = await api.getSeriesEpisodes(source.id.replace(/^series-/, ""));
+      projectId = episodes[0]?.id;
+    }
+    if (!projectId) throw new Error("阶段资产需要至少关联一个剧集");
+    const assetType = activeTab === "characters" ? "character" : activeTab === "scenes" ? "scene" : "prop";
+    const response = await api.mutateAssetStage(projectId, asset.id, assetType, action, stage?.id, data);
+    if (response?._task_id) {
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const status = await api.getTaskStatus(response._task_id);
+        if (status?.status === "completed") break;
+        if (status?.status === "failed") throw new Error(status.error || "阶段生成失败");
+      }
+    }
+    await loadAssets();
   };
 
   return (
@@ -188,7 +212,7 @@ export default function AssetLibraryPage() {
                   {!isCollapsed && (
                     <div className={gridClassName}>
                       {assets.map((asset) => (
-                        <AssetCard key={asset.id} asset={asset} type={activeTab} variant="gallery" />
+                        <AssetCard key={asset.id} asset={asset} type={activeTab} variant="gallery" currentEpisode={source.episodeNumber} onStageAction={(item, action, stage, data) => mutateStage(source, item, action, stage, data)} />
                       ))}
                     </div>
                   )}

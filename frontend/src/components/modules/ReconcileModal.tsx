@@ -17,6 +17,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Sparkles, Check, X, Users, MapPin, Box, ArrowRight, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { api, type ReconcileSuggestion, type ReconcileAction } from "@/lib/api";
+import { useProjectStore } from "@/store/projectStore";
 import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
 
 interface ReconcileModalProps {
@@ -115,6 +116,12 @@ export default function ReconcileModal({ isOpen, scriptId, onClose, onApplied }:
         setError(null);
         try {
             await api.applyReconcile(scriptId, buildPayload());
+            // The apply response is episode-local, while GET /projects also
+            // includes shared assets. Reload that canonical view immediately;
+            // otherwise Cast temporarily shows both the stale local entity and
+            // its newly reconciled shared counterpart until a browser refresh.
+            const refreshed = await api.getProject(scriptId);
+            useProjectStore.getState().updateProject(scriptId, refreshed);
             onApplied?.();
             onClose();
             if (navigateToCast) {

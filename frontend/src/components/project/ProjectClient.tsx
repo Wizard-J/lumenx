@@ -251,7 +251,8 @@ function EntityExtractionConfirm() {
         try {
             await confirmExtraction();
             const refreshed = useProjectStore.getState().currentProject;
-            if (refreshed?.series_id) {
+            // Skip ReconcileModal for regex fast path — entities are exact matches
+            if (refreshed?.series_id && !(pendingExtraction as any)?._fastPath) {
                 document.dispatchEvent(new CustomEvent("lumenx:openReconcile"));
             }
         } catch {

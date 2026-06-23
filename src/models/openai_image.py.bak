@@ -15,7 +15,6 @@ import time
 import base64
 import mimetypes
 import logging
-import os as _os
 from typing import Tuple, Optional, List
 from http import HTTPStatus
 from urllib.parse import urlparse
@@ -79,10 +78,6 @@ class OpenAIImageModel(ImageGenModel):
             self._client = OpenAI(api_key=self.api_key, base_url=self.base_url)
         return self._client
 
-    def supports_reference_images(self) -> bool:
-        """Report I2I capability so StoryboardGenerator passes ref_image_paths."""
-        return True
-
     def _encode_image_to_b64_json(self, image_path: str) -> str:
         """Encode a local image to base64 data URL."""
         with open(image_path, "rb") as f:
@@ -108,56 +103,19 @@ class OpenAIImageModel(ImageGenModel):
         reference images are provided we delegate to the DashScope adapter.
 
         Returns (output_path, duration_seconds).
-
-        For providers that support extra_body.image (e.g. Agnes Image 2.0 Flash),
-        reference images are passed as data URIs or HTTP URLs through that field.
-        For pure OpenAI-compatible providers that reject extra_body, the images
-        are still injected as text anchors in the prompt for consistency.
         """
-
-        # ── Resolve reference images for extra_body.image ───────────────
-        extra_body: dict = {}
+        # Collect all reference paths
         all_refs: List[str] = []
         if ref_image_path:
             all_refs.append(ref_image_path)
         if ref_image_paths:
             all_refs.extend(ref_image_paths)
 
+        # Note: Reference images are appended to prompt as descriptive context
+        # since OpenAI Images API doesn't support reference image input natively.
         if all_refs:
-            logger.info(
-                f"Reference images detected ({len(all_refs)}), "
-                f"will pass via extra_body.image[]"
-            )
-            resolved_images: List[str] = []
-            for p in all_refs:
-                if isinstance(p, str) and p.startswith("data:"):
-                    resolved_images.append(p)
-                elif isinstance(p, str) and (p.startswith("http://") or p.startswith("https://")):
-                    resolved_images.append(p)
-                elif isinstance(p, str) and _os.path.exists(p):
-                    # Local file → base64 data URI
-                    try:
-                        data_uri = self._encode_image_to_b64_json(p)
-                        resolved_images.append(data_uri)
-                    except Exception as _e:
-                        logger.warning(f"Cannot encode ref image {p}: {_e}")
-                elif isinstance(p, str):
-                    # Try resolving relative to output/
-                    alt = _os.path.join("output", p)
-                    if _os.path.exists(alt):
-                        try:
-                            data_uri = self._encode_image_to_b64_json(alt)
-                            resolved_images.append(data_uri)
-                        except Exception as _e:
-                            logger.warning(f"Cannot encode ref image {alt}: {_e}")
-                    else:
-                        logger.warning(f"Ref image path not found: {p}")
-            if resolved_images:
-                extra_body["image"] = resolved_images
-            # Only inject text anchors when we DON'T have actual images
-            # (pure T2I fallback). With I2I, the images speak for themselves.
-            if not resolved_images:
-                prompt = f"{prompt} (Reference: character design sheet)"
+            logger.info(f"Reference images detected ({len(all_refs)}), will append context to prompt")
+            prompt = f"{prompt} (Reference: character design sheet)"
 
         negative_prompt = kwargs.get("negative_prompt") or self.params.get("negative_prompt")
         if negative_prompt:
@@ -186,14 +144,12 @@ class OpenAIImageModel(ImageGenModel):
 
         try:
             client = self._get_client()
-            request_kwargs: dict = {
+            request_kwargs = {
                 "model": model,
                 "prompt": prompt,
                 "n": n,
                 "size": size,
             }
-            if extra_body:
-                request_kwargs["extra_body"] = extra_body
             if urlparse(self.base_url).hostname in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
                 request_kwargs["response_format"] = "b64_json"
             response = client.images.generate(**request_kwargs)

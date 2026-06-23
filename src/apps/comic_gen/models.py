@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict, Any
 from enum import Enum
 import time
+import uuid
 from pydantic import BaseModel, Field
 
 from ...utils.model_catalog import get_default_model_settings
@@ -168,6 +169,44 @@ class AssetUnit(BaseModel):
     image_updated_at: float = Field(default_factory=time.time, description="Timestamp of last image update")
     video_updated_at: float = Field(0.0, description="Timestamp of last motion ref update")
 
+class AssetStage(BaseModel):
+    """Episode-bounded visual evolution of one logical character or scene."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    label: str
+    from_episode: int = Field(..., ge=1)
+    to_episode: int = Field(..., ge=1)
+    visual_delta: str = ""
+    reference_images: List[ImageVariant] = Field(default_factory=list)
+    selected_image_id: Optional[str] = None
+    locked: bool = False
+    status: GenerationStatus = GenerationStatus.PENDING
+    last_generation_prompt: Optional[str] = Field(None, description="Exact prompt submitted for the latest stage generation")
+
+class EpisodeState(BaseModel):
+    day: Optional[int] = None
+    health: Optional[int] = Field(None, ge=0, le=100)
+    wood: Optional[int] = Field(None, ge=0)
+    stone: Optional[int] = Field(None, ge=0)
+    food: Optional[int] = Field(None, ge=0)
+    gold: Optional[int] = Field(None, ge=0)
+    warnings: List[str] = Field(default_factory=list)
+    achievements: List[str] = Field(default_factory=list)
+
+class HudTemplate(BaseModel):
+    mode: str = Field("none", pattern="^(none|flash|overlay|featured)$")
+    position: str = "auto"
+    start_time: float = Field(0, ge=0)
+    end_time: Optional[float] = None
+
+class SubtitleTemplate(BaseModel):
+    text: str = ""
+    position: str = "bottom"
+    font_size: int = Field(42, ge=8, le=200)
+    color: str = "#FFFFFF"
+    stroke: str = "#000000"
+    start_time: float = Field(0, ge=0)
+    end_time: Optional[float] = None
+
 class VideoTask(BaseModel):
     id: str
     project_id: str
@@ -178,6 +217,7 @@ class VideoTask(BaseModel):
     status: str = "pending"  # pending, processing, completed, failed
     error: Optional[str] = Field(None, description="Failure reason, if any (set by pipeline / cancel / orphan recovery)")
     video_url: Optional[str] = None
+    overlay_video_url: Optional[str] = Field(None, description="Post-processed video containing HUD/subtitle overlays")
     duration: int = Field(5, description="Video duration in seconds (model-specific range)")
     seed: Optional[int] = Field(None, description="Random seed for reproducibility")
     resolution: str = Field("720p", description="Video resolution")
@@ -243,6 +283,7 @@ class Character(BaseModel):
     # persona is a free-text label grouping multiple visual variants of
     # the same "person". v1 schema only; v2 surfaces grouping in UI.
     persona: str = Field("", description="Persona group label (multiple visual variants of the same person share a persona)")
+    stages: List[AssetStage] = Field(default_factory=list, description="Cross-episode appearance stages")
 
     # New Attributes
     age: Optional[str] = Field(None, description="Age of the character")
@@ -315,6 +356,7 @@ class Scene(BaseModel):
     id: str = Field(..., description="Unique identifier for the scene")
     name: str = Field(..., description="Name of the location/scene")
     description: str = Field(..., description="Visual description of the environment")
+    stages: List[AssetStage] = Field(default_factory=list, description="Cross-episode environment stages")
     visual_weight: int = Field(3, description="Visual importance weight (1-5)")
     time_of_day: Optional[str] = Field(None, description="Time of day (e.g. Night, Day)")
     lighting_mood: Optional[str] = Field(None, description="Lighting atmosphere")
@@ -351,6 +393,12 @@ class StoryboardFrame(BaseModel):
     scene_id: str = Field(..., description="Reference to the Scene ID")
     character_ids: List[str] = Field(default_factory=list, description="List of Character IDs present in the frame")
     prop_ids: List[str] = Field(default_factory=list, description="List of Prop IDs present in the frame")
+    character_stage_refs: Dict[str, str] = Field(default_factory=dict, description="Frozen character id -> stage id mapping")
+    scene_stage_ref: Optional[str] = Field(None, description="Frozen scene stage id")
+    episode_state: Optional[EpisodeState] = None
+    hud_template: Optional[HudTemplate] = None
+    hud_payload: Dict[str, Any] = Field(default_factory=dict)
+    subtitle_template: Optional[SubtitleTemplate] = None
     
     # Legacy fields (kept for compatibility)
     action_description: str = Field("", description="What is happening in this frame (Legacy, use character_acting)")
@@ -396,6 +444,7 @@ class StoryboardFrame(BaseModel):
     
     video_prompt: Optional[str] = Field(None, description="Optimized prompt for I2V")
     video_url: Optional[str] = Field(None, description="URL of the generated video clip")
+    overlay_video_url: Optional[str] = Field(None, description="HUD/subtitle composited clip")
     
     audio_url: Optional[str] = Field(None, description="URL of the generated dialogue audio")
     audio_error: Optional[str] = Field(None, description="Audio generation error message")

@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { Image as ImageIcon, Play, ChevronRight, Sparkles, Loader2, Terminal, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Series, Character, Scene, Prop, Project } from "@/store/projectStore";
+import type { Series, Character, Scene, Prop, Project, AssetStage } from "@/store/projectStore";
 import AssetCard from "@/components/common/AssetCard";
 import CastWorkbenchModal from "@/components/modules/cast/CastWorkbenchModal";
 import { useTranslations } from "next-intl";
@@ -133,6 +133,22 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
     }
   };
 
+  const handleStageAction = async (asset: Character | Scene | Prop, action: string, stage?: AssetStage, data: Record<string, unknown> = {}) => {
+    const episodeId = episodes[0]?.id;
+    if (!episodeId) throw new Error("请先为系列创建剧集，再管理阶段资产");
+    const assetType = activeItem.kind === "asset" && activeItem.tab === "scenes" ? "scene" : "character";
+    const response = await api.mutateAssetStage(episodeId, asset.id, assetType, action, stage?.id, data);
+    if (response?._task_id) {
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const status = await api.getTaskStatus(response._task_id);
+        if (status?.status === "completed") break;
+        if (status?.status === "failed") throw new Error(status.error || "阶段生成失败");
+      }
+    }
+    await refreshSeriesData();
+  };
+
   // ── Loading ──
   if (loading) {
     return (
@@ -211,6 +227,8 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
               seriesId={seriesId}
               series={series}
               onSeriesUpdate={setSeries}
+              onStageAction={handleStageAction}
+              episodes={episodes}
             />
           ) : selectedEpisode ? (
             <EpisodeContentPanel
@@ -266,6 +284,8 @@ function AssetContentPanel({
   seriesId,
   series,
   onSeriesUpdate,
+  onStageAction,
+  episodes,
 }: {
   tab: AssetTab;
   assets: (Character | Scene | Prop)[];
@@ -273,8 +293,11 @@ function AssetContentPanel({
   seriesId: string;
   series: Series | null;
   onSeriesUpdate: (s: Series) => void;
+  onStageAction: (asset: Character | Scene | Prop, action: string, stage?: AssetStage, data?: Record<string, unknown>) => Promise<void>;
+  episodes?: Project[];
 }) {
   const t = useTranslations("series");
+  const currentEpisode = episodes?.[0]?.episode_number;
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
   const [generatingAll, setGeneratingAll] = useState(false);
   const [workbenchEntity, setWorkbenchEntity] = useState<{ id: string; kind: "character" | "scene" | "prop" } | null>(null);
@@ -287,10 +310,16 @@ function AssetContentPanel({
 
   const assetTypeSingular = tab === "characters" ? "character" : tab === "scenes" ? "scene" : "prop";
   const hasGeneratedImage = (asset: Character | Scene | Prop) => {
+    const a = asset as any;
     if (tab === "characters") {
-      return ((asset as Character).full_body_asset?.variants?.length ?? 0) > 0;
+      // Check stages first, then legacy image assets
+      if (a.stages?.some((s: any) => s?.reference_images?.length)) return true;
+      return ((a.full_body_asset?.variants?.length ?? 0) > 0);
     }
-    return ((asset as Scene | Prop).image_asset?.variants?.length ?? 0) > 0;
+    // Scene/Prop: check stages, reference_sheet, image_asset, legacy urls
+    if (a.stages?.some((s: any) => s?.reference_images?.length)) return true;
+    if (a.reference_sheet?.image_variants?.length) return true;
+    return ((a.image_asset?.variants?.length ?? 0) > 0);
   };
 
   useEffect(() => {
@@ -470,7 +499,7 @@ function AssetContentPanel({
                   className="relative group/card cursor-pointer"
                   onClick={() => setWorkbenchEntity({ id: asset.id, kind: tab === "characters" ? "character" : tab === "scenes" ? "scene" : "prop" })}
                 >
-                  <AssetCard asset={asset} type={tab} variant="gallery" />
+                  <AssetCard asset={asset} type={tab} variant="gallery" currentEpisode={currentEpisode} onStageAction={onStageAction} />
                   <button
                     onClick={(e) => { e.stopPropagation(); handleGenerateSingle(asset.id); }}
                     disabled={generatingIds.has(asset.id)}
@@ -524,6 +553,7 @@ function EpisodeContentPanel({
   series: Series | null;
   seriesId: string;
   onOpenEditor: () => void;
+
 }) {
   const t = useTranslations("series");
 
