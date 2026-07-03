@@ -47,6 +47,7 @@ export interface VoiceMeta {
     dialect?: string | null;                                  // 'shanghai' | 'beijing' | 'sichuan' | 'cantonese' | etc.
     lang_primary?: string | null;                             // 'es' | 'ru' | 'it' | 'ko' | 'ja' | 'de' | 'fr' for international
     origin: "system" | "clone" | "design";
+    preview_text?: string;
 }
 
 /**
@@ -89,6 +90,12 @@ export interface EnvConfigPayload {
     VIDEO_API_KEY?: string;
     VIDEO_BASE_URL?: string;
     VIDEO_MODEL?: string;
+    SEEDANCE_PROVIDER?: "ark" | "modelverse" | string;
+    ARK_API_KEY?: string;
+    ARK_BASE_URL?: string;
+    SEEDANCE_BASE_URL?: string;
+    SEEDANCE_API_KEY?: string;
+    SEEDANCE_MODEL?: string;
     COMFYUI_BASE_URL?: string;
     COMFYUI_API_KEY?: string;
     endpoint_overrides?: Record<string, string>;
@@ -148,12 +155,12 @@ export interface VideoTask {
     /** Source tab in the Storyboard R2V workbench. Pre-Phase-2 records
      *  parse with null/undefined; CandidatesSection falls back to
      *  generation_mode to bucket them in that case. */
-    workbench_tab?: "t2i_i2v" | "direct_r2v" | null;
-    /** Provider-side identifiers (Issue 17). Used by TaskQueuePanel to let
-     *  users copy IDs into the provider's console (Bailian / 百炼 etc.) for
-     *  diagnosis. Different platforms use different naming — these are
-     *  normalized canonical fields. provider_request_id may be absent for
-     *  platforms that don't expose one (Vidu / PixVerse). */
+    workbench_tab?: "t2i_i2v" | "keyframe_r2v" | "asset_compose" | "direct_r2v" | null;
+    /** Provider-side identifiers (Issue 17). Used by request/candidate
+     *  diagnostics so users can copy IDs into the provider's console
+     *  (Bailian / 百炼 etc.). Different platforms use different naming —
+     *  these are normalized canonical fields. provider_request_id may be
+     *  absent for platforms that don't expose one (Vidu / PixVerse). */
     provider_name?: string | null;
     provider_task_id?: string | null;
     provider_request_id?: string | null;
@@ -272,6 +279,22 @@ export const api = {
         return res.data as { characters: any[]; scenes: any[]; props: any[] };
     },
 
+    normalizeScriptPreview: async (scriptId: string, text: string): Promise<{
+        normalized_text: string;
+        counts: { characters: number; scenes: number; props: number; frames: number };
+    }> => {
+        const res = await axios.post(`${API_URL}/projects/${scriptId}/script/normalize_preview`, { text });
+        return res.data;
+    },
+
+    normalizeAndExtractScript: async (scriptId: string, text: string, normalizedText?: string) => {
+        const res = await axios.post(`${API_URL}/projects/${scriptId}/script/normalize_extract`, {
+            text,
+            normalized_text: normalizedText,
+        });
+        return { ...res.data, originalText: res.data.original_text };
+    },
+
     /** Persist `original_text` without LLM reparse. Used for textarea
      *  blur-saves so navigation/reload doesn't drop in-progress drafts. */
     updateScriptText: async (scriptId: string, text: string) => {
@@ -319,7 +342,7 @@ export const api = {
         // Storyboard R2V workbench tab the user clicked Generate from.
         // Distinct from generationMode (backend dispatcher); workbench_tab
         // lets the candidates panel group takes per UI tab on refresh.
-        workbenchTab?: "t2i_i2v" | "direct_r2v",
+        workbenchTab?: "t2i_i2v" | "keyframe_r2v" | "asset_compose",
         // Watermark toggle — supported across wan / kling / vidu / pixverse /
         // happyhorse video. undefined = leave to provider default (typically
         // off); explicit boolean is user's Advanced-section choice.
@@ -379,6 +402,26 @@ export const api = {
         return res.data;
     },
 
+    uploadVideoCandidate: async (
+        scriptId: string,
+        frameId: string,
+        file: File,
+        workbenchTab?: "t2i_i2v" | "keyframe_r2v" | "asset_compose",
+        model: string = "uploaded-video",
+    ) => {
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await axios.post(
+            `${API_URL}/projects/${scriptId}/frames/${frameId}/upload_video_candidate`,
+            formData,
+            {
+                headers: { "Content-Type": "multipart/form-data" },
+                params: { workbench_tab: workbenchTab, model },
+            },
+        );
+        return res.data as VideoTask;
+    },
+
     /** Persist Storyboard R2V workbench state onto a frame.
      *  Used by StoryboardR2V to write tab/T2I history/active index/
      *  batch-count whenever the user changes them. Server clamps:
@@ -390,10 +433,17 @@ export const api = {
         scriptId: string,
         frameId: string,
         patch: {
-            workbench_tab_mode?: "t2i_i2v" | "direct_r2v";
+            workbench_tab_mode?: "t2i_i2v" | "keyframe_r2v" | "asset_compose";
             t2i_image_urls?: string[];
             t2i_selected_index?: number;
             workbench_generate_count?: number;
+            storyboard_image_prompt?: string;
+            keyframe_start_prompt?: string;
+            keyframe_end_prompt?: string;
+            keyframe_start_image_url?: string;
+            keyframe_end_image_url?: string;
+            keyframe_start_image_urls?: string[];
+            keyframe_end_image_urls?: string[];
         },
     ) => {
         const res = await axios.patch(
@@ -610,6 +660,17 @@ export const api = {
             variant_id: variantId,
             is_favorited: isFavorited,
             generation_type: generationType
+        });
+        return res.data;
+    },
+
+    mutateAssetStage: async (scriptId: string, assetId: string, assetType: string, action: string, stageId?: string, data: Record<string, unknown> = {}) => {
+        const res = await axios.post(`${API_URL}/projects/${scriptId}/assets/stages`, {
+            asset_id: assetId,
+            asset_type: assetType,
+            action,
+            stage_id: stageId,
+            data,
         });
         return res.data;
     },
@@ -1556,6 +1617,14 @@ export const crudApi = {
         return res.data;
     },
 
+    mergeProp: async (scriptId: string, sourceId: string, targetId: string) => {
+        const res = await axios.post(`${API_URL}/projects/${scriptId}/props/merge`, {
+            source_id: sourceId,
+            target_id: targetId,
+        });
+        return res.data;
+    },
+
     // Frame CRUD
     createFrame: async (scriptId: string, data: {
         scene_id: string;
@@ -1589,5 +1658,19 @@ export const crudApi = {
             frame_ids: frameIds
         });
         return res.data;
-    }
+    },
+
+    /** Delete a series-scope asset. */
+    deleteSeriesCharacter: async (seriesId: string, characterId: string) => {
+        const res = await axios.delete(`${API_URL}/series/${seriesId}/characters/${characterId}`);
+        return res.data;
+    },
+    deleteSeriesScene: async (seriesId: string, sceneId: string) => {
+        const res = await axios.delete(`${API_URL}/series/${seriesId}/scenes/${sceneId}`);
+        return res.data;
+    },
+    deleteSeriesProp: async (seriesId: string, propId: string) => {
+        const res = await axios.delete(`${API_URL}/series/${seriesId}/props/${propId}`);
+        return res.data;
+    },
 };

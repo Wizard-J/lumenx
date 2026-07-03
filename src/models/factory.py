@@ -24,5 +24,8 @@ class ModelFactory:
         elif model_name == 'agnes_video':
             from .agnes_video import AgnesVideoModel
             return AgnesVideoModel(config.get('model') or {})
+        elif model_name == 'seedance':
+            from .seedance import SeedanceVideoModel
+            return SeedanceVideoModel(config.get('model') or {})
         else:
             raise ValueError(f"Unknown model: {model_name}")

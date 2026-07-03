@@ -14,6 +14,9 @@
       "pixverse/pixverse-v6-video": "pixverse/pixverse/pixverse-v6-video#i2v",
       "qwen-image-2.0": "qwen/qwen-image-2.0#image",
       "qwen-image-2.0-pro": "qwen/qwen-image-2.0-pro#image",
+      "seedance-2.0-i2v": "seedance/seedance-2.0-video#i2v",
+      "seedance-2.0-r2v": "seedance/seedance-2.0-video#r2v",
+      "seedance-2.0-t2v": "seedance/seedance-2.0-video#t2v",
       "viduq3-pro-i2v": "vidu/viduq3-pro-video#i2v",
       "viduq3-pro-r2v": "vidu/viduq3-pro-video#r2v",
       "viduq3-turbo-i2v": "vidu/viduq3-turbo-video#i2v",
@@ -233,6 +236,51 @@
         },
         "reference_video_input_mode": {
           "dashscope": "dashscope_temp_file_url"
+        }
+      }
+    },
+    "seedance": {
+      "backend_env_key": null,
+      "credential_sources": {
+        "vendor": [
+          "ARK_API_KEY",
+          "SEEDANCE_API_KEY"
+        ]
+      },
+      "default_backend": "vendor",
+      "docs": {
+        "official_snapshot_ids": [
+          "volcengine/seedance-2.0/2026-07-01"
+        ]
+      },
+      "family": "seedance",
+      "models": [
+        "seedance-2.0-i2v",
+        "seedance-2.0-r2v",
+        "seedance-2.0-t2v"
+      ],
+      "provider": "volcengine",
+      "routing_prefixes": [
+        "dreamina-seedance-",
+        "seedance-"
+      ],
+      "supported_backends": [
+        "vendor"
+      ],
+      "supported_modalities": [
+        "t2v",
+        "i2v",
+        "r2v"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "vendor": "ark_content_generation_audio_url"
+        },
+        "image_input_mode": {
+          "vendor": "ark_content_generation_image_url_roles"
+        },
+        "reference_video_input_mode": {
+          "vendor": "ark_content_generation_video_url"
         }
       }
     },
@@ -936,6 +984,70 @@
         },
         "reference_video_input_mode": {
           "dashscope": "dashscope_temp_file_url"
+        }
+      }
+    },
+    "seedance/seedance-2.0-video": {
+      "backend_env_key": null,
+      "credential_sources": {
+        "vendor": [
+          "ARK_API_KEY",
+          "SEEDANCE_API_KEY"
+        ]
+      },
+      "default_backend": "vendor",
+      "description": "Seedance 2.0 video generation with first/last keyframes and role-tagged reference images",
+      "display_name": "Seedance 2.0 Video",
+      "docs": {
+        "context_hub_doc_ids": [
+          "volcengine/seedance-2.0-video"
+        ],
+        "official_snapshot_ids": [
+          "volcengine/seedance-2.0/2026-07-01"
+        ]
+      },
+      "family": "seedance",
+      "id": "seedance/seedance-2.0-video",
+      "legacy_model_ids": [
+        "seedance-2.0-i2v",
+        "seedance-2.0-r2v",
+        "seedance-2.0-t2v"
+      ],
+      "modes": [
+        "seedance/seedance-2.0-video#i2v",
+        "seedance/seedance-2.0-video#r2v",
+        "seedance/seedance-2.0-video#t2v"
+      ],
+      "provider": "volcengine",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "dreamina-seedance-",
+        "seedance-"
+      ],
+      "runtime": {
+        "vendor": {
+          "api_model_id": "dreamina-seedance-2-0-260128",
+          "gateway": "ark"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "vendor"
+      ],
+      "supported_modalities": [
+        "t2v",
+        "i2v",
+        "r2v"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "vendor": "ark_content_generation_audio_url"
+        },
+        "image_input_mode": {
+          "vendor": "ark_content_generation_image_url_roles"
+        },
+        "reference_video_input_mode": {
+          "vendor": "ark_content_generation_video_url"
         }
       }
     },
@@ -2841,6 +2953,220 @@
           "series_settings",
           "global_settings"
         ]
+      }
+    },
+    "seedance-2.0-i2v": {
+      "backend_env_key": null,
+      "capabilities": [
+        "i2v",
+        "r2v"
+      ],
+      "credential_sources": {
+        "vendor": [
+          "ARK_API_KEY",
+          "SEEDANCE_API_KEY"
+        ]
+      },
+      "default_backend": "vendor",
+      "description": "Image-to-video with first-frame motion generation",
+      "display_name": "Seedance 2.0 I2V",
+      "docs": {
+        "context_hub_doc_ids": [
+          "volcengine/seedance-2.0-video"
+        ],
+        "official_snapshot_ids": [
+          "volcengine/seedance-2.0/2026-07-01"
+        ]
+      },
+      "duration": {
+        "default": 5,
+        "max": 12,
+        "min": 3,
+        "step": 1,
+        "type": "slider"
+      },
+      "family": "seedance",
+      "id": "seedance-2.0-i2v",
+      "inputs": {
+        "reference_images": {
+          "max": 10,
+          "reference_type": "image"
+        }
+      },
+      "params": {
+        "promptExtend": true,
+        "ratio": {
+          "default": "16:9",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "adaptive"
+          ]
+        },
+        "resolution": {
+          "default": "1080p",
+          "options": [
+            "720p",
+            "1080p"
+          ]
+        },
+        "seed": true,
+        "watermark": true
+      },
+      "provider": "volcengine",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "dreamina-seedance-",
+        "seedance-"
+      ],
+      "status": "active",
+      "supported_backends": [
+        "vendor"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "vendor": "ark_content_generation_audio_url"
+        },
+        "image_input_mode": {
+          "vendor": "ark_content_generation_image_url_roles"
+        },
+        "reference_video_input_mode": {
+          "vendor": "ark_content_generation_video_url"
+        }
+      },
+      "ui": {
+        "badges": [
+          "new"
+        ],
+        "order": 115,
+        "recommended": true,
+        "selection_group": "i2v",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "video_sidebar",
+          "global_settings"
+        ]
+      }
+    },
+    "seedance-2.0-r2v": {
+      "backend_env_key": null,
+      "capabilities": [
+        "r2v"
+      ],
+      "credential_sources": {
+        "vendor": [
+          "ARK_API_KEY",
+          "SEEDANCE_API_KEY"
+        ]
+      },
+      "default_backend": "vendor",
+      "description": "Keyframe/reference-image to video using first_frame, last_frame, and reference_image roles",
+      "display_name": "Seedance 2.0 R2V",
+      "docs": {
+        "context_hub_doc_ids": [
+          "volcengine/seedance-2.0-video"
+        ],
+        "official_snapshot_ids": [
+          "volcengine/seedance-2.0/2026-07-01"
+        ]
+      },
+      "duration": null,
+      "family": "seedance",
+      "id": "seedance-2.0-r2v",
+      "inputs": {
+        "reference_images": {
+          "max": 10,
+          "reference_type": "image"
+        }
+      },
+      "params": {},
+      "provider": "volcengine",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "dreamina-seedance-",
+        "seedance-"
+      ],
+      "status": "hidden",
+      "supported_backends": [
+        "vendor"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "vendor": "ark_content_generation_audio_url"
+        },
+        "image_input_mode": {
+          "vendor": "ark_content_generation_image_url_roles"
+        },
+        "reference_video_input_mode": {
+          "vendor": "ark_content_generation_video_url"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 15,
+        "recommended": false,
+        "selection_group": "i2v",
+        "visible_in": []
+      }
+    },
+    "seedance-2.0-t2v": {
+      "backend_env_key": null,
+      "capabilities": [
+        "t2v"
+      ],
+      "credential_sources": {
+        "vendor": [
+          "ARK_API_KEY",
+          "SEEDANCE_API_KEY"
+        ]
+      },
+      "default_backend": "vendor",
+      "description": "Text-to-video generation",
+      "display_name": "Seedance 2.0 T2V",
+      "docs": {
+        "context_hub_doc_ids": [
+          "volcengine/seedance-2.0-video"
+        ],
+        "official_snapshot_ids": [
+          "volcengine/seedance-2.0/2026-07-01"
+        ]
+      },
+      "duration": null,
+      "family": "seedance",
+      "id": "seedance-2.0-t2v",
+      "inputs": {},
+      "params": {},
+      "provider": "volcengine",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "dreamina-seedance-",
+        "seedance-"
+      ],
+      "status": "hidden",
+      "supported_backends": [
+        "vendor"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "vendor": "ark_content_generation_audio_url"
+        },
+        "image_input_mode": {
+          "vendor": "ark_content_generation_image_url_roles"
+        },
+        "reference_video_input_mode": {
+          "vendor": "ark_content_generation_video_url"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 5,
+        "recommended": false,
+        "selection_group": "i2v",
+        "visible_in": []
       }
     },
     "viduq3-pro-i2v": {
@@ -5412,6 +5738,247 @@
           "series_settings",
           "global_settings"
         ]
+      }
+    },
+    "seedance/seedance-2.0-video#i2v": {
+      "backend_env_key": null,
+      "capabilities": [
+        "i2v",
+        "r2v"
+      ],
+      "credential_sources": {
+        "vendor": [
+          "ARK_API_KEY",
+          "SEEDANCE_API_KEY"
+        ]
+      },
+      "default_backend": "vendor",
+      "description": "Image-to-video with first-frame motion generation",
+      "display_name": "Seedance 2.0 I2V",
+      "docs": {
+        "context_hub_doc_ids": [
+          "volcengine/seedance-2.0-video"
+        ],
+        "official_snapshot_ids": [
+          "volcengine/seedance-2.0/2026-07-01"
+        ]
+      },
+      "duration": {
+        "default": 5,
+        "max": 12,
+        "min": 3,
+        "step": 1,
+        "type": "slider"
+      },
+      "family": "seedance",
+      "id": "seedance/seedance-2.0-video#i2v",
+      "inputs": {
+        "reference_images": {
+          "max": 10,
+          "reference_type": "image"
+        }
+      },
+      "legacy_model_id": "seedance-2.0-i2v",
+      "mode": "i2v",
+      "model_line_id": "seedance/seedance-2.0-video",
+      "params": {
+        "promptExtend": true,
+        "ratio": {
+          "default": "16:9",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4",
+            "adaptive"
+          ]
+        },
+        "resolution": {
+          "default": "1080p",
+          "options": [
+            "720p",
+            "1080p"
+          ]
+        },
+        "seed": true,
+        "watermark": true
+      },
+      "provider": "volcengine",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "dreamina-seedance-",
+        "seedance-"
+      ],
+      "runtime": {
+        "vendor": {
+          "api_model_id": "dreamina-seedance-2-0-260128",
+          "gateway": "ark"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "vendor"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "vendor": "ark_content_generation_audio_url"
+        },
+        "image_input_mode": {
+          "vendor": "ark_content_generation_image_url_roles"
+        },
+        "reference_video_input_mode": {
+          "vendor": "ark_content_generation_video_url"
+        }
+      },
+      "ui": {
+        "badges": [
+          "new"
+        ],
+        "order": 115,
+        "recommended": true,
+        "selection_group": "i2v",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "video_sidebar",
+          "global_settings"
+        ]
+      }
+    },
+    "seedance/seedance-2.0-video#r2v": {
+      "backend_env_key": null,
+      "capabilities": [
+        "r2v"
+      ],
+      "credential_sources": {
+        "vendor": [
+          "ARK_API_KEY",
+          "SEEDANCE_API_KEY"
+        ]
+      },
+      "default_backend": "vendor",
+      "description": "Keyframe/reference-image to video using first_frame, last_frame, and reference_image roles",
+      "display_name": "Seedance 2.0 R2V",
+      "docs": {
+        "context_hub_doc_ids": [
+          "volcengine/seedance-2.0-video"
+        ],
+        "official_snapshot_ids": [
+          "volcengine/seedance-2.0/2026-07-01"
+        ]
+      },
+      "duration": null,
+      "family": "seedance",
+      "id": "seedance/seedance-2.0-video#r2v",
+      "inputs": {
+        "reference_images": {
+          "max": 10,
+          "reference_type": "image"
+        }
+      },
+      "legacy_model_id": "seedance-2.0-r2v",
+      "mode": "r2v",
+      "model_line_id": "seedance/seedance-2.0-video",
+      "params": {},
+      "provider": "volcengine",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "dreamina-seedance-",
+        "seedance-"
+      ],
+      "runtime": {
+        "vendor": {
+          "api_model_id": "dreamina-seedance-2-0-260128",
+          "gateway": "ark"
+        }
+      },
+      "status": "hidden",
+      "supported_backends": [
+        "vendor"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "vendor": "ark_content_generation_audio_url"
+        },
+        "image_input_mode": {
+          "vendor": "ark_content_generation_image_url_roles"
+        },
+        "reference_video_input_mode": {
+          "vendor": "ark_content_generation_video_url"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 15,
+        "recommended": false,
+        "selection_group": "i2v",
+        "visible_in": []
+      }
+    },
+    "seedance/seedance-2.0-video#t2v": {
+      "backend_env_key": null,
+      "capabilities": [
+        "t2v"
+      ],
+      "credential_sources": {
+        "vendor": [
+          "ARK_API_KEY",
+          "SEEDANCE_API_KEY"
+        ]
+      },
+      "default_backend": "vendor",
+      "description": "Text-to-video generation",
+      "display_name": "Seedance 2.0 T2V",
+      "docs": {
+        "context_hub_doc_ids": [
+          "volcengine/seedance-2.0-video"
+        ],
+        "official_snapshot_ids": [
+          "volcengine/seedance-2.0/2026-07-01"
+        ]
+      },
+      "duration": null,
+      "family": "seedance",
+      "id": "seedance/seedance-2.0-video#t2v",
+      "inputs": {},
+      "legacy_model_id": "seedance-2.0-t2v",
+      "mode": "t2v",
+      "model_line_id": "seedance/seedance-2.0-video",
+      "params": {},
+      "provider": "volcengine",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "dreamina-seedance-",
+        "seedance-"
+      ],
+      "runtime": {
+        "vendor": {
+          "api_model_id": "dreamina-seedance-2-0-260128",
+          "gateway": "ark"
+        }
+      },
+      "status": "hidden",
+      "supported_backends": [
+        "vendor"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "vendor": "ark_content_generation_audio_url"
+        },
+        "image_input_mode": {
+          "vendor": "ark_content_generation_image_url_roles"
+        },
+        "reference_video_input_mode": {
+          "vendor": "ark_content_generation_video_url"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 5,
+        "recommended": false,
+        "selection_group": "i2v",
+        "visible_in": []
       }
     },
     "vidu/viduq3-pro-video#i2v": {

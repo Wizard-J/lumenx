@@ -295,6 +295,37 @@ def test_create_video_task_accepts_r2v_with_refs(pipeline):
     assert any(t.id == task_id for t in script.video_tasks)
 
 
+def test_create_video_task_adds_no_bgm_audio_policy(pipeline):
+    pipeline.scripts = {"p1": _script_with_tasks()}
+
+    script, task_id = pipeline.create_video_task(
+        script_id="p1",
+        image_url="uploads/img.png",
+        prompt="A tense airplane cabin shot with metal rattling",
+        model="wan2.7-i2v",
+        negative_prompt="blurry",
+    )
+
+    task = next(t for t in script.video_tasks if t.id == task_id)
+    assert "do not generate background music" in task.prompt
+    assert "sound effects only" in task.prompt
+    assert "background music" in task.negative_prompt
+    assert "bgm" in task.negative_prompt
+    assert "blurry" in task.negative_prompt
+
+
+def test_no_bgm_audio_policy_is_idempotent():
+    prompt = ComicGenPipeline._ensure_video_no_bgm_prompt("A shot")
+    prompt_again = ComicGenPipeline._ensure_video_no_bgm_prompt(prompt)
+    negative = ComicGenPipeline._ensure_video_no_bgm_negative_prompt("blurry, bgm")
+    negative_again = ComicGenPipeline._ensure_video_no_bgm_negative_prompt(negative)
+
+    assert prompt_again == prompt
+    assert prompt.count("Audio policy:") == 1
+    assert negative_again == negative
+    assert negative.lower().count("bgm") == 1
+
+
 # ---------------------------------------------------------------------------
 # Storyboard R2V workbench persistence (P.1 + P.2 + P.3)
 # ---------------------------------------------------------------------------

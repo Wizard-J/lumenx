@@ -394,7 +394,7 @@ export default function ArtDirection() {
             />
 
             {/* Scrollable content — full width */}
-            <div className="flex-1 min-h-0 overflow-y-auto p-8 space-y-8 bg-surface">
+            <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-6 bg-surface">
                 {/* Series inherit/override banners */}
                 {inSeries && !seriesBaselineLoading && (
                     <>
@@ -493,7 +493,7 @@ export default function ArtDirection() {
                             {isAnalyzingArtStyle ? ta("analyzing") : ta("analyzeScript")}
                         </WorkflowActionButton>
                     </div>
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
                         {aiRecommendations.map((style) => (
                             <AIRecommendationCard
                                 key={style.id}
@@ -513,7 +513,7 @@ export default function ArtDirection() {
                     </h3>
 
                     {/* Category tabs */}
-                    <div className="flex items-center gap-1.5 mb-5 overflow-x-auto pb-1">
+                    <div className="flex items-center gap-1.5 mb-3 overflow-x-auto pb-1">
                         <button
                             onClick={() => setActiveCategory("all")}
                             className={`shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors ${
@@ -540,7 +540,7 @@ export default function ArtDirection() {
                     </div>
 
                     {/* Preset grid */}
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
                         {filteredPresets.map((style) => (
                             <StylePresetCardV2
                                 key={style.id}
@@ -952,14 +952,14 @@ function StylePresetCardV2({ style, isSelected, onClick }: {
         <motion.div
             layout
             onClick={onClick}
-            className={`group relative rounded-xl border overflow-hidden cursor-pointer transition-all ${
+            className={`group relative flex min-h-[92px] cursor-pointer overflow-hidden rounded-lg border transition-all ${
                 isSelected
-                    ? "border-primary shadow-lg shadow-primary/20 ring-1 ring-primary/40"
-                    : "border-glass-border hover:border-white/20 hover:shadow-sm"
+                    ? "border-primary/65 bg-primary/[0.08] ring-1 ring-primary/35"
+                    : "border-glass-border bg-black/[0.18] hover:border-white/20 hover:bg-white/[0.035]"
             }`}
         >
             {/* Thumbnail */}
-            <div className="relative aspect-[4/3] bg-white/5 overflow-hidden">
+            <div className="relative m-2 h-[76px] w-[112px] shrink-0 overflow-hidden rounded-md bg-white/5">
                 {style.thumbnail ? (
                     <img
                         src={style.thumbnail}
@@ -973,22 +973,41 @@ function StylePresetCardV2({ style, isSelected, onClick }: {
                     </div>
                 )}
                 {isSelected && (
-                    <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center shadow-md">
+                    <div className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-primary shadow-md">
                         <Check size={11} className="text-foreground" />
                     </div>
                 )}
             </div>
 
-            {/* Info strip */}
-            <div className="px-3 py-2.5">
-                <h4 className="text-[12px] font-semibold text-foreground leading-tight truncate">
-                    {style.name_zh}
-                </h4>
-                {style.subtitle_zh && (
-                    <p className="text-[10px] text-text-muted mt-0.5 truncate">
+            {/* Info */}
+            <div className="min-w-0 flex-1 px-1.5 py-2.5 pr-3">
+                <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                        <h4 className="truncate text-[12.5px] font-semibold leading-tight text-foreground">
+                            {style.name_zh}
+                        </h4>
+                        <p className="mt-0.5 truncate font-mono text-[9.5px] uppercase tracking-[0.12em] text-text-muted">
+                            {style.name}
+                        </p>
+                    </div>
+                </div>
+                {style.subtitle_zh ? (
+                    <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-text-secondary">
                         {style.subtitle_zh}
                     </p>
-                )}
+                ) : null}
+                {style.best_for?.length ? (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                        {style.best_for.slice(0, 2).map((tag, index) => (
+                            <span
+                                key={`${style.id}-best-${index}`}
+                                className="max-w-[96px] truncate rounded border border-emerald-400/15 bg-emerald-400/[0.06] px-1.5 py-0.5 text-[9.5px] text-emerald-200/80"
+                            >
+                                {tag}
+                            </span>
+                        ))}
+                    </div>
+                ) : null}
             </div>
         </motion.div>
     );

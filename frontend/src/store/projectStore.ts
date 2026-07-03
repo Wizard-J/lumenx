@@ -54,6 +54,8 @@ export interface VideoTask {
     model?: string;
     generation_mode?: string;  // 'i2v' or 'r2v'
     reference_video_urls?: string[];  // Reference videos for R2V
+    reference_image_urls?: string[];
+    workbench_tab?: "t2i_i2v" | "keyframe_r2v" | "asset_compose" | "direct_r2v" | null;
 }
 
 export interface Character {
@@ -142,6 +144,17 @@ export interface StoryboardFrame {
     character_stage_refs?: Record<string, string>;
     scene_stage_ref?: string;
     overlay_video_url?: string;
+    workbench_tab_mode?: "t2i_i2v" | "keyframe_r2v" | "asset_compose" | "direct_r2v" | null;
+    t2i_image_urls?: string[];
+    t2i_selected_index?: number;
+    workbench_generate_count?: number;
+    storyboard_image_prompt?: string | null;
+    keyframe_start_prompt?: string | null;
+    keyframe_end_prompt?: string | null;
+    keyframe_start_image_url?: string | null;
+    keyframe_end_image_url?: string | null;
+    keyframe_start_image_urls?: string[];
+    keyframe_end_image_urls?: string[];
     // ... other fields
 }
 
@@ -245,8 +258,8 @@ export interface Series {
     prompt_config?: PromptConfig;
     model_settings?: ModelSettings;
     workflow_mode?: "r2v" | "i2v_legacy";
-    /** PR-3e — Visual control preference. 'r2v' = 节奏优先 (new shots default
-     *  direct_r2v); 'i2v' = 画面优先 (new shots default t2i_i2v). */
+    /** Visual control preference. 'r2v' starts new shots at asset_compose;
+     *  'i2v' starts new shots at t2i_i2v. */
     default_generation_mode?: "r2v" | "i2v";
     episode_ids: string[];
     created_at: number;

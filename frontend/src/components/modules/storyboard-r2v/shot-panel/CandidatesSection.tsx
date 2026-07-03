@@ -19,8 +19,8 @@
  * fingerprint. Crude but matches the user's mental "I clicked
  * Generate once" model.
  */
-import { useMemo, useState } from "react";
-import { Star, Film, Clock, ArrowDown, ArrowUp, RotateCw } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { Star, Film, Clock, ArrowDown, ArrowUp, RotateCw, Upload, Loader2 } from "lucide-react";
 import type { VideoTask } from "@/lib/api";
 import SectionShell from "./SectionShell";
 import { usePanelSectionState } from "./usePanelSectionState";
@@ -42,6 +42,7 @@ interface CandidatesSectionProps {
     onCancel?: (task: VideoTask) => Promise<void> | void;
     onRetry?: (task: VideoTask) => Promise<void> | void;
     onReuseBatchParams?: (batch: BatchSummary) => void;
+    onUploadVideo?: (file: File) => Promise<void> | void;
     onOpenCompare?: () => void;
     resolveUrl?: (url: string) => string;
 }
@@ -120,12 +121,15 @@ export default function CandidatesSection({
     onCancel,
     onRetry,
     onReuseBatchParams,
+    onUploadVideo,
     onOpenCompare,
     resolveUrl,
 }: CandidatesSectionProps) {
     const [open, setOpen] = usePanelSectionState(shotId, "candidates", true);
     const [filter, setFilter] = useState<FilterMode>("all");
     const [sort, setSort] = useState<SortMode>("time");
+    const [uploading, setUploading] = useState(false);
+    const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
     const filteredTasks = useMemo(() => {
         return tasks.filter((t) => {
@@ -199,6 +203,43 @@ export default function CandidatesSection({
                             sort: {sort}
                         </span>
                     </button>
+                    {onUploadVideo ? (
+                        <>
+                            <button
+                                type="button"
+                                onClick={() => uploadInputRef.current?.click()}
+                                disabled={uploading}
+                                title="Upload an existing video as a candidate take"
+                                className="btn-tip -m-1 inline-flex h-7 items-center gap-1 rounded px-1.5 text-text-muted transition-colors duration-fast ease-out-quart hover:bg-hover-bg hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 disabled:cursor-not-allowed disabled:opacity-45"
+                            >
+                                {uploading ? (
+                                    <Loader2 size={11} className="animate-spin" aria-hidden="true" />
+                                ) : (
+                                    <Upload size={11} aria-hidden="true" />
+                                )}
+                                <span className="font-mono text-chrome-sm font-medium uppercase tracking-tight">
+                                    upload
+                                </span>
+                            </button>
+                            <input
+                                ref={uploadInputRef}
+                                type="file"
+                                accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm,.m4v"
+                                className="sr-only"
+                                onChange={async (event) => {
+                                    const file = event.target.files?.[0];
+                                    event.target.value = "";
+                                    if (!file) return;
+                                    setUploading(true);
+                                    try {
+                                        await onUploadVideo(file);
+                                    } finally {
+                                        setUploading(false);
+                                    }
+                                }}
+                            />
+                        </>
+                    ) : null}
                 </>
             }
         >

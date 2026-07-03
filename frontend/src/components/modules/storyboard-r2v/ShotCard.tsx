@@ -30,11 +30,18 @@ import { toast } from "@/store/toastStore";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
 import PreviewVideo from "@/components/shared/preview/PreviewVideo";
 import { useProjectStore } from "@/store/projectStore";
+import {
+    parseAssetReferenceTags,
+    resolveAssetReferenceImage,
+    type AssetKind,
+} from "./assetReferences";
+
+export type WorkbenchTabMode = "t2i_i2v" | "keyframe_r2v" | "asset_compose";
 
 export interface ShotNode {
     id: string;
     prompt: string;
-    tabMode: "t2i_i2v" | "direct_r2v";
+    tabMode: WorkbenchTabMode;
 
     // T2I stage (only for t2i_i2v mode). Single-task fields stay here
     // for backward compat with existing shot drafts and the legacy
@@ -64,11 +71,13 @@ export interface ShotNode {
      *  shipped output". Falls back to latest starred / latest completed /
      *  first frame when null. */
     finalTakeId?: string | null;
-    /** Every video task this shot has spawned, oldest first. Each tab
-     *  (t2i_i2v / direct_r2v) gets its own list — see videoTaskIdsByTab.
+    /** Every video task this shot has spawned, oldest first. Each workbench tab
+     *  gets its own list — `direct_r2v` is kept only for legacy records.
      *  Empty / missing → no history (e.g. legacy shots). */
     videoTaskIdsByTab?: {
         t2i_i2v?: string[];
+        keyframe_r2v?: string[];
+        asset_compose?: string[];
         direct_r2v?: string[];
     };
     imageUrl?: string;
@@ -101,10 +110,24 @@ export interface ShotNode {
     shotSize?: string | null;
     cameraAngle?: string | null;
     transitionHint?: string | null;
+    storyboardImagePrompt?: string | null;
+    keyframeStartPrompt?: string | null;
+    keyframeEndPrompt?: string | null;
+    keyframeStartImageUrl?: string | null;
+    keyframeEndImageUrl?: string | null;
+    keyframeStartImageUrls?: string[];
+    keyframeEndImageUrls?: string[];
 }
 
 /** Cap on T2I image history per shot. Older drops off FIFO when adding. */
 export const T2I_HISTORY_LIMIT = 10;
+
+function promptDeclaresNoCharacters(prompt: string): boolean {
+    const match = prompt.match(/角色\s*[：:]\s*([^】\]\n。；;]+)/);
+    if (!match) return false;
+    const firstValue = match[1].split(/[·,，、]/)[0]?.trim().toLowerCase() ?? "";
+    return /^(无|なし|none|no|n\/a|空|没有|无人)$/.test(firstValue);
+}
 
 interface ShotCardProps {
     shot: ShotNode;
@@ -122,7 +145,7 @@ interface ShotCardProps {
     onMoveUp: () => void;
     onMoveDown: () => void;
     onDuplicate: () => void;
-    onSetTabMode: (mode: "t2i_i2v" | "direct_r2v") => void;
+    onSetTabMode: (mode: WorkbenchTabMode) => void;
     onOpenDrawer: () => void;
     onInsertAsset: (type: string, name: string) => void;
     /** Duration editor config derived from model catalog */
@@ -207,17 +230,67 @@ export default function ShotCard({
         props,
     ]);
 
-    const castAvatars = useMemo(() => {
-        if (!shot.characterIds?.length || !characters?.length) return [];
-        return shot.characterIds
-            .map((id: string) => characters.find((c: any) => c.id === id))
-            .filter(Boolean)
-            .map((c: any) => ({
-                id: c.id,
-                name: c.name,
-                avatarUrl: c.avatar_url || c.image_url || c.avatarUrl,
-            }));
-    }, [shot.characterIds, characters]);
+    const appearingAssets = useMemo(() => {
+        const refs: Array<{ id: string; name: string; kind: AssetKind; imageUrl?: string }> = [];
+        const seen = new Set<string>();
+        const add = (asset: any, kind: AssetKind, imageUrl?: string) => {
+            if (!asset) return;
+            const key = `${kind}:${asset.id || asset.name}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            refs.push({
+                id: String(asset.id || asset.name || key),
+                name: String(asset.name || "未命名资产"),
+                kind,
+                imageUrl,
+            });
+        };
+
+        if (!promptDeclaresNoCharacters(shot.prompt)) {
+            (shot.characterIds ?? []).forEach((id) => {
+                const asset = characters.find((item: any) => item.id === id);
+                add(
+                    asset,
+                    "character",
+                    resolveAssetReferenceImage(asset, "character", asset ? shot.characterStageRefs?.[asset.id] : undefined),
+                );
+            });
+        }
+
+        if (shot.sceneId) {
+            const asset = scenes.find((item: any) => item.id === shot.sceneId);
+            add(asset, "scene", resolveAssetReferenceImage(asset, "scene", shot.sceneStageRef));
+        }
+
+        (shot.propIds ?? []).forEach((id) => {
+            const asset = props.find((item: any) => item.id === id);
+            add(asset, "prop", resolveAssetReferenceImage(asset, "prop"));
+        });
+
+        // This strip is a visible editing aid, so it should reflect explicit
+        // shot references instead of hidden tags injected for model submission.
+        const parsedTags = parseAssetReferenceTags(shot.prompt, { characters, scenes, props }, shot);
+        parsedTags.items.forEach((item) => {
+            const pool = item.resolvedKind === "character"
+                ? characters
+                : item.resolvedKind === "scene"
+                    ? scenes
+                    : props;
+            const asset = pool.find((candidate: any) => candidate.name === item.name);
+            add(
+                asset || { id: item.name, name: item.name },
+                item.resolvedKind,
+                item.url,
+            );
+        });
+
+        return refs;
+    }, [
+        shot,
+        characters,
+        scenes,
+        props,
+    ]);
 
     const assembledPromptPreview = promptWithReferenceTags || shot.assembledPrompt || shot.prompt || "";
 
@@ -458,6 +531,8 @@ export default function ShotCard({
     };
 
     const isActiveT2I = shot.tabMode === "t2i_i2v";
+    const isActiveKeyframe = shot.tabMode === "keyframe_r2v";
+    const isActiveAssetCompose = shot.tabMode === "asset_compose";
     const hasStoryboardImage = !!(shot.t2iImageUrl || shot.imageUrl);
     const imageInFlight = shot.t2iStatus === "pending" || shot.t2iStatus === "processing";
     const imageButtonLabel = imageInFlight
@@ -501,14 +576,18 @@ export default function ShotCard({
                             className="absolute top-[3px] bottom-[3px] rounded-md bg-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]"
                             initial={false}
                             animate={{
-                                left: isActiveT2I ? 3 : "calc(50% + 1.5px)",
-                                width: "calc(50% - 3px)",
+                                left: isActiveT2I
+                                    ? 3
+                                    : isActiveKeyframe
+                                        ? "calc(33.333% + 1px)"
+                                        : "calc(66.666% - 1px)",
+                                width: "calc(33.333% - 2px)",
                             }}
                             transition={{ type: "spring", stiffness: 350, damping: 32 }}
                         />
                         <button
                             onClick={() => onSetTabMode("t2i_i2v")}
-                            className={`relative z-10 flex items-center gap-1.5 px-3 py-1 text-[11px] font-semibold rounded-md transition-colors duration-200 ${
+                            className={`relative z-10 flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors duration-200 ${
                                 isActiveT2I ? "text-foreground" : "text-text-secondary hover:text-text-secondary/80"
                             }`}
                         >
@@ -516,13 +595,22 @@ export default function ShotCard({
                             {t("tabT2iI2v")}
                         </button>
                         <button
-                            onClick={() => onSetTabMode("direct_r2v")}
-                            className={`relative z-10 flex items-center gap-1.5 px-3 py-1 text-[11px] font-semibold rounded-md transition-colors duration-200 ${
-                                !isActiveT2I ? "text-foreground" : "text-text-secondary hover:text-text-secondary/80"
+                            onClick={() => onSetTabMode("keyframe_r2v")}
+                            className={`relative z-10 flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors duration-200 ${
+                                isActiveKeyframe ? "text-foreground" : "text-text-secondary hover:text-text-secondary/80"
                             }`}
                         >
                             <Video size={12} strokeWidth={1.5} />
                             {t("tabDirectR2v")}
+                        </button>
+                        <button
+                            onClick={() => onSetTabMode("asset_compose")}
+                            className={`relative z-10 flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors duration-200 ${
+                                isActiveAssetCompose ? "text-foreground" : "text-text-secondary hover:text-text-secondary/80"
+                            }`}
+                        >
+                            <Sparkles size={12} strokeWidth={1.5} />
+                            {t("tabAssetCompose")}
                         </button>
                     </div>
 
@@ -547,22 +635,28 @@ export default function ShotCard({
 
                     {/* Right: Prompt + Controls */}
                     <div className="flex-1 p-3 flex flex-col gap-2">
-                        {/* Cast avatar group — at-a-glance view of
-                            which characters are referenced in this
-                            shot's prompt. Derived from [character:X]
-                            tags. Click an avatar to jump to the
-                            Assets step for editing. Borrowed from
-                            火山剧创's "出镜角色" but as a compact
-                            avatar group instead of a verbose list. */}
-                        {castAvatars.length > 0 ? (
-                            <div className="flex items-center gap-1.5">
-                                <span className="font-mono text-chrome-sm tracking-tight text-text-muted">
+                        {/* Compact shot reference strip. It mirrors explicit
+                            shot assets, not hidden model-submission tags. */}
+                        {appearingAssets.length > 0 ? (
+                            <div className="flex max-w-full items-center gap-2 overflow-hidden rounded-md border border-white/[0.06] bg-white/[0.025] px-2 py-1">
+                                <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] text-text-muted">
                                     {t("shotCast")}
                                 </span>
-                                <div className="flex items-center -space-x-1.5">
-                                    {castAvatars.slice(0, 3).map((c) => (
+                                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                                    {appearingAssets.slice(0, 5).map((asset) => {
+                                        const kindLabel = asset.kind === "character"
+                                            ? "角色"
+                                            : asset.kind === "scene"
+                                                ? "场景"
+                                                : "道具";
+                                        const kindClass = asset.kind === "character"
+                                            ? "border-blue-400/25 bg-blue-400/10 text-blue-200"
+                                            : asset.kind === "scene"
+                                                ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
+                                                : "border-orange-400/25 bg-orange-400/10 text-orange-200";
+                                        return (
                                         <button
-                                            key={c.id}
+                                            key={`${asset.kind}-${asset.id}`}
                                             type="button"
                                             onClick={() => {
                                                 // R2V v2: "assets" step id renamed to "cast" for R2V workflow.
@@ -572,26 +666,31 @@ export default function ShotCard({
                                                     new CustomEvent("lumenx:navigateStep", { detail: "cast" }),
                                                 );
                                             }}
-                                            title={c.name}
-                                            className="grid h-6 w-6 place-items-center overflow-hidden rounded-full border-2 border-surface bg-elevated transition-all duration-fast ease-out-quart hover:z-10 hover:scale-110 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55"
+                                            title={`${asset.kind === "character" ? "角色" : asset.kind === "scene" ? "场景" : "道具"} · ${asset.name}`}
+                                            className="group inline-flex max-w-[150px] items-center gap-1.5 rounded-md border border-white/[0.08] bg-black/25 px-1.5 py-1 text-left transition-colors duration-fast ease-out-quart hover:border-primary/35 hover:bg-primary/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55"
                                         >
-                                            {c.avatarUrl ? (
-                                                <PreviewImage
-                                                    src={c.avatarUrl}
-                                                    alt={c.name}
-                                                    className="h-full w-full"
-                                                    noLightbox
-                                                />
-                                            ) : (
-                                                <span className="font-mono text-[9px] font-medium text-text-secondary">
-                                                    {c.name.slice(0, 1)}
+                                            <span className={`shrink-0 rounded border px-1 py-0.5 text-[9px] font-semibold leading-none ${kindClass}`}>
+                                                {kindLabel}
+                                            </span>
+                                            {asset.imageUrl ? (
+                                                <span className="h-5 w-7 shrink-0 overflow-hidden rounded border border-white/[0.08] bg-black/30">
+                                                    <PreviewImage
+                                                        src={asset.imageUrl}
+                                                        alt={asset.name}
+                                                        className="h-full w-full"
+                                                        noLightbox
+                                                    />
                                                 </span>
-                                            )}
+                                            ) : null}
+                                            <span className="min-w-0 truncate text-[11px] font-medium text-text-secondary group-hover:text-foreground">
+                                                {asset.name}
+                                            </span>
                                         </button>
-                                    ))}
-                                    {castAvatars.length > 3 ? (
-                                        <span className="grid h-6 w-6 place-items-center rounded-full border-2 border-surface bg-elevated font-mono text-[9px] font-medium text-text-secondary">
-                                            +{castAvatars.length - 3}
+                                        );
+                                    })}
+                                    {appearingAssets.length > 5 ? (
+                                        <span className="inline-flex h-7 items-center rounded-md border border-white/[0.08] bg-black/25 px-2 font-mono text-[10px] font-medium text-text-muted">
+                                            +{appearingAssets.length - 5}
                                         </span>
                                     ) : null}
                                 </div>
@@ -929,7 +1028,7 @@ export default function ShotCard({
                                     title={!canGenerate
                                         ? (shot.tabMode === "t2i_i2v"
                                             ? "请先在上方生成或上传首帧"
-                                            : "请先输入提示词")
+                                            : "请先生成首帧关键帧")
                                         : `生成 ${generateCount} 条视频候选`}
                                     className="inline-flex items-center justify-center gap-1.5 rounded-md px-5 py-2 min-w-[140px] font-sans text-[13px] font-semibold tracking-tight transition-colors duration-fast ease-out-quart focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55 disabled:cursor-not-allowed disabled:opacity-40 bg-primary text-white border border-[rgba(100,108,255,0.65)] shadow-[inset_0_1.5px_0_rgba(255,255,255,0.14),inset_0_-1px_0_rgba(60,68,200,0.45),0_4px_14px_-2px_rgba(100,108,255,0.45)] hover:bg-[#7a82ff] hover:border-[rgba(100,108,255,0.85)] disabled:hover:bg-primary disabled:hover:border-[rgba(100,108,255,0.65)]"
                                 >

@@ -192,9 +192,9 @@ function buildTemplate(kind: CastKind, entity: any, template?: CharacterTemplate
         return `${charDesc}\n\n${tpl.compositionEn}`;
     }
     if (kind === "scene") {
-        return `${name}${desc ? "：" + desc : ""}\n\nComposition: wide establishing shot of the environment on neutral gray background, single unified image, no figures in foreground. Emphasize atmosphere, architecture and terrain structure. Lighting and color palette match the scene mood. Soft volumetric lighting, depth of field.`;
+        return `${name}${desc ? "：" + desc : ""}\n\nComposition: one single full-frame environment photograph, one continuous scene, no people or characters anywhere. No collage, no grid, no contact sheet, no inset images, no captions, no logos, no watermark. Emphasize atmosphere, architecture and terrain structure. Lighting and color palette match the scene mood.`;
     }
-    return `${name}${desc ? "：" + desc : ""}\n\nComposition: product photography style on neutral gray background, single unified image, seamless layout without borders. Main view: object centered at slight angle. Secondary views: detail close-ups of material and texture. Clean even studio lighting, subtle shadow beneath object.`;
+    return `${name}${desc ? "：" + desc : ""}\n\nComposition: one single product-style reference photograph, one continuous image only. The object or natural cluster is centered and fully visible. No secondary views, no detail close-ups, no collage, no grid, no contact sheet, no inset images, no hands, no thumbs-up, no people, no captions, no logos, no watermark. Clean even studio lighting, subtle shadow beneath object.`;
 }
 
 function getTemplateNegative(kind: CastKind, template?: CharacterTemplate): string {
@@ -202,7 +202,7 @@ function getTemplateNegative(kind: CastKind, template?: CharacterTemplate): stri
         const tpl = CHARACTER_TEMPLATES[template || "simple"];
         return tpl.negativeAppend;
     }
-    return "text, labels, watermark, UI overlay, panel borders, frames";
+    return "contact sheet, collage, grid, multi panel, multiple panels, split screen, inset image, thumbnail strip, side thumbnails, text, labels, watermark, logo, UI overlay, panel borders, frames, social media icon, weibo icon, thumbs up, hands, people, person, character";
 }
 
 /** Variants live in different slots depending on kind + legacy schema:
@@ -436,6 +436,9 @@ export default function CastWorkbenchModal({ isOpen, kind, entityId, onClose, se
 
             const taskId = (resp as any)?._task_id;
             if (taskId) {
+                if (!seriesId && currentProject?.id && resp) {
+                    updateProject(currentProject.id, resp);
+                }
                 if (seriesId) {
                     // Series mode: poll with Series API
                     const capturedEntityId = entity.id;

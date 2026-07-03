@@ -291,11 +291,13 @@ class TestResolveEpisodeAssets:
             s.id,
             scene.id,
             "scene",
+            prompt="one continuous landscape photo",
             aspect_ratio="1:1",
         )
         pipeline.process_asset_generation_task(task_id)
 
         assert pipeline.asset_generator.generate_scene.call_args.kwargs["size"] == "1024*1024"
+        assert pipeline.asset_generator.generate_scene.call_args.kwargs["prompt"] == "one continuous landscape photo"
         assert s.scenes[0].status == GenerationStatus.COMPLETED
 
     def test_series_asset_task_marks_processing_and_persists(self, pipeline):

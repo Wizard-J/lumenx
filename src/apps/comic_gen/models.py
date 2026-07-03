@@ -269,7 +269,7 @@ class VideoTask(BaseModel):
     # Optional: pre-Phase-2-persistence tasks parse with None.
     workbench_tab: Optional[str] = Field(
         None,
-        description="Storyboard R2V workbench tab the user generated from: 't2i_i2v' | 'direct_r2v'",
+        description="Storyboard R2V workbench tab the user generated from: 't2i_i2v' | 'keyframe_r2v' | 'asset_compose'",
     )
     created_at: float = Field(default_factory=time.time)
 
@@ -476,7 +476,7 @@ class StoryboardFrame(BaseModel):
     # round-tripping unchanged.
     workbench_tab_mode: Optional[str] = Field(
         None,
-        description="Last-active R2V workbench tab: 't2i_i2v' | 'direct_r2v'",
+        description="Last-active R2V workbench tab: 't2i_i2v' | 'keyframe_r2v' | 'asset_compose'",
     )
     t2i_image_urls: List[str] = Field(
         default_factory=list,
@@ -492,6 +492,34 @@ class StoryboardFrame(BaseModel):
     workbench_generate_count: int = Field(
         1,
         description="Last-chosen Generate ×N batch size for this shot (1-6).",
+    )
+    storyboard_image_prompt: Optional[str] = Field(
+        None,
+        description="Editable prompt used to generate storyboard/first-frame images in I2V or asset-compose tabs.",
+    )
+    keyframe_start_prompt: Optional[str] = Field(
+        None,
+        description="Editable prompt used to generate the start keyframe for keyframe R2V.",
+    )
+    keyframe_end_prompt: Optional[str] = Field(
+        None,
+        description="Editable prompt used to generate the end keyframe for keyframe R2V.",
+    )
+    keyframe_start_image_url: Optional[str] = Field(
+        None,
+        description="Selected/generated image URL used as the start keyframe.",
+    )
+    keyframe_end_image_url: Optional[str] = Field(
+        None,
+        description="Selected/generated image URL used as the end keyframe.",
+    )
+    keyframe_start_image_urls: List[str] = Field(
+        default_factory=list,
+        description="Candidate images generated/selected for the start keyframe.",
+    )
+    keyframe_end_image_urls: List[str] = Field(
+        default_factory=list,
+        description="Candidate images generated/selected for the end keyframe.",
     )
     # Issue 16 — final take selection. Set in Assembly (per the chosen take
     # from this frame's video_tasks), read by Storyboard's ShotCard top
@@ -588,7 +616,7 @@ class Script(BaseModel):
 
     # PR-3e (r2v-workflow-v3) — Visual control preference. Determines the
     # default tabMode for newly added shots in the R2V workbench:
-    #   'r2v' (default, 节奏优先) → new shots default to direct_r2v
+    #   'r2v' (default, 节奏优先) → new shots default to asset_compose
     #   'i2v' (画面优先)         → new shots default to t2i_i2v (生首帧 → 生视频)
     # Per-shot tabMode still overridable. Series-level field; episodes
     # inherit from parent series.

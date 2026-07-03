@@ -263,6 +263,84 @@ class ScriptProcessor:
             logger.error(error_msg, exc_info=True)
             raise RuntimeError(error_msg)
 
+    def normalize_storyboard_script(self, title: str, text: str) -> str:
+        """Rewrite free-form source text into LumenX's deterministic storyboard format."""
+        logger.info(f"Normalizing storyboard script: {title}...")
+        if not self.is_configured:
+            raise ValueError("LLM API Key 未配置。请在 API 配置中设置对应的 API Key 后重试。")
+
+        prompt = f"""
+你是 LumenX 的剧本格式整理助手。用户会提供任意格式的小说、口述分镜、表格、剧本或半成品镜头稿。
+
+你的任务：在不改变剧情事实和镜头顺序的前提下，将内容整理为 LumenX 可稳定解析的 Markdown 分镜脚本。
+
+必须输出严格 JSON 对象，不要 Markdown 代码块：
+{{
+  "normalized_text": "整理后的完整 Markdown 文本"
+}}
+
+normalized_text 必须使用以下结构：
+
+# {{标题}}
+
+## 角色
+角色名：稳定视觉描述，包含年龄/体型/发型/服装/显著特征。只写长期外观，不写临时表情动作。
+
+## 场景
+场景名：稳定环境描述，包含空间、光线、氛围和关键元素。
+
+## 道具
+道具名：稳定视觉描述。
+
+## 分镜
+**镜头 01** | 约4s | 中景 | 平视
+【场景：场景名 · 角色：角色A、角色B · 道具：道具A】
+0-2s: 具体画面动作。
+2-4s: 具体画面动作。
+**音效**：环境音/动作音，如果没有就写无。
+**备注**：必要的制作备注，没有就写无。
+
+**镜头 02** | 约5s | 远景 | 鸟瞰
+【场景：场景名 · 角色：无 · 道具：无】
+0-5s: 具体画面动作。
+**音效**：无。
+**备注**：无。
+
+规则：
+1. 保留原文中的所有重要剧情节点、镜头、对白、HUD 标记和音效信息。
+2. 如果原文已有镜头编号，不要合并或重排；只补齐缺失字段。
+3. 如果原文不是分镜稿，而是小说/梗概，请按视觉节拍拆成连续镜头。
+4. 镜头标题必须使用 `**镜头 NN** | 约Xs | 景别 | 机位`。
+5. 景别只能选：大特写、特写、近景、中景、全景、远景、大远景。
+6. 机位只能选：平视、俯视、仰视、鸟瞰、蚁视、过肩、荷兰角、主观视角。
+7. 资源行必须使用：`【场景：... · 角色：... · 道具：...】`，名称必须与上方实体清单一致。
+8. 没有角色/道具时写“无”。
+9. 所有视觉描述必须适合 AI 图像生成，避免血腥、裸露、露骨伤口、器官、色情或仇恨内容。
+10. 不要输出解释文字，只输出 JSON。
+
+标题：{title}
+
+原文：
+{text[:50000]}
+"""
+
+        try:
+            content = self.llm.chat(
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            data = json.loads(_strip_markdown_json(content))
+            normalized = (data.get("normalized_text") or "").strip()
+            if not normalized:
+                raise RuntimeError("模型未返回规范化脚本文本。")
+            return normalized
+        except ValueError:
+            raise
+        except Exception as e:
+            error_msg = f"脚本格式整理失败: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            raise RuntimeError(error_msg)
+
     def _create_script_from_data(self, title: str, original_text: str, data: Dict[str, Any]) -> Script:
         script_id = str(uuid.uuid4())
         

@@ -85,6 +85,18 @@ def _response_error_detail(response: requests.Response) -> str:
     return detail[:1000] or response.reason or "Unknown provider error"
 
 
+def _is_service_busy_response(response: requests.Response, detail: str = "") -> bool:
+    """Agnes/LiteLLM returns 503 Service busy while another task is active."""
+    if getattr(response, "status_code", None) != 503:
+        return False
+    haystack = detail or ""
+    try:
+        haystack += " " + json.dumps(response.json())
+    except Exception:
+        haystack += " " + (getattr(response, "text", "") or "")
+    return "service busy" in haystack.lower() or "tasks:" in haystack.lower()
+
+
 def _mask_sensitive_headers(headers: Dict[str, str]) -> Dict[str, str]:
     masked: Dict[str, str] = {}
     for key, value in (headers or {}).items():
@@ -185,11 +197,27 @@ class AgnesVideoModel(VideoGenModel):
         more than a minute accepting image-guided requests before returning the
         task ID. Keep connect timeout short while allowing a longer read wait.
         """
-        raw = _env("VIDEO_SUBMIT_TIMEOUT", "180")
+        raw = _env("VIDEO_SUBMIT_TIMEOUT", "300")
         try:
-            return max(60, min(int(raw), 600))
+            return max(60, min(int(raw), 900))
         except (TypeError, ValueError):
-            return 180
+            return 300
+
+    @property
+    def busy_retry_attempts(self) -> int:
+        raw = _env("VIDEO_BUSY_RETRY_ATTEMPTS", "6")
+        try:
+            return max(0, min(int(raw), 30))
+        except (TypeError, ValueError):
+            return 6
+
+    @property
+    def busy_retry_delay(self) -> int:
+        raw = _env("VIDEO_BUSY_RETRY_DELAY", "30")
+        try:
+            return max(5, min(int(raw), 300))
+        except (TypeError, ValueError):
+            return 30
 
     def _auth_headers(self) -> Dict[str, str]:
         return {
@@ -407,7 +435,7 @@ class AgnesVideoModel(VideoGenModel):
         Supports T2V (text-to-video), I2V (image-to-video),
         multi-image, and keyframe animation modes.
         """
-        model = self.model_name or model_name or "agnes-video-v2.0"
+        model = model_name or self.model_name or "agnes-video-v2.0"
 
         # ── Resolve dimensions ──────────────────────────────────────
         width, height = _size_to_dims(size or "", aspect_ratio)
@@ -486,6 +514,7 @@ class AgnesVideoModel(VideoGenModel):
                     "resolved_ref_image_urls": _safe_json_payload(resolved_ref_urls),
                     "resolved_ref_image_paths": _safe_json_payload(resolved_refs),
                     "all_refs": _safe_json_payload(all_refs),
+                    "all_visual_inputs": _safe_json_payload(([single_image] if single_image else []) + all_refs),
                 },
                 "mode": {
                     "is_i2v": is_i2v,
@@ -496,25 +525,65 @@ class AgnesVideoModel(VideoGenModel):
                     "size": {"width": width, "height": height},
                 },
             }
+            detail_mode = "keyframes" if is_keyframe else ("i2v" if is_i2v else ("refs" if has_refs else "t2v"))
             op_id = enter_operation(
                 "video",
-                detail=f"Agnes submit · refs={len(all_refs)} · i2v={'yes' if is_i2v else 'no'}",
+                detail=f"Agnes submit · image={1 if single_image else 0} · refs={len(all_refs)} · mode={detail_mode}",
                 model=model,
                 debug=request_debug,
             )
             logger.info(f"[Agnes Video] POST {submit_url}")
-            resp = requests.post(
-                submit_url, headers=self._auth_headers(),
-                json=body, timeout=(15, self.submit_timeout),
-            )
-            response_debug = {
-                "status_code": getattr(resp, "status_code", None),
-                "ok": bool(getattr(resp, "ok", False)),
-            }
-            try:
-                response_debug["body"] = _safe_json_payload(resp.json())
-            except Exception:
-                response_debug["body_text"] = (getattr(resp, "text", "") or "")[:4000]
+            response_debug = {}
+            for attempt in range(self.busy_retry_attempts + 1):
+                try:
+                    resp = requests.post(
+                        submit_url, headers=self._auth_headers(),
+                        json=body, timeout=(15, self.submit_timeout),
+                    )
+                except requests.ReadTimeout as exc:
+                    raise RuntimeError(
+                        "Agnes Video submit timed out after "
+                        f"{self.submit_timeout}s waiting for the provider to return a task id. "
+                        "This means Agnes did not acknowledge the create request in time; "
+                        "the request may still have been accepted upstream, so check the "
+                        "provider queue/log before retrying to avoid duplicate generations. "
+                        "You can raise VIDEO_SUBMIT_TIMEOUT if Agnes is consistently slow."
+                    ) from exc
+
+                response_debug = {
+                    "status_code": getattr(resp, "status_code", None),
+                    "ok": bool(getattr(resp, "ok", False)),
+                    "attempt": attempt + 1,
+                }
+                try:
+                    response_debug["body"] = _safe_json_payload(resp.json())
+                except Exception:
+                    response_debug["body_text"] = (getattr(resp, "text", "") or "")[:4000]
+                if resp.ok:
+                    break
+                detail = _response_error_detail(resp)
+                if _is_service_busy_response(resp, detail) and attempt < self.busy_retry_attempts:
+                    wait_s = self.busy_retry_delay
+                    logger.warning(
+                        "[Agnes Video] provider busy; retrying submit in %ss (%s/%s)",
+                        wait_s,
+                        attempt + 1,
+                        self.busy_retry_attempts,
+                    )
+                    update_operation(
+                        op_id,
+                        "pending",
+                        detail=(
+                            "Agnes busy; waiting to retry submit "
+                            f"({attempt + 1}/{self.busy_retry_attempts})"
+                        ),
+                        duration_ms=(time.time() - api_start_time) * 1000,
+                        debug=request_debug,
+                        response=response_debug,
+                    )
+                    time.sleep(wait_s)
+                    continue
+                break
             if not resp.ok:
                 detail = _response_error_detail(resp)
                 update_operation(

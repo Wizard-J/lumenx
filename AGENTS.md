@@ -227,6 +227,93 @@ For HUD/subtitle/episode_state changes on a frame, extend `UpdateFrameRequest` o
 
 ## Frontend State & API Flow
 
+### Storyboard Asset References (Single Source of Truth)
+
+The R2V storyboard editor has a deliberately centralized asset-reference resolver:
+
+```
+frontend/src/components/modules/storyboard-r2v/assetReferences.ts
+```
+
+Use this module for **all** character/scene/prop reference-image logic. Do not add ad-hoc image/tag parsing in `StoryboardR2V.tsx`, `AssetDrawer.tsx`, prompt assembly helpers, or shot-panel components.
+
+The resolver owns:
+- Merging episode assets with parent series assets via `mergeAssetPools()`
+- Preferring series assets that contain generated `stages.reference_images`
+- Resolving reference images across legacy fields (`image_url`, `image_asset`, `full_body_asset`, `reference_sheet`, etc.)
+- Falling back to the first available stage image when a frozen frame `scene_stage_ref` / `character_stage_refs` points to a stale or missing stage ID
+- Parsing reference tags with `parseAssetReferenceTags()`
+- Detecting tags with `hasAssetReferenceTags()`
+- Stripping tags with `stripAssetReferenceTags()`
+
+Supported prompt reference tags:
+
+```text
+[character1:老赵]   # legacy positional generic slot, still supported
+[character:老赵]    # typed character tag
+[scene:飞机残骸区]  # typed scene tag
+[prop:铝合金碎片]   # typed prop tag
+```
+
+Important: `[characterN:name]` is legacy and historically acted as a generic positional reference slot, so the resolver intentionally falls back from character → scene → prop for that form.
+
+When generating storyboard images or non-Agnes R2V videos, the frontend must derive `reference_image_urls` from `parseAssetReferenceTags()` against the merged asset pool. If a prompt contains asset tags but the resolver returns zero URLs, block submission and show the resolver's `unresolved` names. Do not silently submit `refs=0` to R2V providers that require asset references.
+
+When generating complete storyboard images, first frames, or start/end keyframes, asset references belong in the image-generation step, not directly in the final video step. `StoryboardR2V.tsx::generateT2I()` must:
+- Build tags with `buildPromptWithReferenceTags()`
+- Resolve them through `parseAssetReferenceTags()`
+- Pass resolved URLs to `api.renderFrame()` as `composition_data.reference_image_urls`
+- Append an explicit natural-language mapping of each reference image to the image prompt, e.g. "参考图1是角色「老赵」..." / "参考图2是场景「机舱内」..."
+- Block generation when the prompt has asset tags but zero usable reference images, and warn when some referenced assets are unresolved
+
+Do not assume that sending image URLs alone gives a model strong asset identity binding. Agnes Image (`agnes-image-2.0-flash`) accepts reference images through OpenAI-compatible `extra_body.image`, and logs may show `request_mode=i2i`, `ref_count>0`, `resolved_ref_count>0`; this proves transport succeeded, but the model may still treat images as weak visual/style references unless the prompt explicitly binds image N to a role/scene/prop and asks for one complete shot image.
+
+Storyboard R2V workbench tabs are deliberately split into three concepts:
+- `asset_compose` / 资产合成: use character/scene/prop asset refs to generate complete shot keyframes. This is where asset tags should influence image generation.
+- `keyframe_r2v` / 关键帧 R2V: submit complete shot keyframes to video models. Do not use this as a raw asset-list submission path.
+- `t2i_i2v` / 首帧 I2V: generate or upload a first frame, then submit it as an I2V input.
+
+Current implementation notes (July 2026):
+- The workbench intentionally supports separate video-provider and Seedance-provider configuration. Do not route official Seedance through a generic OpenAI/video-provider adapter if it would mutate the official request shape. Keep official-provider routing compatible with Volcano/Doubao semantics, and keep relay/provider-specific compatibility in dedicated adapters.
+- Seedance is used as a video output model for image/keyframe-based video. It can help with multi-asset-generated complete shot frames, but it should not replace the upstream image model that composes character/scene/prop references into a complete storyboard/keyframe image.
+- `gpt-image-2` / OpenAI-compatible image providers may differ between `/v1/images/edits` and `/v1/images/generations + extra_body.image`. Keep compatibility isolated in the image provider adapter, not in storyboard UI code.
+- The `t2i_i2v` and `asset_compose` tabs expose an editable `storyboard_image_prompt` field on frame workbench state. Use it only for storyboard/first-frame image generation; do not let it overwrite the shot's main video prompt.
+- The `t2i_i2v`, `asset_compose`, and `keyframe_r2v` image slots should share the same mental model: preview, generate/regenerate, upload, selectable candidate pool. Keep media previews compact; avoid full-width image stages that make controls look detached or overlapped.
+- The right-side Request Log is the canonical request/task visibility surface. The old top-right Queue panel was removed to reduce duplicated task UI.
+- Cast/asset image cards should keep their generating state until the asset image is actually available. Do not clear spinners merely because a request log entry was created.
+
+The `keyframe_r2v` tab exposes editable `keyframe_start_prompt` and `keyframe_end_prompt` fields on the frame workbench state. Use these prompts when generating start/end keyframes; do not rely on a hidden suffix appended to the same base prompt for both frames.
+
+Start/end keyframes are independent workbench slots. Persist the selected images in `keyframe_start_image_url` / `keyframe_end_image_url`, and persist their candidate pools separately in `keyframe_start_image_urls` / `keyframe_end_image_urls`. Do not reuse `t2i_image_urls` as the keyframe candidate source for both slots; that couples the thumbnails and loading state and makes generating a tail frame appear to regenerate the start frame.
+
+POV / subjective-camera protection:
+- When the shot prompt or structured camera angle contains `主观视角`, `第一人称`, or `POV`, image generation should append a hard POV constraint: the camera is the subject's eyes/viewpoint; do not show the subject's face, body, back, half-body, or full-body as a third-person composition.
+- Character reference images in POV shots should be described as identity/clothing/local-body cues only (hands, sleeves, knees, held objects, watch), not as instructions to place the full character in frame.
+- The global storyboard writing skill (`~/.codex/skills/分镜脚本写作/SKILL.md`) has matching guidance. Keep runtime prompt assembly and authoring guidance aligned.
+
+Agnes-specific note: `agnes-video-v2.0` treats `extra_body.image` as visual/keyframe material, not as invisible identity references or an unordered asset library. Do **not** send character reference sheets/full-body sheets or raw scene/prop asset lists to Agnes video refs. The Storyboard R2V UI labels this path as keyframe R2V: generate/upload a complete shot keyframe first, then submit that complete frame as Agnes' video reference. If two complete keyframes are available, submit them as Agnes keyframes (`mode=keyframes`). Asset tags may still be used upstream to compose the keyframe image, but they should be stripped from the Agnes video prompt.
+
+Agnes Video log semantics:
+- I2V uses top-level `request_body.image`; this is counted as `image=1`, not as `refs=1`.
+- `refs=N` refers only to additional multi-reference / keyframe images sent via `extra_body.image`.
+- The operation detail should use `Agnes submit · image=... · refs=... · mode=...`, and debug should include `resolved_inputs.single_image` plus `all_visual_inputs`.
+- `refs=0` with `mode=i2v` does not mean the first frame was missing; check `request_body.image` / `single_image`.
+
+Agnes capacity note: Agnes may reject concurrent submissions with `503 Service busy (tasks: 1)`. The backend adapter retries busy submits using `VIDEO_BUSY_RETRY_ATTEMPTS` and `VIDEO_BUSY_RETRY_DELAY`; the frontend should also avoid parallel Agnes batch submissions and clamp Agnes "takes" to 1.
+
+Regression tests for this chain live in:
+
+```
+frontend/src/__tests__/storyboard-reference-tags.test.ts
+```
+
+Keep tests covering at least:
+- Episode empty asset + series asset with generated stage image
+- Stale frozen stage ID
+- Scene names with leading `-`
+- Typed `[scene:...]` / `[prop:...]` tags
+- Legacy `[characterN:...]` tags
+
 ### API Client (`frontend/src/lib/api.ts`)
 
 All backend calls go through the `api` object (`export const api = { ... }`). Each method:
@@ -407,3 +494,37 @@ API Key Configuration: Copy `.env.example` → `.env`, add Alibaba Cloud DashSco
 - **Video merge failures**: Check if video files exist and have proper relative paths.
 - **Modal stuck on 加载配置中...**: Likely caused by an `async def` endpoint doing blocking I/O. Convert to `def`.
 - **Frontend can't reach backend**: Backend runs on port 17177. Frontend dev server auto-detects and proxies.
+
+### R2V Preflight & External Video Models
+
+The frontend `generateVideoBatch` has a preflight check for `keyframe_r2v` mode that blocks submission when no complete keyframe image is available for image-based video models. Agnes and other image-based R2V models should receive complete keyframes from the shot image history, not raw asset lists.
+
+Key rules for the R2V preflight:
+- `isExternalVideoModel(routeModelId)` → external image-based video path (e.g. Agnes), uses complete keyframes as `referenceImageUrls`
+- `isR2vImageBased(routeModelId)` → native image-based R2V model, also uses complete keyframes from the shot
+- Non-image R2V legacy routes may still require provider-specific reference media
+
+Three separate locations have this logic (all in `StoryboardR2V.tsx`):
+- Preflight in `generateVideoBatch`
+- `submitForSingleShot` (`generateVideo`)
+- `createOne` inside `generateVideoBatch`
+
+### Reference Tag Generation Chain
+
+The R2V reference image chain works in two phases:
+
+**Phase 1 — Tag Generation** (`buildPromptWithReferenceTags` in `buildAssembledPrompt.ts:125-158`):
+1. `buildReferenceTags()` iterates `shot.characterIds`/`sceneId`/`propIds` → matches by **ID** against Episode-level `characters[]`/`scenes[]`/`props[]`
+2. Generates tags like `[character1:角色名]` prepended to prompt
+3. Scene tags are filtered: only kept if the scene name appears in the raw prompt text
+4. Existing user-written tags (e.g. in polished prompt) are preserved and deduped
+
+**Phase 2 — Tag Resolution** (`parseAssetTags` in `StoryboardR2V.tsx:1211-1251`):
+1. Parses `[characterN:name]` tags from prompt
+2. Looks up by **name** — first in Episode-level data, then Series-level fallback (`seriesAssets`)
+3. Calls `resolveAssetReferenceImage()` (`buildAssembledPrompt.ts:11-38`) which tries: stage ref image → `reference_sheet` → `three_views` → `three_view_asset` → `full_body` → `full_body_asset` → legacy URL fields
+
+**Common pitfalls in the tag chain:**
+- Phase 1 (tag generation) only uses Episode-level characters. If characters are in Series but not copied to Episode, tags won't be generated even though Phase 2 has Series fallback. This is an asymmetry.
+- Scene tags are filtered by name match in the raw prompt — a scene that shares an ID across all shots may be dropped from shots that don't mention the location name.
+- Names must match exactly (case-insensitive find) between Phase 1 ID→name lookup and Phase 2 name→resource lookup.

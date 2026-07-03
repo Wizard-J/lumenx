@@ -39,6 +39,7 @@ export interface PreviewImageProps {
     src?: string;
     alt?: string;
     className?: string;
+    imageClassName?: string;
     /** Disable click-to-lightbox + 🔍 button (e.g. cast avatars in chip bar
      *  where lightbox is overkill for tiny 16px chips). */
     noLightbox?: boolean;
@@ -52,18 +53,21 @@ export interface PreviewImageProps {
     alwaysShowMagnify?: boolean;
     /** Whole-thumb click opens lightbox (in addition to the 🔍 button).
      *  Default false — most callers own the click for "select" / "play".
-     *  Turn this on for read-only thumbs (e.g. TaskQueuePanel queue rows)
+     *  Turn this on for read-only thumbs
      *  where there's no other click semantic. */
     clickToLightbox?: boolean;
     /** Render the placeholder slot (no src) without the error styling —
      *  e.g. "no T2I yet" empty state should be neutral, not red. */
     placeholder?: React.ReactNode;
+    /** Called after the underlying <img> loads successfully. Used by
+     *  AssetVisualCard to detect wide character sheets at runtime. */
+    onImageLoad?: (img: HTMLImageElement) => void;
 }
 
 export default function PreviewImage({
-    src, alt, className, noLightbox = false,
+    src, alt, className, imageClassName, noLightbox = false,
     groupId, groupIndex, alwaysShowMagnify = false,
-    clickToLightbox = false, placeholder,
+    clickToLightbox = false, placeholder, onImageLoad,
 }: PreviewImageProps) {
     const { open, openInGroup } = useLightbox();
     const [errored, setErrored] = useState(false);
@@ -174,7 +178,8 @@ export default function PreviewImage({
                         alt={alt ?? ""}
                         loading="lazy"
                         onError={handleError}
-                        className="h-full w-full object-cover"
+                        onLoad={onImageLoad ? (e) => onImageLoad(e.currentTarget) : undefined}
+                        className={clsx("h-full w-full", imageClassName || "object-cover")}
                     />
                     {!noLightbox && sizeBucket !== "micro" ? (
                         <button

@@ -505,5 +505,5 @@ export function isR2vImageBased(modelId: string): boolean {
     // All current R2V models use image references except wan2.6-r2v (legacy video refs)
     if (family === 'wan' && modelId === 'wan2.6-r2v') return false;
     return family === 'happyhorse' || family === 'wan' || family === 'kling'
-        || family === 'pixverse' || family === 'vidu';
+        || family === 'pixverse' || family === 'vidu' || family === 'seedance';
 }

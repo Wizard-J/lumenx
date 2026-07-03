@@ -54,6 +54,38 @@ DEFAULT_ASSET_NEGATIVE_PROMPT = (
     "text overlay, subtitles, caption, credits, QR code, brand mark, app icon, "
     "corner bug, UI elements, frame border, poster text, illegible text"
 )
+
+REFERENCE_LAYOUT_NEGATIVE_PROMPT = (
+    "contact sheet, collage, multi panel, multiple panels, split screen, grid layout, "
+    "nine-grid, 3x3 grid, storyboard grid, comic panel, comparison sheet, reference sheet, "
+    "multiple photos, several images, inset image, thumbnail strip, side thumbnails, "
+    "border, frame, caption, labels, readable text, social media icon, weibo icon, weibo logo"
+)
+
+SCENE_REFERENCE_NEGATIVE_PROMPT = (
+    f"{DEFAULT_ASSET_NEGATIVE_PROMPT}, {REFERENCE_LAYOUT_NEGATIVE_PROMPT}, "
+    "people, person, human, character, figure, portrait, face, hands, fingers, thumbs up"
+)
+
+PROP_REFERENCE_NEGATIVE_PROMPT = (
+    f"{DEFAULT_ASSET_NEGATIVE_PROMPT}, {REFERENCE_LAYOUT_NEGATIVE_PROMPT}, "
+    "people, person, human, character, hand, hands, fingers, thumb, thumbs up, pointing hand"
+)
+
+
+def merge_negative_prompt(primary: str = None, default: str = DEFAULT_ASSET_NEGATIVE_PROMPT) -> str:
+    if primary:
+        return f"{primary}, {default}"
+    return default
+
+
+def _with_prompt_suffix(base_prompt: str, prompt: str = None) -> str:
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return base_prompt
+    return f"{base_prompt}. User prompt constraints: {prompt}"
+
+
 class AssetGenerator:
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
@@ -471,7 +503,7 @@ class AssetGenerator:
             
         return character
 
-    def generate_scene(self, scene: Scene, positive_prompt: str = None, negative_prompt: str = None, batch_size: int = 1, model_name: str = None, size: str = None) -> Scene:
+    def generate_scene(self, scene: Scene, positive_prompt: str = None, negative_prompt: str = None, batch_size: int = 1, model_name: str = None, size: str = None, prompt: str = None) -> Scene:
         """Generates a scene reference image."""
         scene.status = GenerationStatus.PROCESSING
         
@@ -483,9 +515,16 @@ class AssetGenerator:
         effective_size = size or "1024*576"
         
 
-        # Use default negative prompt when none is provided
-        effective_negative = negative_prompt if negative_prompt is not None else DEFAULT_ASSET_NEGATIVE_PROMPT
-        prompt = f"Scene Concept Art: {scene.name}. {scene.description}. High quality, detailed. {positive_prompt}"
+        effective_negative = merge_negative_prompt(negative_prompt, SCENE_REFERENCE_NEGATIVE_PROMPT)
+        prompt = _with_prompt_suffix((
+            f"Photorealistic location still: {scene.name}. {scene.description}. "
+            "Create exactly one single full-frame environment photograph, one continuous landscape shot, "
+            "empty location with no people, no characters, no hands. "
+            "If the description mentions a person, survivor, or occupancy capacity, use it only as scale/context and do not draw any person. "
+            "Do not create a reference sheet, contact sheet, collage, grid, storyboard panel, inset image, "
+            "thumbnail strip, border, caption, social-media mark, logo, watermark, or any text. "
+            f"High quality, detailed. {positive_prompt}"
+        ), prompt)
         
         try:
             for _ in range(batch_size):
@@ -536,7 +575,7 @@ class AssetGenerator:
             
         return scene
 
-    def generate_prop(self, prop: Prop, positive_prompt: str = None, negative_prompt: str = None, batch_size: int = 1, model_name: str = None, size: str = None) -> Prop:
+    def generate_prop(self, prop: Prop, positive_prompt: str = None, negative_prompt: str = None, batch_size: int = 1, model_name: str = None, size: str = None, prompt: str = None) -> Prop:
         """Generates a prop reference image."""
         prop.status = GenerationStatus.PROCESSING
         
@@ -548,9 +587,15 @@ class AssetGenerator:
         effective_size = size or "1024*1024"
         
 
-        # Use default negative prompt when none is provided
-        effective_negative = negative_prompt if negative_prompt is not None else DEFAULT_ASSET_NEGATIVE_PROMPT
-        prompt = f"Prop Design: {prop.name}. {prop.description}. Isolated on white background, high quality, detailed. {positive_prompt}"
+        effective_negative = merge_negative_prompt(negative_prompt, PROP_REFERENCE_NEGATIVE_PROMPT)
+        prompt = _with_prompt_suffix((
+            f"Photorealistic object still: {prop.name}. {prop.description}. "
+            "Create exactly one single centered prop reference photograph only, one continuous image. "
+            "No secondary views, no detail close-up panels, no hands, no thumbs-up, no people, "
+            "no collage, no grid, no contact sheet, no panels, no inset images, no captions, no labels, "
+            "no social-media marks, no logo, no watermark. "
+            f"High quality, detailed. {positive_prompt}"
+        ), prompt)
         
         try:
             for _ in range(batch_size):

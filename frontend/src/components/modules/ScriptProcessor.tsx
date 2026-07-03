@@ -24,6 +24,16 @@ interface ScriptNode {
     visual_weight?: number;
 }
 
+interface NormalizePreview {
+    normalized_text: string;
+    counts: {
+        characters: number;
+        scenes: number;
+        props: number;
+        frames: number;
+    };
+}
+
 export default function ScriptProcessor() {
     const ts = useTranslations("script");
     const tc = useTranslations("common");
@@ -43,6 +53,8 @@ export default function ScriptProcessor() {
     const [selectedNode, setSelectedNode] = useState<ScriptNode | null>(null);
     const [showPanel, setShowPanel] = useState(true);
     const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+    const [isNormalizing, setIsNormalizing] = useState(false);
+    const [normalizePreview, setNormalizePreview] = useState<NormalizePreview | null>(null);
 
     // Sync from project. Bind on currentProject.id (not the whole object) so
     // local textarea state isn't clobbered every time we mutate Zustand for
@@ -148,6 +160,99 @@ export default function ScriptProcessor() {
         }
     };
 
+    const handleNormalizePreview = async () => {
+        if (!script.trim()) {
+            toast.warning(ts("scriptEmpty"), {
+                projectId: currentProject?.id,
+                projectTitle: currentProject?.title,
+            });
+            return;
+        }
+        if (!currentProject?.id) return;
+        const projectId = currentProject.id;
+        const projectTitle = currentProject.title;
+        setIsNormalizing(true);
+        const toastId = toast.progress(ts("normalizingScript"), {
+            projectId,
+            projectTitle,
+            body: ts("normalizingScriptBody"),
+        });
+        try {
+            const preview = await api.normalizeScriptPreview(projectId, script);
+            setNormalizePreview(preview);
+            toast.update(toastId, {
+                kind: "success",
+                title: ts("normalizePreviewReady"),
+                body: ts("normalizePreviewReadyBody", {
+                    f: preview.counts.frames,
+                    c: preview.counts.characters,
+                    s: preview.counts.scenes,
+                    p: preview.counts.props,
+                }),
+                autoCloseMs: 5000,
+            });
+        } catch (error: any) {
+            console.error("Failed to normalize script:", error);
+            toast.update(toastId, {
+                kind: "error",
+                title: ts("normalizeFailed"),
+                body: String(error?.response?.data?.detail || error?.message || "未知错误").slice(0, 240),
+                action: {
+                    label: ts("retry"),
+                    onClick: () => { handleNormalizePreview(); },
+                },
+            });
+        } finally {
+            setIsNormalizing(false);
+        }
+    };
+
+    const handleNormalizeConfirm = async (normalizedText: string) => {
+        if (!currentProject?.id) return;
+        const projectId = currentProject.id;
+        const projectTitle = currentProject.title;
+        setIsNormalizing(true);
+        const toastId = toast.progress(ts("normalizeApplying"), {
+            projectId,
+            projectTitle,
+            body: ts("normalizeApplyingBody"),
+        });
+        try {
+            const project = await api.normalizeAndExtractScript(projectId, script, normalizedText);
+            const refreshed = await api.getProject(project.id).catch(() => project);
+            updateProject(projectId, refreshed);
+            setScript(refreshed.originalText ?? refreshed.original_text ?? normalizedText);
+            setNormalizePreview(null);
+            toast.update(toastId, {
+                kind: "success",
+                title: ts("normalizeDone"),
+                body: ts("normalizeDoneBody", {
+                    f: refreshed.frames?.length ?? 0,
+                    c: refreshed.characters?.length ?? 0,
+                    s: refreshed.scenes?.length ?? 0,
+                    p: refreshed.props?.length ?? 0,
+                }),
+                autoCloseMs: 6000,
+            });
+            if (refreshed.series_id) {
+                document.dispatchEvent(new CustomEvent("lumenx:openReconcile"));
+            }
+        } catch (error: any) {
+            console.error("Failed to apply normalized script:", error);
+            toast.update(toastId, {
+                kind: "error",
+                title: ts("normalizeFailed"),
+                body: String(error?.response?.data?.detail || error?.message || "未知错误").slice(0, 240),
+                action: {
+                    label: ts("retry"),
+                    onClick: () => { handleNormalizeConfirm(normalizedText); },
+                },
+            });
+        } finally {
+            setIsNormalizing(false);
+        }
+    };
+
     const handleDeleteNode = async (node: ScriptNode, e: React.MouseEvent) => {
         e.stopPropagation();
         if (!currentProject) return;
@@ -218,15 +323,26 @@ export default function ScriptProcessor() {
                     title={tStep("scriptTitle")}
                     subtitle={tStep("scriptSubtitle")}
                     trailing={(
-                        <WorkflowActionButton
-                            variant="primary"
-                            loading={isAnalyzing}
-                            leftIcon={<Wand2 />}
-                            onClick={handleAnalyze}
-                            disabled={!script}
-                        >
-                            {isAnalyzing ? ts("analyzingScript") : ts("extractEntities")}
-                        </WorkflowActionButton>
+                        <div className="flex items-center gap-2">
+                            <WorkflowActionButton
+                                variant="secondary"
+                                loading={isNormalizing}
+                                leftIcon={<Sparkles />}
+                                onClick={handleNormalizePreview}
+                                disabled={!script || isAnalyzing}
+                            >
+                                {isNormalizing ? ts("normalizingScript") : ts("normalizeAndExtract")}
+                            </WorkflowActionButton>
+                            <WorkflowActionButton
+                                variant="primary"
+                                loading={isAnalyzing}
+                                leftIcon={<Wand2 />}
+                                onClick={handleAnalyze}
+                                disabled={!script || isNormalizing}
+                            >
+                                {isAnalyzing ? ts("analyzingScript") : ts("extractEntities")}
+                            </WorkflowActionButton>
+                        </div>
                     )}
                 />
                 <div className="flex-1 relative p-6 bg-surface overflow-hidden">
@@ -285,8 +401,120 @@ export default function ScriptProcessor() {
                 scriptId={currentProject?.id ?? null}
                 onClose={() => setReconcileOpen(false)}
             />
+            <NormalizeScriptModal
+                isOpen={!!normalizePreview}
+                originalText={script}
+                preview={normalizePreview}
+                applying={isNormalizing}
+                onClose={() => setNormalizePreview(null)}
+                onConfirm={handleNormalizeConfirm}
+            />
 
         </div>
+    );
+}
+
+function NormalizeScriptModal({
+    isOpen,
+    originalText,
+    preview,
+    applying,
+    onClose,
+    onConfirm,
+}: {
+    isOpen: boolean;
+    originalText: string;
+    preview: NormalizePreview | null;
+    applying: boolean;
+    onClose: () => void;
+    onConfirm: (normalizedText: string) => void;
+}) {
+    const ts = useTranslations("script");
+    if (!isOpen || !preview) return null;
+    return (
+        <AnimatePresence>
+            <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[100] grid place-items-center bg-overlay backdrop-blur-sm"
+                onClick={onClose}
+            >
+                <motion.div
+                    initial={{ scale: 0.96, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.96, opacity: 0 }}
+                    transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                    className="flex max-h-[86vh] w-[min(1180px,calc(100vw-48px))] flex-col overflow-hidden rounded-2xl border border-glass-border bg-elevated shadow-[0_24px_64px_-12px_rgba(0,0,0,0.75)]"
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    <header className="flex items-center gap-3 border-b border-glass-border px-6 py-5">
+                        <div className="grid h-9 w-9 place-items-center rounded-full border border-primary/40 bg-primary/10 text-primary">
+                            <Sparkles size={16} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                            <h2 className="font-display text-display font-medium text-foreground">{ts("normalizePreviewTitle")}</h2>
+                            <p className="mt-0.5 text-xs text-text-secondary">{ts("normalizePreviewSubtitle")}</p>
+                        </div>
+                        <button
+                            onClick={onClose}
+                            aria-label="Close"
+                            className="rounded-lg p-2 text-text-muted transition-colors hover:bg-hover-bg hover:text-foreground"
+                        >
+                            <X size={16} />
+                        </button>
+                    </header>
+
+                    <div className="grid min-h-0 flex-1 gap-4 overflow-hidden p-6 lg:grid-cols-2">
+                        <section className="flex min-h-[360px] min-w-0 flex-col overflow-hidden rounded-xl border border-glass-border bg-black/20">
+                            <div className="flex items-center justify-between border-b border-glass-border px-4 py-3">
+                                <h3 className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-text-secondary">{ts("normalizeOriginal")}</h3>
+                                <span className="font-mono text-[10px] text-text-muted">{originalText.length}</span>
+                            </div>
+                            <textarea
+                                value={originalText}
+                                readOnly
+                                className="min-h-0 flex-1 resize-none bg-transparent p-4 font-mono text-xs leading-relaxed text-text-muted outline-none custom-scrollbar"
+                            />
+                        </section>
+                        <section className="flex min-h-[360px] min-w-0 flex-col overflow-hidden rounded-xl border border-primary/30 bg-primary/[0.035]">
+                            <div className="flex items-center justify-between border-b border-primary/20 px-4 py-3">
+                                <h3 className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-primary">{ts("normalizeStructured")}</h3>
+                                <span className="font-mono text-[10px] text-text-muted">
+                                    {ts("normalizeCounts", {
+                                        f: preview.counts.frames,
+                                        c: preview.counts.characters,
+                                        s: preview.counts.scenes,
+                                        p: preview.counts.props,
+                                    })}
+                                </span>
+                            </div>
+                            <textarea
+                                value={preview.normalized_text}
+                                readOnly
+                                className="min-h-0 flex-1 resize-none bg-transparent p-4 font-mono text-xs leading-relaxed text-text-secondary outline-none custom-scrollbar"
+                            />
+                        </section>
+                    </div>
+
+                    <footer className="flex items-center gap-3 border-t border-glass-border px-6 py-4">
+                        <p className="min-w-0 flex-1 text-xs text-text-muted">{ts("normalizeOverwriteHint")}</p>
+                        <WorkflowActionButton variant="ghost" size="sm" onClick={onClose} disabled={applying}>
+                            {ts("extractDiscard")}
+                        </WorkflowActionButton>
+                        <WorkflowActionButton
+                            variant="primary"
+                            size="sm"
+                            loading={applying}
+                            rightIcon={<ChevronRight />}
+                            onClick={() => onConfirm(preview.normalized_text)}
+                        >
+                            {ts("normalizeApply")}
+                        </WorkflowActionButton>
+                    </footer>
+                </motion.div>
+            </motion.div>
+        </AnimatePresence>
     );
 }
 

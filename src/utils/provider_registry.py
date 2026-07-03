@@ -236,6 +236,23 @@ DEFAULT_PROVIDER_FAMILIES: Tuple[ProviderFamilyConfig, ...] = (
             "dashscope": "dashscope_temp_file_url",
         },
     ),
+    ProviderFamilyConfig(
+        model_family="seedance-",
+        backend_default="vendor",
+        credential_sources={
+            "vendor": ("ARK_API_KEY", "SEEDANCE_API_KEY"),
+        },
+        supported_modalities=("t2v", "i2v", "r2v"),
+        image_input_mode={
+            "vendor": "ark_content_generation_image_url_roles",
+        },
+        audio_input_mode={
+            "vendor": "ark_content_generation_audio_url",
+        },
+        reference_video_input_mode={
+            "vendor": "ark_content_generation_video_url",
+        },
+    ),
 )
 
 

@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, User, MapPin, Package } from "lucide-react";
 import { useTranslations } from "next-intl";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
+import { resolveAssetReferenceImage } from "./assetReferences";
 
 interface AssetDrawerProps {
     isOpen: boolean;
@@ -15,23 +16,7 @@ interface AssetDrawerProps {
 }
 
 function getAssetThumbnail(item: any, type: "character" | "scene" | "prop"): string | null {
-    if (type === "character") {
-        const asset = item.full_body_asset || item.headshot_asset;
-        if (asset?.selected_id && asset.variants?.length) {
-            const selected = asset.variants.find((v: any) => v.id === asset.selected_id);
-            if (selected) return selected.url;
-        }
-        if (asset?.variants?.[0]) return asset.variants[0].url;
-        if (item.avatar_url) return item.avatar_url;
-    } else {
-        const asset = item.image_asset;
-        if (asset?.selected_id && asset.variants?.length) {
-            const selected = asset.variants.find((v: any) => v.id === asset.selected_id);
-            if (selected) return selected.url;
-        }
-        if (asset?.variants?.[0]) return asset.variants[0].url;
-    }
-    return null;
+    return resolveAssetReferenceImage(item, type) || null;
 }
 
 export default function AssetDrawer({ isOpen, onClose, characters, scenes, props, onSelectAsset }: AssetDrawerProps) {

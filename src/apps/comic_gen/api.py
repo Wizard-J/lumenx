@@ -35,6 +35,7 @@ import shutil
 import uuid
 import logging
 import traceback
+from urllib.parse import urlparse
 from .pipeline import ComicGenPipeline
 from .models import (
     ArtDirection,
@@ -112,6 +113,33 @@ app.mount("/files/outputs", StaticFiles(directory="output"), name="files_outputs
 app.mount("/files/videos", StaticFiles(directory="output/video"), name="files_videos")
 app.mount("/files/assets", StaticFiles(directory="output/assets"), name="files_assets")
 app.mount("/files", StaticFiles(directory="output"), name="files")
+
+
+def _normalize_local_file_url(value: Optional[str]) -> Optional[str]:
+    """Convert frontend local static URLs back to output-relative paths.
+
+    Only normalizes URLs pointing to localhost/dev hosts. Third-party URLs
+    with a matching path prefix are left unchanged.
+    """
+    LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+    if not isinstance(value, str) or not value:
+        return value
+    parsed = urlparse(value)
+    # For absolute http/https URLs, only normalize when the host is local
+    if parsed.scheme in {"http", "https"}:
+        if parsed.hostname not in LOCAL_HOSTS:
+            return value
+        path = parsed.path
+    else:
+        path = value
+    for prefix in ("/files/", "/local-file/output/"):
+        if path.startswith(prefix):
+            return path[len(prefix):]
+    return value
+
+
+def _normalize_local_file_urls(values: Optional[List[str]]) -> List[str]:
+    return [normalized for item in (values or []) if (normalized := _normalize_local_file_url(item))]
 
 
 # ── Local file serving for Agnes video (no OSS dependency) ────────────
@@ -311,13 +339,13 @@ def upload_file(file: UploadFile = File(...)):
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Try uploading to OSS
-        oss_url = OSSImageUploader().upload_image(file_path)
+        # Try uploading to OSS (under "uploads" sub_path so object key matches local output/uploads/)
+        oss_url = OSSImageUploader().upload_image(file_path, sub_path="uploads")
         if oss_url:
             return signed_response({"url": oss_url})
 
         # Fallback to local URL (relative path for frontend getAssetUrl)
-        return {"url": f"uploads/{filename}"}
+        return signed_response({"url": f"uploads/{filename}"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -353,9 +381,9 @@ def upload_asset(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        # 2. Upload to OSS
+        # 2. Upload to OSS (under "uploads" sub_path so object key matches local output/uploads/)
         uploader = OSSImageUploader()
-        oss_url = uploader.upload_image(file_path)
+        oss_url = uploader.upload_image(file_path, sub_path="uploads")
         if not oss_url:
             oss_url = f"uploads/{filename}"  # Fallback to local path
         
@@ -404,6 +432,11 @@ class ReparseProjectRequest(BaseModel):
     text: str
 
 
+class NormalizeScriptRequest(BaseModel):
+    text: str
+    normalized_text: Optional[str] = None
+
+
 class UpdateScriptTextRequest(BaseModel):
     text: str
 
@@ -423,6 +456,36 @@ def update_script_text(script_id: str, request: UpdateScriptTextRequest):
     script.updated_at = time.time()
     pipeline._save_data()
     return signed_response(script)
+
+
+@app.post("/projects/{script_id}/script/normalize_preview")
+def normalize_script_preview(script_id: str, request: ReparseProjectRequest):
+    """Dry-run normalize arbitrary script text into LumenX's structured format."""
+    try:
+        result = pipeline.normalize_script_preview(script_id, request.text)
+        return signed_response(result)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in normalize_script_preview: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/projects/{script_id}/script/normalize_extract")
+def normalize_extract_storyboard(script_id: str, request: NormalizeScriptRequest):
+    """Normalize script text, overwrite it, then extract entities and storyboard frames."""
+    try:
+        updated_script = pipeline.normalize_extract_storyboard(
+            script_id,
+            request.text,
+            request.normalized_text,
+        )
+        return signed_response(updated_script)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in normalize_extract_storyboard: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 class MergePropRequest(BaseModel):
@@ -959,6 +1022,54 @@ def create_series_prop(series_id: str, request: CreateSeriesAssetRequest):
     return signed_response(prop.model_dump())
 
 
+@app.delete("/series/{series_id}/characters/{character_id}")
+def delete_series_character(series_id: str, character_id: str):
+    """Delete a character from series scope."""
+    series = pipeline.get_series(series_id)
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+    before = len(series.characters)
+    series.characters = [c for c in series.characters if c.id != character_id]
+    if len(series.characters) == before:
+        raise HTTPException(status_code=404, detail="Character not found in series")
+    series.updated_at = time.time()
+    pipeline.series_store[series_id] = series
+    pipeline._save_series_data()
+    return signed_response({"removed": True, "id": character_id})
+
+
+@app.delete("/series/{series_id}/scenes/{scene_id}")
+def delete_series_scene(series_id: str, scene_id: str):
+    """Delete a scene from series scope."""
+    series = pipeline.get_series(series_id)
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+    before = len(series.scenes)
+    series.scenes = [s for s in series.scenes if s.id != scene_id]
+    if len(series.scenes) == before:
+        raise HTTPException(status_code=404, detail="Scene not found in series")
+    series.updated_at = time.time()
+    pipeline.series_store[series_id] = series
+    pipeline._save_series_data()
+    return signed_response({"removed": True, "id": scene_id})
+
+
+@app.delete("/series/{series_id}/props/{prop_id}")
+def delete_series_prop(series_id: str, prop_id: str):
+    """Delete a prop from series scope."""
+    series = pipeline.get_series(series_id)
+    if not series:
+        raise HTTPException(status_code=404, detail="Series not found")
+    before = len(series.props)
+    series.props = [p for p in series.props if p.id != prop_id]
+    if len(series.props) == before:
+        raise HTTPException(status_code=404, detail="Prop not found in series")
+    series.updated_at = time.time()
+    pipeline.series_store[series_id] = series
+    pipeline._save_series_data()
+    return signed_response({"removed": True, "id": prop_id})
+
+
 @app.post("/series/{series_id}/assets/import")
 def import_series_assets(series_id: str, request: ImportAssetsRequest):
     """Deep-copy assets from another Series into this one."""
@@ -1072,6 +1183,12 @@ class EnvConfig(ProviderRoutingConfig):
     VIDEO_API_KEY: Optional[str] = None
     VIDEO_BASE_URL: Optional[str] = None
     VIDEO_MODEL: Optional[str] = None
+    SEEDANCE_PROVIDER: Optional[str] = None
+    ARK_API_KEY: Optional[str] = None
+    ARK_BASE_URL: Optional[str] = None
+    SEEDANCE_BASE_URL: Optional[str] = None
+    SEEDANCE_API_KEY: Optional[str] = None
+    SEEDANCE_MODEL: Optional[str] = None
     COMFYUI_BASE_URL: Optional[str] = None
     COMFYUI_API_KEY: Optional[str] = None
     TTS_BACKEND: Optional[str] = None
@@ -2321,7 +2438,7 @@ class CreateVideoTaskRequest(BaseModel):
     # Source tab in the Storyboard R2V workbench. Distinct from
     # generation_mode (backend dispatcher hint) — used by the candidates
     # panel to group takes per UI tab on refresh.
-    workbench_tab: Optional[str] = None  # 't2i_i2v' | 'direct_r2v'
+    workbench_tab: Optional[str] = None  # 't2i_i2v' | 'keyframe_r2v' | 'asset_compose'
 
 
 def process_video_task(script_id: str, task_id: str):
@@ -2379,10 +2496,17 @@ class UpdateFrameWorkbenchRequest(BaseModel):
     """Storyboard R2V workbench state writeback. Every field optional;
     only what the caller passes gets updated. The server clamps lists
     and indices to safe ranges; rejects unknown enum values."""
-    workbench_tab_mode: Optional[str] = None  # 't2i_i2v' | 'direct_r2v'
+    workbench_tab_mode: Optional[str] = None  # 't2i_i2v' | 'keyframe_r2v' | 'asset_compose'
     t2i_image_urls: Optional[List[str]] = None  # full ordered history, server caps at 10 FIFO
     t2i_selected_index: Optional[int] = None  # active首帧 index, clamped to range
     workbench_generate_count: Optional[int] = None  # batch size, clamped to [1, 6]
+    storyboard_image_prompt: Optional[str] = None
+    keyframe_start_prompt: Optional[str] = None
+    keyframe_end_prompt: Optional[str] = None
+    keyframe_start_image_url: Optional[str] = None
+    keyframe_end_image_url: Optional[str] = None
+    keyframe_start_image_urls: Optional[List[str]] = None
+    keyframe_end_image_urls: Optional[List[str]] = None
 
 
 @app.patch("/projects/{script_id}/frames/{frame_id}/workbench", response_model=StoryboardFrame)
@@ -2400,6 +2524,13 @@ def update_frame_workbench(
             t2i_image_urls=request.t2i_image_urls,
             t2i_selected_index=request.t2i_selected_index,
             workbench_generate_count=request.workbench_generate_count,
+            storyboard_image_prompt=request.storyboard_image_prompt,
+            keyframe_start_prompt=request.keyframe_start_prompt,
+            keyframe_end_prompt=request.keyframe_end_prompt,
+            keyframe_start_image_url=request.keyframe_start_image_url,
+            keyframe_end_image_url=request.keyframe_end_image_url,
+            keyframe_start_image_urls=request.keyframe_start_image_urls,
+            keyframe_end_image_urls=request.keyframe_end_image_urls,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2439,7 +2570,7 @@ def create_video_task(script_id: str, request: CreateVideoTaskRequest, backgroun
         for _ in range(request.batch_size):
             script, task_id = pipeline.create_video_task(
                 script_id=script_id,
-                image_url=request.image_url,
+                image_url=_normalize_local_file_url(request.image_url) or "",
                 prompt=request.prompt,
                 frame_id=request.frame_id,
                 duration=request.duration,
@@ -2452,8 +2583,8 @@ def create_video_task(script_id: str, request: CreateVideoTaskRequest, backgroun
                 model=request.model,
                 shot_type=request.shot_type,
                 generation_mode=request.generation_mode,
-                reference_video_urls=request.reference_video_urls,
-                reference_image_urls=request.reference_image_urls,
+                reference_video_urls=_normalize_local_file_urls(request.reference_video_urls),
+                reference_image_urls=_normalize_local_file_urls(request.reference_image_urls),
                 ratio=request.ratio,
                 watermark=request.watermark,
                 mode=request.mode,
@@ -3509,6 +3640,8 @@ def upload_frame_image(script_id: str, frame_id: str, file: UploadFile = File(..
 # is a user-facing creator upload, not an arbitrary file store.
 _T2I_UPLOAD_MAX_BYTES = 8 * 1024 * 1024
 _T2I_UPLOAD_ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+_VIDEO_UPLOAD_MAX_BYTES = 300 * 1024 * 1024
+_VIDEO_UPLOAD_ALLOWED_EXTS = {".mp4", ".mov", ".webm", ".m4v"}
 
 
 @app.post("/projects/{script_id}/frames/{frame_id}/upload_t2i")
@@ -3586,6 +3719,80 @@ async def upload_t2i_frame(script_id: str, frame_id: str, file: UploadFile = Fil
         raise
     except Exception as e:
         logger.exception("upload_t2i_frame unexpected error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/projects/{script_id}/frames/{frame_id}/upload_video_candidate", response_model=VideoTask)
+def upload_video_candidate(
+    script_id: str,
+    frame_id: str,
+    file: UploadFile = File(...),
+    workbench_tab: Optional[str] = None,
+    model: str = "uploaded-video",
+):
+    """Upload an external video as a completed candidate take for a frame."""
+    try:
+        original_name = (file.filename or "").strip()
+        if not original_name:
+            raise HTTPException(status_code=400, detail="No filename provided")
+        ext = os.path.splitext(original_name)[1].lower()
+        if ext not in _VIDEO_UPLOAD_ALLOWED_EXTS:
+            raise HTTPException(
+                status_code=415,
+                detail=f"Unsupported file type {ext!r}. Allowed: {sorted(_VIDEO_UPLOAD_ALLOWED_EXTS)}",
+            )
+
+        filename = f"video_{uuid.uuid4().hex}{ext}"
+        rel_path = os.path.join("uploads", filename)
+        abs_path = os.path.join("output", rel_path)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        size = 0
+        try:
+            with open(abs_path, "wb") as buffer:
+                while True:
+                    chunk = file.file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > _VIDEO_UPLOAD_MAX_BYTES:
+                        buffer.close()
+                        os.unlink(abs_path)
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"File exceeds {_VIDEO_UPLOAD_MAX_BYTES // (1024 * 1024)} MB limit",
+                        )
+                    buffer.write(chunk)
+        except HTTPException:
+            raise
+        except Exception as e:
+            if os.path.exists(abs_path):
+                try:
+                    os.unlink(abs_path)
+                except OSError:
+                    pass
+            raise HTTPException(status_code=500, detail=f"Upload write failed: {e}")
+
+        task = pipeline.upload_video_candidate(
+            script_id=script_id,
+            frame_id=frame_id,
+            file_path=rel_path,
+            model=model or "uploaded-video",
+            workbench_tab=workbench_tab,
+        )
+        if task is None:
+            if os.path.exists(abs_path):
+                try:
+                    os.unlink(abs_path)
+                except OSError:
+                    pass
+            raise HTTPException(status_code=404, detail="Script or frame not found")
+        return signed_response(task)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("upload_video_candidate unexpected error")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -3993,6 +4200,12 @@ def get_env_config():
             "VIDEO_API_KEY": _env("VIDEO_API_KEY"),
             "VIDEO_BASE_URL": _env("VIDEO_BASE_URL"),
             "VIDEO_MODEL": _env("VIDEO_MODEL"),
+            "SEEDANCE_PROVIDER": _env("SEEDANCE_PROVIDER", "ark"),
+            "ARK_API_KEY": _env("ARK_API_KEY"),
+            "ARK_BASE_URL": _env("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
+            "SEEDANCE_BASE_URL": _env("SEEDANCE_BASE_URL", "https://api.modelverse.cn"),
+            "SEEDANCE_API_KEY": _env("SEEDANCE_API_KEY"),
+            "SEEDANCE_MODEL": _env("SEEDANCE_MODEL", "dreamina-seedance-2-0-260128"),
             "COMFYUI_BASE_URL": _env("COMFYUI_BASE_URL"),
             "COMFYUI_API_KEY": _env("COMFYUI_API_KEY"),
             "TTS_BACKEND": _env("TTS_BACKEND", "dashscope"),

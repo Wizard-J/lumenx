@@ -1,41 +1,6 @@
 import type { ShotNode } from "./ShotCard";
-
-function selectedFromUnit(unit: any): string | undefined {
-    if (!unit) return undefined;
-    const variants = unit.image_variants || unit.variants || [];
-    const selectedId = unit.selected_image_id || unit.selected_id;
-    return variants.find((item: any) => item.id === selectedId)?.url || variants[0]?.url;
-}
-
-/** Resolve the exact persisted image used by a storyboard asset reference. */
-export function resolveAssetReferenceImage(
-    asset: any,
-    kind: "character" | "scene" | "prop",
-    stageId?: string | null,
-): string | undefined {
-    if (!asset) return undefined;
-    const stage = stageId
-        ? asset.stages?.find((item: any) => item.id === stageId)
-        : undefined;
-    const stageImage = stage?.reference_images?.find(
-        (item: any) => item.id === stage.selected_image_id,
-    )?.url;
-    if (stageImage) return stageImage;
-
-    if (kind === "character") {
-        return selectedFromUnit(asset.reference_sheet)
-            || selectedFromUnit(asset.three_views)
-            || selectedFromUnit(asset.three_view_asset)
-            || selectedFromUnit(asset.full_body)
-            || selectedFromUnit(asset.full_body_asset)
-            || asset.three_view_image_url
-            || asset.full_body_image_url
-            || asset.image_url;
-    }
-    return selectedFromUnit(asset.image_asset)
-        || asset.image_url
-        || asset.reference_image_url;
-}
+import { normalizeAssetName, stripAssetReferenceTags } from "./assetReferences";
+export { resolveAssetReferenceImage } from "./assetReferences";
 
 /**
  * Real-time compute the final assembled prompt from the user's textarea
@@ -54,7 +19,7 @@ export function buildAssembledPrompt(shot: ShotNode): string {
 
     // Strip existing reference tags from the display — they're handled
     // separately as reference_image URLs in the API call
-    base = base.replace(/\[character\d+:[^\]]+\]/g, "").replace(/\s+/g, " ").trim();
+    base = stripAssetReferenceTags(base);
 
     const suffixes: string[] = [];
 
@@ -130,10 +95,11 @@ export function buildPromptWithReferenceTags(
 ): string {
     const prompt = buildAssembledPrompt(shot);
     const rawPrompt = (shot.prompt || "").toLowerCase();
-    const existingMatches = Array.from((shot.prompt || "").matchAll(/\[character(\d*):([^\]]+)\]/g));
-    const existingNames = new Set(existingMatches.map((match) => match[2]));
+    const normalizedRawPrompt = normalizeAssetName(rawPrompt);
+    const existingMatches = Array.from((shot.prompt || "").matchAll(/\[(character(\d*)?|scene|prop):([^\]]+)\]/g));
+    const existingNames = new Set(existingMatches.map((match) => match[3]));
     const maxExistingSlot = existingMatches.reduce((max, match) => {
-        const slot = parseInt(match[1], 10);
+        const slot = parseInt(match[2], 10);
         return Number.isFinite(slot) ? Math.max(max, slot) : max;
     }, 0);
     const existingTags = existingMatches.map((match) => match[0]).join(" ");
@@ -142,15 +108,14 @@ export function buildPromptWithReferenceTags(
     // appears in the raw prompt. This stops an episode-level scene shared
     // across all shots from leaking into shots that never mention it
     // (e.g. a forest scene tag appearing in an airplane-interior shot).
-    const filteredGeneratedTags = generatedTags
-        .split(" ")
+    const filteredGeneratedTags = (generatedTags.match(/\[character\d+:[^\]]+\]/g) || [])
         .filter((tag) => {
             const nameMatch = tag.match(/^\[character\d+:(.+)\]$/);
             if (!nameMatch) return false;
             const name = nameMatch[1];
             const isScene = scenes.some((s: any) => s.name === name);
             if (!isScene) return true; // character/prop → always keep
-            return rawPrompt.includes(name.toLowerCase());
+            return normalizedRawPrompt.includes(normalizeAssetName(name));
         })
         .join(" ");
     const tags = [existingTags, filteredGeneratedTags].filter(Boolean).join(" ").trim();
@@ -173,7 +138,7 @@ export function normalizeReferenceTokensForEditor(text: string, taggedPrompt: st
         next = next.replace(new RegExp(`\\bcharacter${slot}\\b`, "gi"), name);
     });
     return next
-        .replace(/\[character\d+:[^\]]+\]/g, "")
+        .replace(/\[(?:character\d*|scene|prop):[^\]]+\]/g, "")
         .replace(/\s+/g, " ")
         .trim();
 }

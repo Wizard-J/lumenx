@@ -2,9 +2,10 @@ from pathlib import Path
 
 from PIL import Image
 
-from src.apps.comic_gen.models import AssetStage, Character, GenerationStatus, ImageVariant, Scene, StoryboardFrame, Script, Series
+from src.apps.comic_gen.models import AssetStage, Character, GenerationStatus, ImageAsset, ImageVariant, Prop, Scene, StoryboardFrame, Script, Series
 from src.apps.comic_gen.llm import ScriptProcessor
 from src.apps.comic_gen.pipeline import ComicGenPipeline
+from src.apps.comic_gen.assets import AssetGenerator
 from src.apps.comic_gen.overlay_render import HUD_BLUE, WARNING_RED, render_hud_layer, render_subtitle_layer
 
 
@@ -95,6 +96,153 @@ def test_character_stage_prompt_requires_turnaround_sheet_layout():
     assert "披粗制恐龙皮披肩" in prompt
 
 
+def test_scene_and_prop_stage_prompts_reject_collage_people_and_hands():
+    stage = AssetStage(label="基础阶段", from_episode=1, to_episode=12, visual_delta="黄昏岩缝")
+    scene = Scene(id="rock", name="岩缝", description="狭窄岩石入口")
+    prop = Prop(id="berries", name="灌木丛", description="红色浆果灌木")
+
+    scene_prompt = ComicGenPipeline._build_stage_generation_prompt(scene, "scene", stage)
+    prop_prompt = ComicGenPipeline._build_stage_generation_prompt(prop, "prop", stage)
+    scene_negative = ComicGenPipeline._stage_reference_negative_prompt("scene")
+    prop_negative = ComicGenPipeline._stage_reference_negative_prompt("prop")
+
+    assert "Create exactly one single full-frame environment photograph" in scene_prompt
+    assert "reference image" not in scene_prompt.lower()
+    assert "No people" in scene_prompt
+    assert "contact sheet" in scene_prompt
+    assert "weibo mark" in scene_prompt
+    assert "contact sheet" in scene_negative
+    assert "nine-grid" in scene_negative
+    assert "people" in scene_negative
+    assert "Create exactly one single centered prop reference photograph only" in prop_prompt
+    assert "Prop reference image" not in prop_prompt
+    assert "No hands" in prop_prompt
+    assert "secondary views" in prop_prompt
+    assert "weibo mark" in prop_prompt
+    assert "thumbs up" in prop_negative
+
+
+def test_prop_generation_merges_user_prompt_constraints(tmp_path: Path, monkeypatch):
+    captured = {}
+
+    class FakeModel:
+        @staticmethod
+        def generate(prompt, output_path, **kwargs):
+            captured["prompt"] = prompt
+            captured["negative_prompt"] = kwargs.get("negative_prompt")
+            Path(output_path).write_bytes(b"prop")
+            return output_path, {}
+
+    class TestGenerator(AssetGenerator):
+        def _get_model(self):
+            return FakeModel()
+
+    for key in ("OSS_ENDPOINT", "OSS_BUCKET_NAME", "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET"):
+        monkeypatch.delenv(key, raising=False)
+
+    generator = TestGenerator({"output_dir": str(tmp_path / "assets")})
+    prop = Prop(id="berries", name="灌木丛", description="红色浆果灌木")
+
+    generator.generate_prop(prop, negative_prompt="bad anatomy", prompt="No secondary views, no weibo icon.")
+
+    assert "User prompt constraints: No secondary views, no weibo icon." in captured["prompt"]
+    assert "Create exactly one single centered prop reference photograph only" in captured["prompt"]
+    assert "weibo icon" in captured["negative_prompt"]
+    assert prop.image_asset.variants
+
+
+def test_scene_stage_generation_does_not_reuse_bad_reference_image(tmp_path: Path):
+    stage = AssetStage(
+        id="stage-1",
+        label="基础",
+        from_episode=1,
+        to_episode=12,
+        visual_delta="入口仅可蜷缩一人",
+        reference_images=[ImageVariant(id="bad-grid", url="assets/stages/bad_grid.png")],
+        selected_image_id="bad-grid",
+    )
+    scene = Scene(id="rock", name="岩缝", description="内部仅可蜷缩一人", stages=[stage])
+    script = Script(id="ep-1", title="第一集", original_text="", scenes=[scene], created_at=1, updated_at=1)
+    captured = {}
+
+    class FakeModel:
+        @staticmethod
+        def generate(prompt, output_path, **kwargs):
+            captured["prompt"] = prompt
+            captured["ref_image_path"] = kwargs.get("ref_image_path")
+            captured["model_name"] = kwargs.get("model_name")
+            Path(output_path).write_bytes(b"stage-image")
+            return output_path, {}
+
+    class FakeGenerator:
+        output_dir = str(tmp_path / "assets")
+
+        @staticmethod
+        def _get_model():
+            return FakeModel()
+
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.scripts = {script.id: script}
+    pipeline.series_store = {}
+    pipeline.asset_generator = FakeGenerator()
+    pipeline._save_after_asset_mutation = lambda source: None
+
+    pipeline._process_stage_asset_task(
+        {"script_id": script.id, "asset_id": scene.id, "asset_type": "scene", "stage_id": stage.id},
+        {"batch_size": 1, "aspect_ratio": "16:9"},
+    )
+
+    assert captured["ref_image_path"] is None
+    assert captured["model_name"] == script.model_settings.t2i_model
+    assert "do not draw any person" in captured["prompt"]
+    assert stage.reference_images[-1].id != "bad-grid"
+
+
+def test_shared_stage_generation_uses_series_model_settings(tmp_path: Path):
+    stage = AssetStage(
+        id="stage-1",
+        label="基础",
+        from_episode=1,
+        to_episode=12,
+        visual_delta="红色浆果",
+    )
+    shared_scene = Scene(id="berries", name="灌木丛", description="岩缝附近的红色果实", stages=[stage])
+    script = Script(id="ep-1", title="第一集", original_text="", series_id="series-1", created_at=1, updated_at=1)
+    script.model_settings.t2i_model = "agnes-image-2.0-flash"
+    series = Series(id="series-1", title="侏罗纪求生", scenes=[shared_scene], created_at=1, updated_at=1)
+    series.model_settings.t2i_model = "wan2.7-image-pro"
+    captured = {}
+
+    class FakeModel:
+        @staticmethod
+        def generate(prompt, output_path, **kwargs):
+            captured["model_name"] = kwargs.get("model_name")
+            captured["ref_image_path"] = kwargs.get("ref_image_path")
+            Path(output_path).write_bytes(b"stage-image")
+            return output_path, {}
+
+    class FakeGenerator:
+        output_dir = str(tmp_path / "assets")
+
+        @staticmethod
+        def _get_model():
+            return FakeModel()
+
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.scripts = {script.id: script}
+    pipeline.series_store = {series.id: series}
+    pipeline.asset_generator = FakeGenerator()
+    pipeline._save_after_asset_mutation = lambda source: None
+
+    pipeline._process_stage_asset_task(
+        {"script_id": script.id, "asset_id": shared_scene.id, "asset_type": "scene", "stage_id": stage.id},
+        {"batch_size": 1},
+    )
+
+    assert captured["model_name"] == "wan2.7-image-pro"
+    assert captured["ref_image_path"] is None
+
+
 def test_stage_generation_writes_only_stage_pool(tmp_path: Path):
     stage = AssetStage(id="stage-1", label="晒黑", from_episode=3, to_episode=5, visual_delta="皮肤明显晒黑")
     character = Character(id="zhao", name="老赵", description="中年求生者", stages=[stage])
@@ -180,7 +328,25 @@ def test_storyboard_render_collects_shared_frozen_stage_references():
 
 
 def test_reextract_restores_mentioned_shared_entity_and_exact_names_auto_merge():
-    shared_zhao = Character(id="shared-zhao", name="老赵", description="旧描述")
+    image_variant = ImageVariant(id="img-1", url="assets/laozhao.png")
+    stage = AssetStage(
+        id="stage-1",
+        label="基础阶段",
+        from_episode=1,
+        to_episode=12,
+        reference_images=[ImageVariant(id="stage-img", url="assets/stages/laozhao.png")],
+        selected_image_id="stage-img",
+    )
+    shared_zhao = Character(
+        id="shared-zhao",
+        name="老赵",
+        description="旧描述",
+        full_body_asset=ImageAsset(selected_id=image_variant.id, variants=[image_variant]),
+        image_url=image_variant.url,
+        full_body_image_url=image_variant.url,
+        stages=[stage],
+        status=GenerationStatus.COMPLETED,
+    )
     shared_raptor = Character(id="shared-raptor", name="迅猛龙", description="敏捷的恐龙")
     existing = Script(
         id="ep-1", title="第一集", original_text="", series_id="series-1",
@@ -208,4 +374,71 @@ def test_reextract_restores_mentioned_shared_entity_and_exact_names_auto_merge()
     pipeline._merge_exact_series_entities(parsed)
     assert parsed.characters == []
     assert shared_zhao.description == "浅灰衬衫，深色长裤"
+    assert shared_zhao.full_body_asset.variants[0].url == "assets/laozhao.png"
+    assert shared_zhao.image_url == "assets/laozhao.png"
+    assert shared_zhao.full_body_image_url == "assets/laozhao.png"
+    assert shared_zhao.stages[0].reference_images[0].url == "assets/stages/laozhao.png"
+    assert shared_zhao.stages[0].selected_image_id == "stage-img"
+    assert shared_zhao.status == GenerationStatus.COMPLETED
     assert shared_raptor.description == "敏捷的恐龙"
+
+
+def test_reextract_preserves_unmentioned_series_assets():
+    kept_variant = ImageVariant(id="kept-img", url="assets/forest.png")
+    orphan_variant = ImageVariant(id="orphan-img", url="assets/orphan.png")
+    kept_scene = Scene(
+        id="scene-kept",
+        name="森林",
+        description="旧森林",
+        image_asset=ImageAsset(selected_id=kept_variant.id, variants=[kept_variant]),
+        image_url=kept_variant.url,
+        status=GenerationStatus.COMPLETED,
+    )
+    orphan_scene = Scene(
+        id="scene-orphan",
+        name="旧洞穴",
+        description="旧洞穴",
+        image_asset=ImageAsset(selected_id=orphan_variant.id, variants=[orphan_variant]),
+        image_url=orphan_variant.url,
+        status=GenerationStatus.COMPLETED,
+    )
+    existing = Script(
+        id="ep-1",
+        title="第一集",
+        original_text="旧文本",
+        series_id="series-1",
+        created_at=1,
+        updated_at=1,
+    )
+    parsed = Script(
+        id="preview",
+        title="第一集",
+        original_text="",
+        scenes=[Scene(id="new-forest", name="森林", description="新森林描述")],
+        created_at=1,
+        updated_at=1,
+    )
+    series = Series(
+        id="series-1",
+        title="侏罗纪求生",
+        scenes=[kept_scene, orphan_scene],
+        created_at=1,
+        updated_at=1,
+    )
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.scripts = {existing.id: existing}
+    pipeline.series_store = {series.id: series}
+    pipeline._extraction_cache = {existing.id: (9999999999, parsed, True)}
+    pipeline._save_series_data = lambda: None
+    pipeline._save_data = lambda: None
+
+    pipeline.reparse_project(existing.id, "森林里有新的描述。")
+
+    assert kept_scene.description == "新森林描述"
+    assert kept_scene.image_asset.variants[0].url == "assets/forest.png"
+    assert kept_scene.image_url == "assets/forest.png"
+    assert kept_scene.status == GenerationStatus.COMPLETED
+    assert orphan_scene.image_asset.variants[0].url == "assets/orphan.png"
+    assert orphan_scene.image_asset.selected_id == "orphan-img"
+    assert orphan_scene.image_url == "assets/orphan.png"
+    assert orphan_scene.status == GenerationStatus.COMPLETED

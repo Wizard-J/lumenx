@@ -25,6 +25,12 @@ type EnvConfig = EnvConfigPayload & {
   KLING_ACCESS_KEY: string;
   KLING_SECRET_KEY: string;
   VIDU_API_KEY: string;
+  SEEDANCE_PROVIDER: "ark" | "modelverse";
+  ARK_API_KEY: string;
+  ARK_BASE_URL: string;
+  SEEDANCE_BASE_URL: string;
+  SEEDANCE_API_KEY: string;
+  SEEDANCE_MODEL: string;
   endpoint_overrides: Record<string, string>;
 };
 
@@ -47,10 +53,19 @@ const DEFAULT_CONFIG: EnvConfig = {
   KLING_ACCESS_KEY: "",
   KLING_SECRET_KEY: "",
   VIDU_API_KEY: "",
+  SEEDANCE_PROVIDER: "ark",
+  ARK_API_KEY: "",
+  ARK_BASE_URL: "https://ark.cn-beijing.volces.com/api/v3",
+  SEEDANCE_BASE_URL: "https://api.modelverse.cn",
+  SEEDANCE_API_KEY: "",
+  SEEDANCE_MODEL: "dreamina-seedance-2-0-260128",
   endpoint_overrides: {},
 };
 
 const normalizeProviderMode = (mode?: string): ProviderMode => (mode === "vendor" ? "vendor" : "dashscope");
+const normalizeSeedanceProvider = (provider?: string): "ark" | "modelverse" => (
+  provider === "modelverse" ? "modelverse" : "ark"
+);
 
 const normalizeEnvConfig = (existing: EnvConfig, data?: EnvConfigPayload): EnvConfig => ({
   ...existing,
@@ -58,6 +73,7 @@ const normalizeEnvConfig = (existing: EnvConfig, data?: EnvConfigPayload): EnvCo
   KLING_PROVIDER_MODE: normalizeProviderMode(data?.KLING_PROVIDER_MODE ?? existing.KLING_PROVIDER_MODE),
   VIDU_PROVIDER_MODE: normalizeProviderMode(data?.VIDU_PROVIDER_MODE ?? existing.VIDU_PROVIDER_MODE),
   PIXVERSE_PROVIDER_MODE: normalizeProviderMode(data?.PIXVERSE_PROVIDER_MODE ?? existing.PIXVERSE_PROVIDER_MODE),
+  SEEDANCE_PROVIDER: normalizeSeedanceProvider(data?.SEEDANCE_PROVIDER ?? existing.SEEDANCE_PROVIDER),
   endpoint_overrides: data?.endpoint_overrides ?? existing.endpoint_overrides ?? {},
 });
 
@@ -496,6 +512,106 @@ export default function EnvConfigDialog({ isOpen, onClose, isRequired = false }:
                         />
                       </div>
                     )}
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-glass-border">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-bold text-foreground">Seedance Provider</h3>
+                    <span className="text-[10px] text-text-muted">Volcengine Ark</span>
+                  </div>
+                  <div className="bg-glass border border-glass-border rounded-lg p-4 space-y-4">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleChange("SEEDANCE_PROVIDER", "ark")}
+                        className={modeButtonClass(config.SEEDANCE_PROVIDER === "ark")}
+                      >
+                        Official Ark
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleChange("SEEDANCE_PROVIDER", "modelverse")}
+                        className={modeButtonClass(config.SEEDANCE_PROVIDER === "modelverse")}
+                      >
+                        ModelVerse
+                      </button>
+                    </div>
+                    <p className="text-xs text-text-muted">
+                      Official Ark keeps the direct Volcengine channel. ModelVerse uses the Compshare /v1/tasks/submit task API.
+                    </p>
+                    {config.SEEDANCE_PROVIDER === "ark" ? (
+                      <>
+                        <div>
+                          <label className="flex items-center justify-between text-sm font-medium text-foreground mb-2">
+                            <span>Ark API Key</span>
+                            <span className="text-text-muted font-normal text-xs">ARK_API_KEY</span>
+                          </label>
+                          <input
+                            type="password"
+                            value={config.ARK_API_KEY}
+                            onChange={(e) => handleChange("ARK_API_KEY", e.target.value)}
+                            placeholder="Volcengine Ark API Key"
+                            className={inputClass}
+                          />
+                        </div>
+                        <div>
+                          <label className="flex items-center justify-between text-sm font-medium text-foreground mb-2">
+                            <span>Ark Base URL</span>
+                            <span className="text-text-muted font-normal text-xs">default cn-beijing</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={config.ARK_BASE_URL}
+                            onChange={(e) => handleChange("ARK_BASE_URL", e.target.value)}
+                            placeholder="https://ark.cn-beijing.volces.com/api/v3"
+                            className={inputClass}
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <label className="flex items-center justify-between text-sm font-medium text-foreground mb-2">
+                            <span>ModelVerse API Key</span>
+                            <span className="text-text-muted font-normal text-xs">SEEDANCE_API_KEY</span>
+                          </label>
+                          <input
+                            type="password"
+                            value={config.SEEDANCE_API_KEY}
+                            onChange={(e) => handleChange("SEEDANCE_API_KEY", e.target.value)}
+                            placeholder="Compshare / ModelVerse API Key"
+                            className={inputClass}
+                          />
+                        </div>
+                        <div>
+                          <label className="flex items-center justify-between text-sm font-medium text-foreground mb-2">
+                            <span>ModelVerse Base URL</span>
+                            <span className="text-text-muted font-normal text-xs">https://api.modelverse.cn</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={config.SEEDANCE_BASE_URL}
+                            onChange={(e) => handleChange("SEEDANCE_BASE_URL", e.target.value)}
+                            placeholder="https://api.modelverse.cn"
+                            className={inputClass}
+                          />
+                        </div>
+                      </>
+                    )}
+                    <div>
+                      <label className="flex items-center justify-between text-sm font-medium text-foreground mb-2">
+                        <span>Seedance Model</span>
+                        <span className="text-text-muted font-normal text-xs">SEEDANCE_MODEL</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={config.SEEDANCE_MODEL}
+                        onChange={(e) => handleChange("SEEDANCE_MODEL", e.target.value)}
+                        placeholder={config.SEEDANCE_PROVIDER === "modelverse" ? "doubao-seedance-2-0-260128" : "dreamina-seedance-2-0-260128"}
+                        className={inputClass}
+                      />
+                    </div>
                   </div>
                 </div>
 

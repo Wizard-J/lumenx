@@ -482,9 +482,11 @@ function AssetContentPanel({
           >
             {assets.map((asset) => {
               const generated = hasGeneratedImage(asset);
+              const workbenchKind = tab === "characters" ? "character" : tab === "scenes" ? "scene" : "prop";
               return (
               <motion.div
                 key={asset.id}
+                className="h-full"
                 variants={{
                   hidden: { opacity: 0, y: 16, scale: 0.97 },
                   visible: {
@@ -496,10 +498,16 @@ function AssetContentPanel({
                 }}
               >
                 <div
-                  className="relative group/card cursor-pointer"
-                  onClick={() => setWorkbenchEntity({ id: asset.id, kind: tab === "characters" ? "character" : tab === "scenes" ? "scene" : "prop" })}
+                  className="relative group/card h-full"
                 >
-                  <AssetCard asset={asset} type={tab} variant="gallery" currentEpisode={currentEpisode} onStageAction={onStageAction} />
+                  <AssetCard
+                    asset={asset}
+                    type={tab}
+                    variant="gallery"
+                    currentEpisode={currentEpisode}
+                    onOpenWorkbench={() => setWorkbenchEntity({ id: asset.id, kind: workbenchKind })}
+                    onStageAction={onStageAction}
+                  />
                   <button
                     onClick={(e) => { e.stopPropagation(); handleGenerateSingle(asset.id); }}
                     disabled={generatingIds.has(asset.id)}

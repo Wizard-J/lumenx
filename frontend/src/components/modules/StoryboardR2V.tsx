@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
-import { Plus, Palette, Film, Loader2, Link2, Sparkles, RefreshCw } from "lucide-react";
+import { Plus, Palette, Film, Loader2, Link2, Sparkles, RefreshCw, ImageIcon, Upload } from "lucide-react";
 import StepHeader from "@/components/shared/StepHeader";
 import PreviousEpisodeFramesRail from "./storyboard-r2v/PreviousEpisodeFramesRail";
 import { useTranslations } from "next-intl";
@@ -12,8 +12,15 @@ import { getAssetUrl } from "@/lib/utils";
 import { debugLog } from "@/lib/debugLog";
 import type { BatchSummary } from "./storyboard-r2v/shot-panel/CandidatesSection";
 import { getR2vRouteModelId, isR2vImageBased, VIDEO_I2V_MODELS, VIDEO_R2V_MODELS, DEFAULT_I2V_MODEL_ID, DEFAULT_R2V_MODEL_ID, DEFAULT_MODEL_SETTINGS, type I2VModelConfig } from "@/lib/modelCatalog";
-import ShotCard, { type ShotNode } from "./storyboard-r2v/ShotCard";
-import { buildAssembledPrompt, buildPromptWithReferenceTags, resolveAssetReferenceImage } from "./storyboard-r2v/buildAssembledPrompt";
+import ShotCard, { type ShotNode, type WorkbenchTabMode } from "./storyboard-r2v/ShotCard";
+import { buildAssembledPrompt, buildPromptWithReferenceTags } from "./storyboard-r2v/buildAssembledPrompt";
+import {
+    hasAssetReferenceTags,
+    mergeAssetPools,
+    parseAssetReferenceTags,
+    referenceUrlsForVideoModel,
+    stripAssetReferenceTags,
+} from "./storyboard-r2v/assetReferences";
 import DialogueAudioRow from "./storyboard-r2v/DialogueAudioRow";
 import StoryboardGenerateDialog from "./storyboard-r2v/StoryboardGenerateDialog";
 import { toast } from "@/store/toastStore";
@@ -26,17 +33,18 @@ import {
     setActiveT2IIndex,
     removeT2IImage,
     getActiveT2IImageUrl,
+    normalizeWorkbenchTabMode,
 } from "./storyboard-r2v/shotNodeHelpers";
 import { overridePanelSectionState } from "./storyboard-r2v/shot-panel/usePanelSectionState";
 import ParamsSection, { type ParamsState } from "./storyboard-r2v/shot-panel/ParamsSection";
-import T2ISubsection from "./storyboard-r2v/shot-panel/T2ISubsection";
+import T2ISubsection, { type T2IUploadError } from "./storyboard-r2v/shot-panel/T2ISubsection";
 import CandidatesSection from "./storyboard-r2v/shot-panel/CandidatesSection";
 import CompareModal from "./storyboard-r2v/shot-panel/CompareModal";
-import TaskQueueButton from "./storyboard-r2v/shot-panel/TaskQueueButton";
-import TaskQueuePanel from "./storyboard-r2v/shot-panel/TaskQueuePanel";
 import { GenerationBanner, type BannerState } from "./storyboard-r2v/GenerationBanner";
 
 type StoredModelSettings = Partial<typeof DEFAULT_MODEL_SETTINGS>;
+type KeyframeRole = "start" | "end";
+type KeyframeBusyMap = Record<string, Partial<Record<KeyframeRole, boolean>>>;
 
 type VideoProviderConfig = {
     VIDEO_PROVIDER?: string;
@@ -67,7 +75,8 @@ function isExplicitModelSetting(key: keyof StoredModelSettings, value?: string |
     return !!value && value !== (DEFAULT_MODEL_SETTINGS as any)[key];
 }
 
-function getVisibleI2vModelId(candidate?: string | null): string {
+function getVisibleI2vModelId(candidate?: string | null, externalModelId?: string | null): string {
+    if (candidate && candidate === externalModelId) return candidate;
     return VIDEO_I2V_MODELS.some((model) => model.id === candidate)
         ? candidate as string
         : DEFAULT_I2V_MODEL_ID;
@@ -77,6 +86,13 @@ function getVisibleR2vModelId(candidate?: string | null): string {
     return VIDEO_R2V_MODELS.some((model) => model.id === candidate)
         ? candidate as string
         : (VIDEO_R2V_MODELS[0]?.id ?? DEFAULT_R2V_MODEL_ID);
+}
+
+function isVisibleR2vModelId(candidate?: string | null, externalModelId?: string | null): boolean {
+    return !!candidate && (
+        candidate === externalModelId ||
+        VIDEO_R2V_MODELS.some((model) => model.id === candidate)
+    );
 }
 
 function isExternalVideoProvider(env?: VideoProviderConfig | null): boolean {
@@ -114,11 +130,193 @@ function deriveT2IStatus(frame: any): ShotNode["t2iStatus"] {
     return undefined;
 }
 
-function frameToBaseShotNode(frame: any, defaultMode: "t2i_i2v" | "direct_r2v"): ShotNode {
+function defaultKeyframePrompt(
+    prompt: string,
+    shot: Partial<ShotNode>,
+    role: "start" | "end" | "neutral",
+): string {
+    const base = stripAssetReferenceTags(prompt).trim();
+    if (role === "start") {
+        return [
+            base,
+            "这是视频首帧关键帧：表现动作刚开始的瞬间，主体处于起始位置，镜头运动尚未展开，画面稳定、完整、可作为视频第一帧。",
+        ].join(" ").trim();
+    }
+    if (role === "end") {
+        const movement = shot.cameraMovementStructured?.description || "";
+        const transition = shot.transitionHint || "";
+        return [
+            base,
+            "这是视频尾帧关键帧：表现本镜头动作完成后的终点状态，主体位置、姿态、环境细节要相对首帧产生清晰变化，镜头到达运动终点，适合作为视频最后一帧。",
+            movement ? `运镜终点参考：${movement}` : "",
+            transition ? `衔接下一镜头：${transition}` : "",
+        ].filter(Boolean).join(" ").trim();
+    }
+    return [
+        base,
+        "生成一张完整分镜关键帧：角色、场景、道具都应组合进同一镜头画面，不要生成资产设定图、三视图或拼贴版式。",
+    ].join(" ").trim();
+}
+
+function isPovShotPrompt(prompt: string, shot?: Partial<ShotNode>): boolean {
+    const text = [
+        prompt,
+        shot?.prompt,
+        shot?.visualDescription,
+        shot?.assembledPrompt,
+        shot?.cameraAngle,
+    ].filter(Boolean).join("\n");
+    return /(主观视角|第一人称|\bPOV\b|first[-\s]?person|point[-\s]?of[-\s]?view)/i.test(text);
+}
+
+function buildPovPerspectiveConstraint(subjectNames: string[]): string {
+    const subject = subjectNames.length ? subjectNames.join("、") : "视角所属角色";
+    return [
+        "主观视角硬约束：",
+        `本镜头是${subject}的第一人称 POV，镜头就是${subject}的眼睛/视线。`,
+        `不要显示${subject}的正脸、半身、全身、背影或任何第三人称肖像构图。`,
+        `如需体现${subject}，只能显示手部、衣袖、膝盖、持物、手表等第一人称局部身体线索。`,
+        "画面重点应是视角主体正在看到的场景和事件，而不是拍摄视角主体本人。",
+    ].join("\n");
+}
+
+const KEYFRAME_HISTORY_LIMIT = 10;
+const KEYFRAME_UPLOAD_MAX_BYTES = 8 * 1024 * 1024;
+const KEYFRAME_UPLOAD_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const VIDEO_UPLOAD_MAX_BYTES = 300 * 1024 * 1024;
+const VIDEO_UPLOAD_TYPES = ["video/mp4", "video/quicktime", "video/webm", "video/x-m4v"];
+
+function appendKeyframeCandidate(urls: string[] | undefined, imageUrl: string): string[] {
+    if (!imageUrl) return urls ?? [];
+    const existing = urls ?? [];
+    if (existing.includes(imageUrl)) return existing;
+    const appended = [...existing, imageUrl];
+    return appended.length > KEYFRAME_HISTORY_LIMIT
+        ? appended.slice(appended.length - KEYFRAME_HISTORY_LIMIT)
+        : appended;
+}
+
+function mergeUrlHistory(primary: string[] | undefined, fallback: string[] | undefined): string[] {
+    const seen = new Set<string>();
+    const merged: string[] = [];
+    for (const url of [...(primary ?? []), ...(fallback ?? [])]) {
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+        merged.push(url);
+    }
+    return merged.length > KEYFRAME_HISTORY_LIMIT
+        ? merged.slice(merged.length - KEYFRAME_HISTORY_LIMIT)
+        : merged;
+}
+
+function preserveLocalWorkbenchState(hydrated: ShotNode, local?: ShotNode): ShotNode {
+    if (!local) return hydrated;
+    const t2iImageUrls = mergeUrlHistory(hydrated.t2iImageUrls, local.t2iImageUrls);
+    const keyframeStartImageUrls = mergeUrlHistory(hydrated.keyframeStartImageUrls, local.keyframeStartImageUrls);
+    const keyframeEndImageUrls = mergeUrlHistory(hydrated.keyframeEndImageUrls, local.keyframeEndImageUrls);
+    const t2iSelectedIndex = t2iImageUrls.length
+        ? Math.max(0, Math.min(hydrated.t2iSelectedIndex ?? local.t2iSelectedIndex ?? 0, t2iImageUrls.length - 1))
+        : 0;
     return migrateShotNode({
+        ...hydrated,
+        t2iImageUrls,
+        t2iSelectedIndex,
+        t2iImageUrl: t2iImageUrls[t2iSelectedIndex] ?? hydrated.t2iImageUrl ?? local.t2iImageUrl,
+        storyboardImagePrompt: hydrated.storyboardImagePrompt ?? local.storyboardImagePrompt,
+        keyframeStartImageUrl: hydrated.keyframeStartImageUrl ?? local.keyframeStartImageUrl,
+        keyframeEndImageUrl: hydrated.keyframeEndImageUrl ?? local.keyframeEndImageUrl,
+        keyframeStartImageUrls,
+        keyframeEndImageUrls,
+    });
+}
+
+function collectKeyframeSourceOptions(shot: ShotNode): Array<{ url: string; label: string }> {
+    const seen = new Set<string>();
+    const options: Array<{ url: string; label: string }> = [];
+    const add = (url: string | null | undefined, label: string) => {
+        if (!url || seen.has(url)) return;
+        seen.add(url);
+        options.push({ url, label });
+    };
+    add(shot.imageUrl, "分镜图");
+    (shot.t2iImageUrls ?? []).forEach((url, index) => add(url, `首帧池 ${index + 1}`));
+    (shot.keyframeStartImageUrls ?? []).forEach((url, index) => add(url, `首帧候选 ${index + 1}`));
+    (shot.keyframeEndImageUrls ?? []).forEach((url, index) => add(url, `尾帧候选 ${index + 1}`));
+    return options;
+}
+
+function setKeyframeBusy(
+    prev: KeyframeBusyMap,
+    shotId: string,
+    role: KeyframeRole,
+    busy: boolean,
+): KeyframeBusyMap {
+    const next = { ...prev };
+    const current = { ...(next[shotId] ?? {}) };
+    if (busy) {
+        current[role] = true;
+        next[shotId] = current;
+    } else {
+        delete current[role];
+        if (current.start || current.end) next[shotId] = current;
+        else delete next[shotId];
+    }
+    return next;
+}
+
+function buildImageReferenceInstruction(
+    items: Array<{ name: string; resolvedKind: string }>,
+    options: { povSubjectNames?: string[] } = {},
+): string {
+    if (!items.length) return "";
+    const povSubjectNames = new Set((options.povSubjectNames ?? []).map((name) => name.trim()).filter(Boolean));
+    const kindLabel: Record<string, string> = {
+        character: "角色",
+        scene: "场景",
+        prop: "道具",
+    };
+    const lines = items.map((item, index) => {
+        const label = kindLabel[item.resolvedKind] ?? "资产";
+        if (item.resolvedKind === "character") {
+            if (povSubjectNames.has(item.name)) {
+                return `参考图${index + 1}是${label}「${item.name}」，仅用于保持视角主体的身份、年龄感、服装、手部/衣袖等局部线索；不要把「${item.name}」以正脸、半身、全身或第三人称方式放入画面。`;
+            }
+            return `参考图${index + 1}是${label}「${item.name}」，请保持人物身份、脸型、发型、年龄感、服装和主要特征一致，并把他自然放入当前镜头。`;
+        }
+        if (item.resolvedKind === "scene") {
+            return `参考图${index + 1}是${label}「${item.name}」，请保持空间结构、环境材质、色调和关键陈设一致，并按当前镜头重新构图。`;
+        }
+        return `参考图${index + 1}是${label}「${item.name}」，请保持外形、材质、颜色和用途一致，并自然出现在当前镜头中。`;
+    });
+    return [
+        "参考图使用规则：",
+        ...lines,
+        "请生成一张完整、连续、单画面的分镜图，不要生成参考图拼贴、对比图、设定图、三视图、缩略图网格或分栏画面。",
+    ].join("\n");
+}
+
+function summarizeVideoTaskResponse(value: unknown): string {
+    try {
+        const text = JSON.stringify(value);
+        return text.length > 500 ? `${text.slice(0, 500)}...` : text;
+    } catch {
+        return String(value);
+    }
+}
+
+function firstCreatedVideoTask(value: unknown): VideoTask {
+    const task = Array.isArray(value) ? value[0] : value;
+    if (task && typeof task === "object" && "id" in task && (task as VideoTask).id) {
+        return task as VideoTask;
+    }
+    throw new Error(`后端没有返回有效的视频任务：${summarizeVideoTaskResponse(value)}`);
+}
+
+function frameToBaseShotNode(frame: any, defaultMode: WorkbenchTabMode): ShotNode {
+    const partial: ShotNode = {
         id: frame.id,
         prompt: frame.visual_description || frame.action_description || "",
-        tabMode: (frame.workbench_tab_mode as "t2i_i2v" | "direct_r2v" | undefined) ?? defaultMode,
+        tabMode: normalizeWorkbenchTabMode(frame.workbench_tab_mode ?? defaultMode),
         videoUrl: frame.dubbed_video_url || frame.video_url || undefined,
         videoStatus: (frame.dubbed_video_url || frame.video_url) ? ("completed" as const) : undefined,
         imageUrl: frame.rendered_image_url || frame.image_url || undefined,
@@ -138,7 +336,61 @@ function frameToBaseShotNode(frame: any, defaultMode: "t2i_i2v" | "direct_r2v"):
         shotSize: frame.shot_size ?? null,
         cameraAngle: frame.camera_angle ?? null,
         transitionHint: frame.transition_hint ?? null,
+        storyboardImagePrompt: frame.storyboard_image_prompt ?? null,
+        keyframeStartPrompt: null,
+        keyframeEndPrompt: null,
+        keyframeStartImageUrl: frame.keyframe_start_image_url ?? null,
+        keyframeEndImageUrl: frame.keyframe_end_image_url ?? null,
+        keyframeStartImageUrls: Array.isArray(frame.keyframe_start_image_urls) ? frame.keyframe_start_image_urls : [],
+        keyframeEndImageUrls: Array.isArray(frame.keyframe_end_image_urls) ? frame.keyframe_end_image_urls : [],
+    };
+    return migrateShotNode({
+        ...partial,
+        keyframeStartPrompt: frame.keyframe_start_prompt || defaultKeyframePrompt(partial.prompt, partial, "start"),
+        keyframeEndPrompt: frame.keyframe_end_prompt || defaultKeyframePrompt(partial.prompt, partial, "end"),
     });
+}
+
+function hydrateShotNodeFromVideoTasks(
+    frame: any,
+    videoTasks: any[],
+    defaultMode: WorkbenchTabMode,
+): ShotNode {
+    const base = frameToBaseShotNode(frame, defaultMode);
+    const frameTasks = videoTasks.filter((t: any) => t.frame_id === frame.id);
+    const tabTasks = frameTasks.filter((t: any) => {
+        if (t.workbench_tab != null) return normalizeWorkbenchTabMode(t.workbench_tab) === base.tabMode;
+        if (base.tabMode === "keyframe_r2v") return t.generation_mode === "r2v";
+        if (base.tabMode === "asset_compose") return false;
+        return t.generation_mode !== "r2v";
+    });
+    const scopedTasks = tabTasks.length ? tabTasks : frameTasks;
+    const inFlightTask = scopedTasks.find((t: any) =>
+        t.status === "pending" || t.status === "processing"
+    );
+    const completedTasks = scopedTasks.filter((t: any) =>
+        t.status === "completed" && t.video_url
+    );
+    const latestCompleted = completedTasks[completedTasks.length - 1];
+    let videoStatus: "pending" | "processing" | "completed" | "failed" | undefined;
+    let videoUrl: string | undefined = frame.dubbed_video_url || frame.video_url || undefined;
+    let videoTaskId: string | undefined;
+    if (inFlightTask) {
+        videoStatus = inFlightTask.status;
+        videoTaskId = inFlightTask.id;
+    } else if (videoUrl || latestCompleted) {
+        videoStatus = "completed";
+        videoUrl = videoUrl || latestCompleted?.video_url;
+        videoTaskId = latestCompleted?.id;
+    } else if (scopedTasks.some((t: any) => t.status === "failed")) {
+        videoStatus = "failed";
+    }
+    return {
+        ...base,
+        videoUrl,
+        videoStatus,
+        videoTaskId,
+    };
 }
 
 function resolveStoryboardVideoDefaults(
@@ -155,10 +407,11 @@ function resolveStoryboardVideoDefaults(
     const i2vModelId = getVisibleI2vModelId(
         isExplicitModelSetting("i2v_model", projectI2v)
             ? projectI2v
-            : globalSettings.i2v_model || savedI2v || DEFAULT_I2V_MODEL_ID,
+            : savedI2v || globalSettings.i2v_model || DEFAULT_I2V_MODEL_ID,
+        externalVideoModelId,
     );
 
-    if (savedI2v && savedI2v !== i2vModelId && !VIDEO_I2V_MODELS.some((model) => model.id === savedI2v)) {
+    if (savedI2v && savedI2v !== i2vModelId && savedI2v !== externalVideoModelId && !VIDEO_I2V_MODELS.some((model) => model.id === savedI2v)) {
         ls?.removeItem("storyboard-r2v-model");
         debugLog.warn("Studio", `Removed stale cached I2V model "${savedI2v}".`);
     }
@@ -172,17 +425,19 @@ function resolveStoryboardVideoDefaults(
         : null;
     const r2vCandidate = isExplicitModelSetting("r2v_model", projectR2v)
         ? projectR2v
-        : externalVideoModelId || globalR2v || savedR2vCandidate || derivedR2v || DEFAULT_R2V_MODEL_ID;
+        : savedR2vCandidate || globalR2v || externalVideoModelId || derivedR2v || DEFAULT_R2V_MODEL_ID;
     const r2vModelId = r2vCandidate === externalVideoModelId
         ? r2vCandidate
         : getVisibleR2vModelId(r2vCandidate);
 
-    if (savedR2v && (staleDefaultR2v || !VIDEO_R2V_MODELS.some((model) => model.id === savedR2v))) {
+    if (savedR2v && (staleDefaultR2v || !isVisibleR2vModelId(savedR2v, externalVideoModelId))) {
         ls?.removeItem("storyboard-r2v-r2v-model");
         debugLog.warn("Studio", `Removed stale cached R2V model "${savedR2v}".`);
     }
 
-    const finalConfig = VIDEO_I2V_MODELS.find((model) => model.id === i2vModelId);
+    const finalConfig = i2vModelId === externalVideoModelId
+        ? buildExternalVideoModelOption(i2vModelId)
+        : VIDEO_I2V_MODELS.find((model) => model.id === i2vModelId);
     const dc = finalConfig?.duration;
     const defaultDuration = dc ? (dc.type === "fixed" ? dc.value : dc.default) : 5;
     return {
@@ -208,37 +463,15 @@ export default function StoryboardR2V() {
     const [shots, setShots] = useState<ShotNode[]>(() => {
         if (currentProject?.frames && currentProject.frames.length > 0) {
             const videoTasks: any[] = (currentProject as any).video_tasks ?? [];
-            const defaultMode = currentProject.default_generation_mode === "i2v" ? "t2i_i2v" : "direct_r2v";
-            return currentProject.frames.map((frame: any) => {
-                const frameTasks = videoTasks.filter((t: any) => t.frame_id === frame.id);
-                const inFlightTask = frameTasks.find((t: any) =>
-                    t.status === "pending" || t.status === "processing"
-                );
-                const latestCompleted = frameTasks.find((t: any) =>
-                    t.status === "completed" && t.video_url
-                );
-                let videoStatus: "pending" | "processing" | "completed" | "failed" | undefined;
-                let videoUrl: string | undefined = frame.dubbed_video_url || frame.video_url || undefined;
-                let videoTaskId: string | undefined;
-                if (inFlightTask) {
-                    videoStatus = inFlightTask.status;
-                    videoTaskId = inFlightTask.id;
-                } else if (videoUrl || latestCompleted) {
-                    videoStatus = "completed";
-                    videoUrl = videoUrl || latestCompleted?.video_url;
-                } else if (frameTasks.some((t: any) => t.status === "failed")) {
-                    videoStatus = "failed";
-                }
-                return {
-                    ...frameToBaseShotNode(frame, defaultMode),
-                    videoUrl,
-                    videoStatus,
-                    videoTaskId,
-                };
-            });
+            const defaultMode: WorkbenchTabMode = currentProject.default_generation_mode === "i2v" ? "t2i_i2v" : "asset_compose";
+            return currentProject.frames.map((frame: any) =>
+                hydrateShotNodeFromVideoTasks(frame, videoTasks, defaultMode)
+            );
         }
-        return [migrateShotNode({ id: `shot_${Date.now()}`, prompt: "", tabMode: "direct_r2v", sceneId: null, characterIds: [], propIds: [] })];
+        return [migrateShotNode({ id: `shot_${Date.now()}`, prompt: "", tabMode: "asset_compose", sceneId: null, characterIds: [], propIds: [] })];
     });
+    const [keyframeGenerating, setKeyframeGenerating] = useState<KeyframeBusyMap>({});
+    const [keyframeUploading, setKeyframeUploading] = useState<KeyframeBusyMap>({});
 
     // Global video config (with localStorage persistence for model selection)
     const [envModelName, setEnvModelName] = useState<string>("");
@@ -283,11 +516,6 @@ export default function StoryboardR2V() {
         targetShotIndex: null,
     });
 
-    // Task-queue side panel state. Persisted across renders only; we
-    // intentionally don't localStorage this — it's transient "I want
-    // to peek at queue" UI affordance, not a saved layout preference.
-    const [queueOpen, setQueueOpen] = useState(false);
-
     // Compare-mode selection: a Set of task ids the user shift-clicked
     // in any shot's candidate panel. Multi-shot compare is a future
     // feature; for now the same Set is shared across shots so user
@@ -298,9 +526,6 @@ export default function StoryboardR2V() {
 
     // Refs map for textareas (for asset insertion from drawer)
     const textareaRefs = useRef<Map<number, HTMLTextAreaElement>>(new Map());
-    // Refs to each shot's outer wrapper so the task-queue panel can
-    // jump-scroll the canvas to a specific frame.
-    const shotWrapperRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
     // Per-shot submission lockout (Issue 17) — debounce double-clicks and
     // strict-mode double-effects. Holds shot.id strings; entries auto-expire
     // after 500ms via setTimeout in generateVideoBatch.
@@ -318,8 +543,8 @@ export default function StoryboardR2V() {
         [externalVideoModelId, videoConfig.r2vModel],
     );
     const i2vModelList = useMemo(
-        () => mergeExternalModel(VIDEO_I2V_MODELS, externalVideoModelId && videoConfig.model === externalVideoModelId ? externalVideoModelId : null),
-        [externalVideoModelId, videoConfig.model],
+        () => mergeExternalModel(VIDEO_I2V_MODELS, externalVideoModelId),
+        [externalVideoModelId],
     );
 
     const isExternalVideoModel = useCallback(
@@ -537,9 +762,9 @@ export default function StoryboardR2V() {
     // Add a new shot after the given index
     const addShot = useCallback(async (afterIndex: number) => {
         const synthId = `shot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        // PR-3e · pick default tabMode from project preference (inherited from
-        // series). "i2v" (画面优先) → t2i_i2v; "r2v" (节奏优先, default) → direct_r2v.
-        const defaultMode = currentProject?.default_generation_mode === "i2v" ? "t2i_i2v" : "direct_r2v";
+        // "i2v" starts on first-frame video; R2V starts at asset composition
+        // so users create a complete keyframe before sending anything to video.
+        const defaultMode: WorkbenchTabMode = currentProject?.default_generation_mode === "i2v" ? "t2i_i2v" : "asset_compose";
         const newShot: ShotNode = {
             id: synthId,
             prompt: "",
@@ -611,10 +836,10 @@ export default function StoryboardR2V() {
         "最后润色一下…",
     ], []);
 
-    const frameToShotNode = useCallback((frame: any): ShotNode => frameToBaseShotNode(
-        frame,
-        currentProject?.default_generation_mode === "i2v" ? "t2i_i2v" : "direct_r2v",
-    ), [currentProject?.default_generation_mode]);
+    const frameToShotNode = useCallback((frame: any, project: any = currentProject): ShotNode => {
+        const defaultMode: WorkbenchTabMode = project?.default_generation_mode === "i2v" ? "t2i_i2v" : "asset_compose";
+        return hydrateShotNodeFromVideoTasks(frame, project?.video_tasks ?? [], defaultMode);
+    }, [currentProject]);
 
     const bannerSummary = useMemo(() => {
         if (!currentProject?.frames?.length) return null;
@@ -673,8 +898,13 @@ export default function StoryboardR2V() {
         if (!currentProject?.id) return;
         const refreshed = await api.getProject(currentProject.id);
         if (refreshed?.frames) {
-            updateProject(currentProject.id, { frames: refreshed.frames });
-            setShots(refreshed.frames.map(frameToShotNode));
+            updateProject(currentProject.id, refreshed);
+            setShots(prev => refreshed.frames.map((frame: any) =>
+                preserveLocalWorkbenchState(
+                    frameToShotNode(frame, refreshed),
+                    prev.find((shot) => shot.id === frame.id),
+                )
+            ));
         }
     }, [currentProject?.id, frameToShotNode, updateProject]);
 
@@ -732,7 +962,12 @@ export default function StoryboardR2V() {
             const newFrameCount = Array.isArray(updated?.frames) ? updated.frames.length : 0;
             updateProject(projectId, updated);
             if (Array.isArray(updated?.frames)) {
-                setShots(updated.frames.map(frameToShotNode));
+                setShots(prev => updated.frames.map((frame: any) =>
+                    preserveLocalWorkbenchState(
+                        frameToShotNode(frame, updated),
+                        prev.find((shot) => shot.id === frame.id),
+                    )
+                ));
             }
             setBannerState("summary");
             if (newFrameCount > 0) {
@@ -842,7 +1077,12 @@ export default function StoryboardR2V() {
             const updated = await api.autoLinkFrameAssets(currentProject.id);
             updateProject(currentProject.id, updated);
             if (Array.isArray(updated?.frames)) {
-                setShots(updated.frames.map(frameToShotNode));
+                setShots(prev => updated.frames.map((frame: any) =>
+                    preserveLocalWorkbenchState(
+                        frameToShotNode(frame, updated),
+                        prev.find((shot) => shot.id === frame.id),
+                    )
+                ));
             }
             toast.success("已自动引用资源");
         } catch (err) {
@@ -984,8 +1224,10 @@ export default function StoryboardR2V() {
                         migrateShotNode({
                             id: frame.id,
                             prompt: frame.visual_description || frame.action_description || "",
-                            tabMode: (frame.workbench_tab_mode as "t2i_i2v" | "direct_r2v" | undefined)
-                                ?? (currentProject.default_generation_mode === "i2v" ? "t2i_i2v" : "direct_r2v"),
+                            tabMode: normalizeWorkbenchTabMode(
+                                frame.workbench_tab_mode
+                                ?? (currentProject.default_generation_mode === "i2v" ? "t2i_i2v" : "asset_compose"),
+                            ),
                             videoUrl: frame.dubbed_video_url || frame.video_url || undefined,
                             videoStatus: (frame.dubbed_video_url || frame.video_url) ? ("completed" as const) : undefined,
                             imageUrl: frame.rendered_image_url || frame.image_url || undefined,
@@ -1123,13 +1365,270 @@ export default function StoryboardR2V() {
 
     // Set shot tab mode + persist so the user's last-active tab
     // survives refresh.
-    const setTabMode = useCallback((index: number, mode: "t2i_i2v" | "direct_r2v") => {
+    const setTabMode = useCallback((index: number, mode: WorkbenchTabMode) => {
         setShots(prev => prev.map((s, i) => {
             if (i !== index) return s;
             persistWorkbench(s.id, { workbench_tab_mode: mode });
             return { ...s, tabMode: mode };
         }));
     }, [persistWorkbench]);
+
+    const updateKeyframePrompt = useCallback((
+        index: number,
+        role: "start" | "end",
+        prompt: string,
+    ) => {
+        setShots(prev => prev.map((s, i) => {
+            if (i !== index) return s;
+            const patch = role === "start"
+                ? { keyframe_start_prompt: prompt }
+                : { keyframe_end_prompt: prompt };
+            persistWorkbench(s.id, patch);
+            return role === "start"
+                ? { ...s, keyframeStartPrompt: prompt }
+                : { ...s, keyframeEndPrompt: prompt };
+        }));
+    }, [persistWorkbench]);
+
+    const updateStoryboardImagePrompt = useCallback((index: number, prompt: string) => {
+        setShots(prev => prev.map((s, i) => {
+            if (i !== index) return s;
+            persistWorkbench(s.id, { storyboard_image_prompt: prompt });
+            return { ...s, storyboardImagePrompt: prompt };
+        }));
+    }, [persistWorkbench]);
+
+    const selectKeyframeImage = useCallback((
+        index: number,
+        role: "start" | "end",
+        imageUrl: string,
+    ) => {
+        setShots(prev => prev.map((s, i) => {
+            if (i !== index) return s;
+            const nextStartUrls = role === "start"
+                ? appendKeyframeCandidate(s.keyframeStartImageUrls, imageUrl)
+                : s.keyframeStartImageUrls ?? [];
+            const nextEndUrls = role === "end"
+                ? appendKeyframeCandidate(s.keyframeEndImageUrls, imageUrl)
+                : s.keyframeEndImageUrls ?? [];
+            const patch = role === "start"
+                ? { keyframe_start_image_url: imageUrl, keyframe_start_image_urls: nextStartUrls }
+                : { keyframe_end_image_url: imageUrl, keyframe_end_image_urls: nextEndUrls };
+            persistWorkbench(s.id, patch);
+            return role === "start"
+                ? { ...s, keyframeStartImageUrl: imageUrl, keyframeStartImageUrls: nextStartUrls }
+                : { ...s, keyframeEndImageUrl: imageUrl, keyframeEndImageUrls: nextEndUrls };
+        }));
+    }, [persistWorkbench]);
+
+    const uploadT2IForShot = useCallback(async (
+        index: number,
+        shot: ShotNode,
+        file: File,
+        keyframeRole?: "start" | "end",
+    ): Promise<T2IUploadError | void> => {
+        if (!currentProject) return { code: "network", detail: "no current project" };
+        if (!KEYFRAME_UPLOAD_TYPES.includes(file.type)) return "type";
+        if (file.size > KEYFRAME_UPLOAD_MAX_BYTES) return "size";
+
+        try {
+            let effectiveFrameId = shot.id;
+            const isSynthetic = effectiveFrameId.startsWith("shot_");
+            if (isSynthetic) {
+                try {
+                    const created = await crudApi.createFrame(currentProject.id, {
+                        scene_id: "",
+                        action_description: shot.prompt || "",
+                        insert_at: index,
+                    } as any);
+                    const newFrame = Array.isArray(created?.frames)
+                        ? created.frames[Math.min(index, created.frames.length - 1)]
+                        : null;
+                    if (newFrame?.id) {
+                        effectiveFrameId = newFrame.id;
+                        setShots(prev => prev.map((s, j) =>
+                            j === index ? { ...s, id: newFrame.id } : s,
+                        ));
+                    }
+                } catch (createErr: any) {
+                    debugLog.error("Studio", "Lazy createFrame failed", createErr);
+                    const cdetail = createErr?.response?.data?.detail || createErr?.message || "create frame failed";
+                    return { code: "server", detail: `先创建镜头失败：${cdetail}` };
+                }
+            }
+
+            const updatedFrame = await api.uploadT2IFrame(currentProject.id, effectiveFrameId, file);
+            if (!updatedFrame) return { code: "network", detail: "empty response" };
+
+            const nextUrls: string[] = updatedFrame.t2i_image_urls ?? [];
+            const nextIdx: number = typeof updatedFrame.t2i_selected_index === "number"
+                ? updatedFrame.t2i_selected_index
+                : Math.max(0, nextUrls.length - 1);
+            const uploadedUrl = nextUrls[nextIdx];
+            const currentShot = shots[index];
+            const startUrls = keyframeRole === "start" && uploadedUrl
+                ? appendKeyframeCandidate(currentShot?.keyframeStartImageUrls, uploadedUrl)
+                : currentShot?.keyframeStartImageUrls ?? [];
+            const endUrls = keyframeRole === "end" && uploadedUrl
+                ? appendKeyframeCandidate(currentShot?.keyframeEndImageUrls, uploadedUrl)
+                : currentShot?.keyframeEndImageUrls ?? [];
+            const keyframeFramePatch = keyframeRole === "start" && uploadedUrl
+                ? { keyframe_start_image_url: uploadedUrl, keyframe_start_image_urls: startUrls }
+                : keyframeRole === "end" && uploadedUrl
+                    ? { keyframe_end_image_url: uploadedUrl, keyframe_end_image_urls: endUrls }
+                    : {};
+
+            updateProject(currentProject.id, {
+                frames: (currentProject.frames ?? []).map((frame: any) =>
+                    frame.id === effectiveFrameId
+                        ? { ...frame, ...updatedFrame, ...keyframeFramePatch }
+                        : frame,
+                ),
+            } as any);
+
+            setShots(prev => prev.map((s, j) => {
+                if (j !== index) return s;
+                const base = {
+                    ...s,
+                    id: effectiveFrameId,
+                    t2iImageUrls: nextUrls,
+                    t2iSelectedIndex: nextIdx,
+                    t2iImageUrl: uploadedUrl,
+                    t2iStatus: "completed" as const,
+                };
+                if (!keyframeRole || !uploadedUrl) return base;
+                if (keyframeRole === "start") {
+                    return {
+                        ...base,
+                        keyframeStartImageUrl: uploadedUrl,
+                        keyframeStartImageUrls: startUrls,
+                    };
+                }
+                return {
+                    ...base,
+                    keyframeEndImageUrl: uploadedUrl,
+                    keyframeEndImageUrls: endUrls,
+                };
+            }));
+
+            if (keyframeRole && uploadedUrl) {
+                const patch = keyframeRole === "start"
+                    ? { keyframe_start_image_url: uploadedUrl, keyframe_start_image_urls: startUrls }
+                    : { keyframe_end_image_url: uploadedUrl, keyframe_end_image_urls: endUrls };
+                persistWorkbench(effectiveFrameId, patch);
+            }
+
+            return undefined;
+        } catch (err: any) {
+            debugLog.error("Studio", "T2I upload failed", err);
+            const status = err?.response?.status;
+            const detail = err?.response?.data?.detail
+                || err?.message
+                || `HTTP ${status ?? "?"}`;
+            if (status === 413) return { code: "size", detail: String(detail) };
+            if (status === 415) return { code: "type", detail: String(detail) };
+            if (status === 404) return { code: "not_found", detail: String(detail) };
+            if (status && status >= 500) return { code: "server", detail: String(detail) };
+            return { code: "network", detail: String(detail) };
+        }
+    }, [currentProject, persistWorkbench, shots]);
+
+    const uploadKeyframeImage = useCallback(async (
+        index: number,
+        shot: ShotNode,
+        role: "start" | "end",
+        file: File,
+    ) => {
+        setKeyframeUploading(prev => setKeyframeBusy(prev, shot.id, role, true));
+        try {
+            const result = await uploadT2IForShot(index, shot, file, role);
+            if (result) {
+                const detail = typeof result === "string" ? "" : result.detail;
+                const code = typeof result === "string" ? result : result.code;
+                const label = code === "type"
+                    ? "图片格式仅支持 JPG / PNG / WebP"
+                    : code === "size"
+                        ? "图片不能超过 8MB"
+                        : "上传关键帧失败";
+                toast.error(detail ? `${label}：${detail}` : label);
+            }
+        } finally {
+            setKeyframeUploading(prev => setKeyframeBusy(prev, shot.id, role, false));
+        }
+    }, [uploadT2IForShot]);
+
+    const uploadVideoCandidate = useCallback(async (
+        index: number,
+        shot: ShotNode,
+        file: File,
+        modelId: string,
+    ) => {
+        if (!currentProject) return;
+        const fileName = file.name.toLowerCase();
+        const extOk = /\.(mp4|mov|webm|m4v)$/.test(fileName);
+        const typeOk = !file.type || VIDEO_UPLOAD_TYPES.includes(file.type);
+        if (!extOk || !typeOk) {
+            toast.error("视频格式仅支持 MP4 / MOV / WebM / M4V");
+            return;
+        }
+        if (file.size > VIDEO_UPLOAD_MAX_BYTES) {
+            toast.error("视频不能超过 300MB");
+            return;
+        }
+
+        try {
+            let effectiveFrameId = shot.id;
+            if (effectiveFrameId.startsWith("shot_")) {
+                const created = await crudApi.createFrame(currentProject.id, {
+                    scene_id: "",
+                    action_description: shot.prompt || "",
+                    insert_at: index,
+                } as any);
+                const newFrame = Array.isArray(created?.frames)
+                    ? created.frames[Math.min(index, created.frames.length - 1)]
+                    : null;
+                if (!newFrame?.id) {
+                    toast.error("上传视频失败：无法创建镜头");
+                    return;
+                }
+                effectiveFrameId = newFrame.id;
+                updateProject(currentProject.id, created);
+                setShots(prev => prev.map((s, j) =>
+                    j === index ? { ...s, id: newFrame.id } : s,
+                ));
+            }
+
+            const task = await api.uploadVideoCandidate(
+                currentProject.id,
+                effectiveFrameId,
+                file,
+                shot.tabMode,
+                modelId || "uploaded-video",
+            );
+            const existingTasks = (((currentProject as any).video_tasks ?? []) as VideoTask[]);
+            updateProject(currentProject.id, {
+                video_tasks: [
+                    ...existingTasks.filter((existing) => existing.id !== task.id),
+                    task,
+                ],
+            } as any);
+            setShots(prev => prev.map((s, j) =>
+                j === index
+                    ? {
+                        ...s,
+                        id: effectiveFrameId,
+                        videoStatus: "completed" as const,
+                        videoUrl: task.video_url,
+                        videoTaskId: task.id,
+                    }
+                    : s,
+            ));
+            toast.success("视频已加入候选");
+        } catch (err: any) {
+            const detail = err?.response?.data?.detail || err?.message || "未知错误";
+            toast.error(`上传视频失败：${String(detail).slice(0, 140)}`);
+        }
+    }, [currentProject, updateProject]);
 
     // Structured field updates — local immediate + debounce 3s auto-save
     const fieldPendingRef = useRef<Map<string, { timer: number; fields: Record<string, any> }>>(new Map());
@@ -1196,119 +1695,164 @@ export default function StoryboardR2V() {
 
     // Cached Series asset data (loaded on demand) - fallback when Episode assets lack variants
     const [seriesAssets, setSeriesAssets] = useState<{ characters: any[]; scenes: any[]; props: any[] } | null>(null);
+    const [seriesAssetsLoaded, setSeriesAssetsLoaded] = useState(false);
     useEffect(() => {
         const sid = currentProject?.series_id;
         if (sid) {
+            setSeriesAssetsLoaded(false);
             import("@/lib/api").then(({ api }) => {
-                api.getSeries(sid).then((s: any) => {
-                    setSeriesAssets({ characters: s.characters || [], scenes: s.scenes || [], props: s.props || [] });
-                }).catch(() => {});
+                api.getSeriesAssets(sid).then((assets: any) => {
+                    setSeriesAssets({
+                        characters: assets.characters || [],
+                        scenes: assets.scenes || [],
+                        props: assets.props || [],
+                    });
+                    setSeriesAssetsLoaded(true);
+                }).catch(() => {
+                    setSeriesAssetsLoaded(true);
+                });
             });
+        } else {
+            setSeriesAssets(null);
+            setSeriesAssetsLoaded(true);
         }
     }, [currentProject?.series_id]);
 
-    // Parse asset tags from prompt and resolve to URLs
-    const parseAssetTags = useCallback((prompt: string, shot?: ShotNode): string[] => {
-        // HappyHorse uses [characterN:name] as generic reference-image slots.
-        // N determines the position in the URL array: character1 → image[0], etc.
-        // The "name" can be a character, scene, or prop — we look up all three.
-        const slots: { idx: number; url: string }[] = [];
-        const tagPattern = /\[character(\d+):([^\]]+)\]/g;
-        let match;
-        while ((match = tagPattern.exec(prompt)) !== null) {
-            const slotNum = parseInt(match[1], 10);
-            const name = match[2];
-            let url: string | undefined;
+    const drawerAssetPools = useMemo(() => ({
+        characters: mergeAssetPools(characters, seriesAssets?.characters ?? [], "character"),
+        scenes: mergeAssetPools(scenes, seriesAssets?.scenes ?? [], "scene"),
+        props: mergeAssetPools(props, seriesAssets?.props ?? [], "prop"),
+    }), [characters, scenes, props, seriesAssets]);
+    const seriesAssetsLoading = !!currentProject?.series_id && !seriesAssetsLoaded;
 
-            // Try character first (Episode-level, then Series-level fallback)
-            const char = characters.find((c: any) => c.name === name)
-                || seriesAssets?.characters?.find((c: any) => c.name === name);
-            if (char) {
-                url = resolveAssetReferenceImage(
-                    char,
-                    "character",
-                    shot?.characterStageRefs?.[char.id],
-                );
-            }
-            // Try scene (Episode-level, then Series-level fallback)
-            if (!url) {
-                const scene = scenes.find((s: any) => s.name === name)
-                    || seriesAssets?.scenes?.find((s: any) => s.name === name);
-                url = resolveAssetReferenceImage(scene, "scene", shot?.sceneStageRef);
-            }
-            // Try prop (Episode-level, then Series-level fallback)
-            if (!url) {
-                const prop = props.find((p: any) => p.name === name)
-                    || seriesAssets?.props?.find((p: any) => p.name === name);
-                url = resolveAssetReferenceImage(prop, "prop");
-            }
+    const parseAssetTagsForVideoModel = useCallback((
+        prompt: string,
+        shot: ShotNode | undefined,
+        modelId?: string | null,
+    ) => {
+        const parsed = parseAssetReferenceTags(prompt, drawerAssetPools, shot);
+        return {
+            urls: referenceUrlsForVideoModel(parsed, modelId),
+            unresolved: parsed.unresolved,
+        };
+    }, [drawerAssetPools]);
 
-            if (url) slots.push({ idx: slotNum, url });
-        }
-        // Sort by slot number so URL array matches HappyHorse's positional mapping
-        slots.sort((a, b) => a.idx - b.idx);
-        return slots.map(s => s.url);
-    }, [characters, scenes, props, seriesAssets]);
-
-    const hasAssetTags = useCallback((prompt: string): boolean => {
-        return /\[character\d+:[^\]]+\]/.test(prompt);
-    }, []);
-
-    const getUnresolvedAssetNames = useCallback((prompt: string): string[] => {
-        const unresolved: string[] = [];
-        const tagPattern = /\[character\d+:([^\]]+)\]/g;
-        let match;
-        while ((match = tagPattern.exec(prompt)) !== null) {
-            const name = match[1];
-            let hasImage = false;
-            // Check character
-            const char = characters.find((c: any) => c.name === name);
-            if (char) {
-                hasImage = !!(char.full_body_asset?.variants?.length);
-            }
-            // Check scene
-            if (!hasImage) {
-                const scene = scenes.find((s: any) => s.name === name);
-                hasImage = !!(scene?.image_asset?.variants?.length);
-            }
-            // Check prop
-            if (!hasImage) {
-                const prop = props.find((p: any) => p.name === name);
-                hasImage = !!(prop?.image_asset?.variants?.length);
-            }
-            if (!hasImage) unresolved.push(name);
-        }
-        return unresolved;
-    }, [characters, scenes, props, seriesAssets]);
+    const getUnresolvedAssetNames = useCallback((prompt: string, shot?: ShotNode): string[] => (
+        parseAssetReferenceTags(prompt, drawerAssetPools, shot).unresolved
+    ), [drawerAssetPools]);
 
     // Strip tags from prompt for clean text
     const cleanPrompt = (prompt: string): string => {
-        return prompt.replace(/\[character\d+:[^\]]+\]/g, "").replace(/\s+/g, " ").trim();
+        return stripAssetReferenceTags(prompt);
+    };
+
+    const getShotKeyframeUrls = (shot: ShotNode): string[] => {
+        const startUrl = shot.keyframeStartImageUrl || shot.keyframeStartImageUrls?.[0];
+        const endUrl = shot.keyframeEndImageUrl || shot.keyframeEndImageUrls?.[0];
+        if (startUrl || endUrl) return [startUrl, endUrl].filter((url): url is string => !!url);
+
+        const urls = (shot.t2iImageUrls ?? []).filter(Boolean);
+        if (urls.length > 1) return [urls[0], urls[urls.length - 1]];
+        if (urls.length === 1) return [urls[0]];
+        const fallback = getActiveT2IImageUrl(shot) || shot.imageUrl;
+        return fallback ? [fallback] : [];
+    };
+
+    const getSeedanceReferenceUrls = (shot: ShotNode, keyframes: string[], parsedAssetRefs: string[]): string[] => {
+        const seen = new Set<string>();
+        const refs: string[] = [];
+        for (const url of [...keyframes, ...parsedAssetRefs]) {
+            if (!url || seen.has(url)) continue;
+            seen.add(url);
+            refs.push(url);
+        }
+        return refs;
+    };
+
+    const agnesKeyframeError = "Agnes 的关键帧 R2V 需要完整分镜图。请先在「首帧 I2V」生成/上传首帧，或先生成本镜分镜图。";
+
+    const resolveKeyframePrompt = (prompt: string, shot: ShotNode, role: "start" | "end" | "neutral"): string => {
+        if (role === "start" && shot.keyframeStartPrompt?.trim()) return shot.keyframeStartPrompt.trim();
+        if (role === "end" && shot.keyframeEndPrompt?.trim()) return shot.keyframeEndPrompt.trim();
+        return defaultKeyframePrompt(prompt, shot, role);
     };
 
     // Generate T2I image for a shot (t2i_i2v mode stage 1)
-    const generateT2I = useCallback(async (index: number) => {
+    const generateT2I = useCallback(async (index: number, role: "start" | "end" | "neutral" = "neutral") => {
         const shot = shots[index];
-        if (!currentProject || !shot.prompt.trim()) return;
-        const taggedPrompt = buildPromptWithReferenceTags(shot, characters, scenes, props);
+        if (!currentProject) return;
+        const isKeyframeRole = role === "start" || role === "end";
+        const imagePromptOverride = !isKeyframeRole ? shot.storyboardImagePrompt?.trim() : "";
+        if (!(imagePromptOverride || shot.prompt.trim())) return;
+        if (seriesAssetsLoading) {
+            toast.warning("资产库还在加载，请稍后再生成当前帧。");
+            return;
+        }
+        const promptShot = imagePromptOverride
+            ? { ...shot, prompt: imagePromptOverride }
+            : shot;
+        const taggedPrompt = buildPromptWithReferenceTags(
+            promptShot,
+            drawerAssetPools.characters,
+            drawerAssetPools.scenes,
+            drawerAssetPools.props,
+        );
 
-        setShots(prev => prev.map((s, i) =>
-            i === index ? { ...s, t2iStatus: "pending" } : s
-        ));
+        if (isKeyframeRole) {
+            setKeyframeGenerating(prev => setKeyframeBusy(prev, shot.id, role, true));
+        } else {
+            setShots(prev => prev.map((s, i) =>
+                i === index ? { ...s, t2iStatus: "pending" } : s
+            ));
+        }
 
-        // Build reference_image_urls from R2V asset tags
-        const refUrls = parseAssetTags(taggedPrompt, shot);
+        // Build reference_image_urls from asset tags so generated first/end
+        // keyframes are composed from the existing asset library instead of
+        // drifting into text-only imagery.
+        const parsedRefs = parseAssetReferenceTags(taggedPrompt, drawerAssetPools, promptShot);
+        const refUrls = parsedRefs.urls;
+        if (hasAssetReferenceTags(taggedPrompt) && refUrls.length === 0) {
+            toast.warning("没有解析到可用资产参考图，请先自动引用资源并生成对应资产图。");
+            if (isKeyframeRole) {
+                setKeyframeGenerating(prev => setKeyframeBusy(prev, shot.id, role, false));
+            } else {
+                setShots(prev => prev.map((s, i) =>
+                    i === index ? { ...s, t2iStatus: undefined } : s
+                ));
+            }
+            return;
+        }
+        if (parsedRefs.unresolved.length > 0) {
+            toast.warning(`部分资产没有可用参考图：${parsedRefs.unresolved.slice(0, 3).join("、")}`);
+        }
         const compositionData: any = {};
         if (refUrls.length > 0) {
             compositionData.reference_image_urls = refUrls;
         }
+        const baseFramePrompt = resolveKeyframePrompt(taggedPrompt, shot, role);
+        const povSubjectNames = isPovShotPrompt(baseFramePrompt, shot)
+            ? parsedRefs.items
+                .filter((item) => item.resolvedKind === "character")
+                .map((item) => item.name)
+            : [];
+        const povPerspectiveConstraint = povSubjectNames.length || isPovShotPrompt(baseFramePrompt, shot)
+            ? buildPovPerspectiveConstraint(povSubjectNames)
+            : "";
+        const imageReferenceInstruction = buildImageReferenceInstruction(parsedRefs.items, {
+            povSubjectNames,
+        });
+        const framePrompt = [
+            baseFramePrompt,
+            povPerspectiveConstraint,
+            imageReferenceInstruction,
+        ].filter(Boolean).join("\n\n");
 
         try {
             const result = await api.renderFrame(
                 currentProject.id,
                 shot.id,
                 compositionData,
-                cleanPrompt(taggedPrompt),
+                framePrompt,
                 1    // batchSize
             );
 
@@ -1324,9 +1868,11 @@ export default function StoryboardR2V() {
                 || result?.rendered_image_url;
 
             if (result?.task_id && !imageUrl) {
-                setShots(prev => prev.map((s, i) =>
-                    i === index ? { ...s, t2iTaskId: result.task_id, t2iStatus: "processing" } : s
-                ));
+                if (!isKeyframeRole) {
+                    setShots(prev => prev.map((s, i) =>
+                        i === index ? { ...s, t2iTaskId: result.task_id, t2iStatus: "processing" } : s
+                    ));
+                }
                 return;
             }
 
@@ -1340,61 +1886,118 @@ export default function StoryboardR2V() {
                         ...s,
                         imageUrl: returnedFrame?.rendered_image_url || returnedFrame?.image_url || s.imageUrl,
                         t2iTaskId: undefined,
-                        t2iStatus: "completed",
+                        t2iStatus: isKeyframeRole ? s.t2iStatus : "completed",
                     }, imageUrl);
+                    const nextStartUrls = role === "start"
+                        ? appendKeyframeCandidate(s.keyframeStartImageUrls, imageUrl)
+                        : s.keyframeStartImageUrls ?? [];
+                    const nextEndUrls = role === "end"
+                        ? appendKeyframeCandidate(s.keyframeEndImageUrls, imageUrl)
+                        : s.keyframeEndImageUrls ?? [];
+                    const keyframePatch = role === "start"
+                        ? { keyframe_start_image_url: imageUrl, keyframe_start_image_urls: nextStartUrls }
+                        : role === "end"
+                            ? { keyframe_end_image_url: imageUrl, keyframe_end_image_urls: nextEndUrls }
+                            : {};
                     persistWorkbench(s.id, {
                         t2i_image_urls: updated.t2iImageUrls ?? [],
                         t2i_selected_index: updated.t2iSelectedIndex ?? 0,
+                        ...keyframePatch,
                     });
-                    return updated;
+                    return {
+                        ...updated,
+                        ...(role === "start" ? { keyframeStartImageUrl: imageUrl, keyframeStartImageUrls: nextStartUrls } : {}),
+                        ...(role === "end" ? { keyframeEndImageUrl: imageUrl, keyframeEndImageUrls: nextEndUrls } : {}),
+                    };
                 }));
             } else {
                 throw new Error("Render returned an empty response");
             }
         } catch (error) {
             debugLog.error("Studio", "Failed to generate T2I for shot:", error);
-            setShots(prev => prev.map((s, i) =>
-                i === index ? { ...s, t2iStatus: "failed" } : s
-            ));
+            if (isKeyframeRole) {
+                toast.error(`${role === "start" ? "首帧" : "尾帧"}生成失败`);
+            } else {
+                setShots(prev => prev.map((s, i) =>
+                    i === index ? { ...s, t2iStatus: "failed" } : s
+                ));
+            }
+        } finally {
+            if (isKeyframeRole) {
+                setKeyframeGenerating(prev => setKeyframeBusy(prev, shot.id, role, false));
+            }
         }
-    }, [shots, currentProject, characters, scenes, props, updateProject, persistWorkbench, parseAssetTags]);
+    }, [shots, currentProject, drawerAssetPools, updateProject, persistWorkbench, seriesAssetsLoading]);
 
     // Generate video for a shot
     const generateVideo = useCallback(async (index: number) => {
         const shot = shots[index];
         if (!currentProject || !shot.prompt.trim()) return;
+        const isR2vTab = shot.tabMode === "keyframe_r2v" || shot.tabMode === "asset_compose";
+        if (isR2vTab && seriesAssetsLoading) {
+            toast.warning("资产库还在加载，请稍后再生成视频。");
+            return;
+        }
 
-        const taggedPrompt = buildPromptWithReferenceTags(shot, characters, scenes, props);
-        const promptText = shot.tabMode === "direct_r2v" ? taggedPrompt : buildAssembledPrompt(shot);
+        const taggedPrompt = buildPromptWithReferenceTags(
+            shot,
+            drawerAssetPools.characters,
+            drawerAssetPools.scenes,
+            drawerAssetPools.props,
+        );
+        const promptText = isR2vTab ? taggedPrompt : buildAssembledPrompt(shot);
 
         setShots(prev => prev.map((s, i) =>
             i === index ? { ...s, videoStatus: "pending" } : s
         ));
 
         try {
-            if (shot.tabMode === "direct_r2v") {
+            if (isR2vTab) {
                 // R2V mode: use reference assets. We prefer the user's
                 // explicit R2V model choice (videoConfig.r2vModel) over
                 // the derived route from the I2V model. The derivation
                 // is kept as a fallback when the explicit r2vModel is
                 // missing or invalid (which can only happen if the
                 // catalog flipped under our feet).
-                let referenceUrls = parseAssetTags(taggedPrompt, shot);
                 const explicitR2v = videoConfig.r2vModel;
                 const explicitOk = !!findR2vModel(explicitR2v) || isExternalVideoModel(explicitR2v);
                 const routeModelId = explicitOk
                     ? explicitR2v
                     : getR2vRouteModelId(videoConfig.model);
-                const imageBased = isExternalVideoModel(routeModelId) || isR2vImageBased(routeModelId);
-                if (referenceUrls.length === 0 && imageBased) {
-                    const storyboardImage = getActiveT2IImageUrl(shot) || shot.imageUrl;
-                    if (storyboardImage) referenceUrls = [storyboardImage];
+                const isExternal = isExternalVideoModel(routeModelId);
+                const isAgnes = routeModelId?.startsWith("agnes-");
+                const isSeedance = routeModelId?.startsWith("seedance-");
+                const imageBased = isExternal || isR2vImageBased(routeModelId);
+                const parsedRefs = parseAssetTagsForVideoModel(taggedPrompt, shot, routeModelId);
+                const keyframeRefs = getShotKeyframeUrls(shot);
+                const referenceUrls = isSeedance
+                    ? getSeedanceReferenceUrls(shot, keyframeRefs, parsedRefs.urls)
+                    : imageBased ? keyframeRefs : parsedRefs.urls;
+                if (imageBased && referenceUrls.length === 0) {
+                    setShotErrors(prev => ({ ...prev, [shot.id]: agnesKeyframeError }));
+                    toast.warning(agnesKeyframeError);
+                    setShots(prev => prev.map((s, i) =>
+                        i === index ? { ...s, videoStatus: undefined } : s
+                    ));
+                    return;
+                }
+                if ((!imageBased && parsedRefs.unresolved.length > 0) || (referenceUrls.length === 0 && hasAssetReferenceTags(taggedPrompt) && !imageBased)) {
+                    const unresolved = parsedRefs.unresolved.length > 0
+                        ? parsedRefs.unresolved
+                        : getUnresolvedAssetNames(taggedPrompt, shot);
+                    const errMsg = `引用的「${unresolved.join("、")}」尚未生成图片，请先到素材步骤生成。`;
+                    setShotErrors(prev => ({ ...prev, [shot.id]: errMsg }));
+                    toast.warning(errMsg);
+                    setShots(prev => prev.map((s, i) =>
+                        i === index ? { ...s, videoStatus: undefined } : s
+                    ));
+                    return;
                 }
 
                 const tasks = await api.createVideoTask(
                     currentProject.id,
                     "",  // no image_url for R2V
-                    promptText,
+                    isAgnes ? cleanPrompt(promptText) : promptText,
                     videoConfig.duration,
                     undefined, // seed
                     videoConfig.resolution,
@@ -1408,13 +2011,18 @@ export default function StoryboardR2V() {
                     "multi", // shotType
                     "r2v", // generationMode
                     !imageBased ? referenceUrls : undefined, // referenceVideoUrls (Wan 2.6 legacy)
-                    undefined, undefined, undefined, // kling params
+                    (isAgnes || isSeedance) && keyframeRefs.length > 1 ? "keyframes" : undefined,
+                    undefined,
+                    undefined, // kling params
                     undefined, undefined, // vidu params
                     imageBased ? referenceUrls : undefined, // referenceImageUrls
                 );
-                const task = Array.isArray(tasks) ? tasks[0] : tasks;
+                const task = firstCreatedVideoTask(tasks);
 
                 if (task && task.id) {
+                    updateProject(currentProject.id, {
+                        video_tasks: [...(((currentProject as any).video_tasks ?? []) as any[]), task],
+                    } as any);
                     setShots(prev => prev.map((s, i) =>
                         i === index ? { ...s, videoTaskId: task.id, videoStatus: "processing" } : s
                     ));
@@ -1426,7 +2034,7 @@ export default function StoryboardR2V() {
                 // (catalog reload, project setting flip). Last sanity
                 // check right before submit so we never ship an r2v-
                 // only model into the I2V flow.
-                const i2vModelOk = VIDEO_I2V_MODELS.some(m => m.id === videoConfig.model);
+                const i2vModelOk = i2vModelList.some(m => m.id === videoConfig.model);
                 if (!i2vModelOk) {
                     debugLog.warn(
                         "Studio",
@@ -1491,9 +2099,12 @@ export default function StoryboardR2V() {
                     // HappyHorse
                     undefined,
                 );
-                const task = Array.isArray(tasks) ? tasks[0] : tasks;
+                const task = firstCreatedVideoTask(tasks);
 
                 if (task && task.id) {
+                    updateProject(currentProject.id, {
+                        video_tasks: [...(((currentProject as any).video_tasks ?? []) as any[]), task],
+                    } as any);
                     setShots(prev => prev.map((s, i) =>
                         i === index ? { ...s, videoTaskId: task.id, videoStatus: "processing" } : s
                     ));
@@ -1507,7 +2118,7 @@ export default function StoryboardR2V() {
                 i === index ? { ...s, videoStatus: "failed" } : s
             ));
         }
-    }, [shots, currentProject, characters, scenes, props, videoConfig, parseAssetTags]);
+    }, [shots, currentProject, drawerAssetPools, videoConfig, parseAssetTagsForVideoModel, seriesAssetsLoading, getUnresolvedAssetNames, findR2vModel, isExternalVideoModel, i2vModelList]);
 
     // Batch-aware generation. The user's "抽卡" mental model: one
     // click of Generate ×N fires N independent createVideoTask calls
@@ -1523,31 +2134,60 @@ export default function StoryboardR2V() {
     ) => {
         const shot = shots[index];
         if (!currentProject || !shot?.prompt.trim()) return;
-        const taggedPrompt = buildPromptWithReferenceTags(shot, characters, scenes, props);
         const tabMode = shot.tabMode;
-        const promptText = tabMode === "direct_r2v" ? taggedPrompt : buildAssembledPrompt(shot);
-        const effectiveCount = Math.max(1, Math.min(6, count || 1));
+        const isR2vTab = tabMode === "keyframe_r2v" || tabMode === "asset_compose";
+        if (isR2vTab && seriesAssetsLoading) {
+            toast.warning("资产库还在加载，请稍后再生成视频。");
+            return;
+        }
+        const taggedPrompt = buildPromptWithReferenceTags(
+            shot,
+            drawerAssetPools.characters,
+            drawerAssetPools.scenes,
+            drawerAssetPools.props,
+        );
+        const promptText = isR2vTab ? taggedPrompt : buildAssembledPrompt(shot);
+        const requestedCount = Math.max(1, Math.min(6, count || 1));
+        let effectiveCount = requestedCount;
+        const requestedR2vModelId = params?.model ?? videoConfig.r2vModel;
+        const requestedRouteModelId = findR2vModel(requestedR2vModelId) || isExternalVideoModel(requestedR2vModelId)
+            ? requestedR2vModelId
+            : getR2vRouteModelId(videoConfig.model);
+        if (isR2vTab && isExternalVideoModel(requestedRouteModelId) && requestedCount > 1) {
+            effectiveCount = 1;
+            toast.warning("Agnes 当前只支持单任务提交，已自动改为生成 1 个。");
+        }
 
         // Pre-flight: R2V tab needs reference inputs. Without them
         // the backend rejects with 400 anyway, but historically the
         // task would queue, fail mid-generation, and the user'd see
         // "排队中..." until the failure surfaced. Cheaper to validate
         // here and show inline error in the ParamsSection.
-        if (tabMode === "direct_r2v") {
-            let refs = parseAssetTags(taggedPrompt, shot);
-            const r2vModelId = params?.model ?? videoConfig.r2vModel;
+        if (isR2vTab) {
+            const r2vModelId = requestedR2vModelId;
             const r2vModel = findR2vModel(r2vModelId);
-            const routeModelId = r2vModel ? r2vModelId : getR2vRouteModelId(videoConfig.model);
-            const imageBased = isExternalVideoModel(routeModelId) || isR2vImageBased(routeModelId);
-            if (refs.length === 0 && imageBased) {
-                const storyboardImage = getActiveT2IImageUrl(shot) || shot.imageUrl;
-                if (storyboardImage) refs = [storyboardImage];
+            const routeModelId = r2vModel ? r2vModelId : requestedRouteModelId;
+            const isExternal = isExternalVideoModel(routeModelId);
+            const imageBased = !isExternal && isR2vImageBased(routeModelId);
+            const parsedRefs = parseAssetTagsForVideoModel(taggedPrompt, shot, routeModelId);
+            const keyframeRefs = getShotKeyframeUrls(shot);
+            const refs = (isExternal || imageBased) ? keyframeRefs : parsedRefs.urls;
+            if ((isExternal || imageBased) && refs.length === 0) {
+                setShotErrors(prev => ({ ...prev, [shot.id]: agnesKeyframeError }));
+                toast.warning(agnesKeyframeError);
+                return;
             }
-            if (refs.length === 0) {
-                const hasTags = hasAssetTags(taggedPrompt);
+            // External video models (e.g. agnes-video-v2.0) can do
+            // pure T2V without reference images, but the keyframe workflow
+            // deliberately requires a complete shot image so asset sheets are
+            // never sent as provider refs.
+            const hasTags = hasAssetReferenceTags(taggedPrompt);
+            if ((!isExternal && !imageBased && parsedRefs.unresolved.length > 0) || (refs.length === 0 && (hasTags || !isExternal) && !isExternal && !imageBased)) {
                 let errMsg: string;
                 if (hasTags) {
-                    const unresolved = getUnresolvedAssetNames(taggedPrompt);
+                    const unresolved = parsedRefs.unresolved.length > 0
+                        ? parsedRefs.unresolved
+                        : getUnresolvedAssetNames(taggedPrompt, shot);
                     errMsg = `引用的「${unresolved.join("、")}」尚未生成图片，请先到素材步骤生成。`;
                 } else {
                     const modelLabel = r2vModel?.name ?? r2vModelId;
@@ -1598,23 +2238,26 @@ export default function StoryboardR2V() {
             // requests through Promise.all — fail-fast on any one
             // failure leaves the others untouched on the backend (the
             // BG-task wrapper handles their lifecycle independently).
-            const createOne = async (): Promise<string | null> => {
-                if (tabMode === "direct_r2v") {
-                    let referenceUrls = parseAssetTags(taggedPrompt, shot);
+            const createOne = async (): Promise<VideoTask | null> => {
+                if (isR2vTab) {
                     const explicitR2v = params?.model ?? videoConfig.r2vModel;
                     const explicitOk = !!findR2vModel(explicitR2v) || isExternalVideoModel(explicitR2v);
                     const routeModelId = explicitOk
                         ? explicitR2v
                         : getR2vRouteModelId(videoConfig.model);
-                    const imageBased = isExternalVideoModel(routeModelId) || isR2vImageBased(routeModelId);
-                    if (referenceUrls.length === 0 && imageBased) {
-                        const storyboardImage = getActiveT2IImageUrl(shot) || shot.imageUrl;
-                        if (storyboardImage) referenceUrls = [storyboardImage];
-                    }
+                    const isExternal = isExternalVideoModel(routeModelId);
+                    const isAgnes = routeModelId?.startsWith("agnes-");
+                    const isSeedance = routeModelId?.startsWith("seedance-");
+                    const imageBased = isExternal || isR2vImageBased(routeModelId);
+                    const parsedRefs = parseAssetTagsForVideoModel(taggedPrompt, shot, routeModelId);
+                    const keyframeRefs = getShotKeyframeUrls(shot);
+                    const referenceUrls = isSeedance
+                        ? getSeedanceReferenceUrls(shot, keyframeRefs, parsedRefs.urls)
+                        : imageBased ? keyframeRefs : parsedRefs.urls;
                     const tasks = await api.createVideoTask(
                         currentProject.id,
                         "",
-                        promptText,
+                        isAgnes ? cleanPrompt(promptText) : promptText,
                         params?.duration ?? videoConfig.duration,
                         params?.seed,
                         params?.resolution ?? videoConfig.resolution,
@@ -1628,22 +2271,23 @@ export default function StoryboardR2V() {
                         params?.shotType ?? "multi",
                         "r2v",
                         !imageBased ? referenceUrls : undefined,
-                        undefined, undefined, undefined,
+                        (isAgnes || isSeedance) && keyframeRefs.length > 1 ? "keyframes" : undefined,
+                        undefined,
+                        undefined,
                         undefined, undefined,
                         imageBased ? referenceUrls : undefined,
                         params?.ratio,
                         tabMode,
                         params?.watermark,
                     );
-                    const task = Array.isArray(tasks) ? tasks[0] : tasks;
-                    return task?.id ?? null;
+                    return firstCreatedVideoTask(tasks);
                 }
                 // I2V branch — same defensive check on the model.
                 const i2vModelId = params?.model ?? videoConfig.model;
-                const i2vModelOk = VIDEO_I2V_MODELS.some(m => m.id === i2vModelId);
+                const i2vModelOk = i2vModelList.some(m => m.id === i2vModelId);
                 if (!i2vModelOk) {
                     debugLog.warn("Studio", `Refusing I2V submission with non-I2V model "${i2vModelId}".`);
-                    return null;
+                    throw new Error(`当前分镜被当作 I2V 提交，但模型「${i2vModelId}」不是 I2V 模型。请切到首帧 I2V，或在资产合成/关键帧 R2V 中使用 R2V 模型。`);
                 }
                 const imageUrl = getActiveT2IImageUrl(shot) || shot.imageUrl || "";
                 const tasks = await api.createVideoTask(
@@ -1673,15 +2317,23 @@ export default function StoryboardR2V() {
                     tabMode,
                     params?.watermark,
                 );
-                const task = Array.isArray(tasks) ? tasks[0] : tasks;
-                return task?.id ?? null;
+                return firstCreatedVideoTask(tasks);
             };
 
-            const taskIds = (await Promise.all(
+            const createdTasks = (await Promise.all(
                 Array.from({ length: effectiveCount }, createOne),
-            )).filter((id): id is string => !!id);
+            )).filter((task): task is VideoTask => !!task?.id);
+            const taskIds = createdTasks.map((task) => task.id);
 
             if (taskIds.length > 0) {
+                const existingTasks = (((currentProject as any).video_tasks ?? []) as VideoTask[]);
+                const existingIds = new Set(existingTasks.map((task) => task.id));
+                updateProject(currentProject.id, {
+                    video_tasks: [
+                        ...existingTasks,
+                        ...createdTasks.filter((task) => !existingIds.has(task.id)),
+                    ],
+                } as any);
                 setShotErrors(prev => {
                     if (!prev[shot.id]) return prev;
                     const next = { ...prev };
@@ -1720,7 +2372,7 @@ export default function StoryboardR2V() {
                 i === index ? { ...s, videoStatus: "failed" as const } : s
             ));
         }
-    }, [shots, currentProject, characters, scenes, props, videoConfig, parseAssetTags, findR2vModel, isExternalVideoModel]);
+    }, [shots, currentProject, drawerAssetPools, videoConfig, parseAssetTagsForVideoModel, findR2vModel, isExternalVideoModel, seriesAssetsLoading, getUnresolvedAssetNames, i2vModelList]);
 
     // Project-level task refresh: when any task on any shot is in
     // flight, refetch the whole project every 5s. The candidates
@@ -1756,7 +2408,12 @@ export default function StoryboardR2V() {
                 const fresh = await api.getProject(projectId);
                 updateProject(projectId, fresh);
                 if (Array.isArray(fresh?.frames)) {
-                    setShots(fresh.frames.map((frame: any) => frameToShotNode(frame)));
+                    setShots(prev => fresh.frames.map((frame: any) =>
+                        preserveLocalWorkbenchState(
+                            frameToShotNode(frame, fresh),
+                            prev.find((shot) => shot.id === frame.id),
+                        )
+                    ));
                 }
             } catch {
                 /* swallow — network blips are fine, next tick retries */
@@ -1856,9 +2513,9 @@ export default function StoryboardR2V() {
         ? envModelName
         : isR2VWorkflow
         ? (findR2vModel(videoConfig.r2vModel)?.name ?? videoConfig.r2vModel)
-        : (VIDEO_I2V_MODELS.find(m => m.id === videoConfig.model)?.name ?? videoConfig.model);
+        : (i2vModelList.find(m => m.id === videoConfig.model)?.name ?? videoConfig.model);
 
-    // ---- Project-level task derivations (drive Queue + Candidates) ----
+    // ---- Project-level task derivations (drive Candidates + status sync) ----
     // We derive these via useMemo so per-render allocation is cheap and
     // children can rely on referentially-stable arrays (set-membership
     // tests in CompareModal etc. are correctness-sensitive).
@@ -1873,19 +2530,6 @@ export default function StoryboardR2V() {
         return map;
     }, [allVideoTasks]);
 
-    // Map shot.id → human label for the queue panel's frame column.
-    const shotLabelByFrameId = useMemo(() => {
-        const out: Record<string, string> = {};
-        shots.forEach((s, i) => { out[s.id] = `Shot ${i + 1}`; });
-        return out;
-    }, [shots]);
-
-    // In-flight aggregate count drives the TaskQueueButton badge.
-    const inFlightTaskCount = useMemo(
-        () => allVideoTasks.filter(t => t.status === "pending" || t.status === "processing").length,
-        [allVideoTasks],
-    );
-
     // Sync shot.videoStatus from project.video_tasks when the
     // project-level poll refreshes. Video task status is only visible
     // via project refresh (GET /tasks/ only covers asset tasks).
@@ -1894,16 +2538,29 @@ export default function StoryboardR2V() {
         setShots(prev => {
             let changed = false;
             const next = prev.map(s => {
-                if (!s.videoTaskId) return s;
-                const task = allVideoTasks.find(t => t.id === s.videoTaskId);
+                const shotTasks = allVideoTasks.filter((t: any) => {
+                    if (t.frame_id !== s.id) return false;
+                    if (t.workbench_tab != null) return normalizeWorkbenchTabMode(t.workbench_tab) === s.tabMode;
+                    if (s.tabMode === "keyframe_r2v") return t.generation_mode === "r2v";
+                    if (s.tabMode === "asset_compose") return false;
+                    return t.generation_mode !== "r2v";
+                });
+                const task = shotTasks.find(t => t.status === "pending" || t.status === "processing")
+                    || (s.videoTaskId ? allVideoTasks.find(t => t.id === s.videoTaskId) : undefined)
+                    || [...shotTasks].reverse().find(t => t.status === "completed" && t.video_url)
+                    || [...shotTasks].reverse().find(t => t.status === "failed");
                 if (!task) return s;
-                if (task.status === "completed" && s.videoStatus !== "completed") {
+                if ((task.status === "pending" || task.status === "processing") && (s.videoStatus !== task.status || s.videoTaskId !== task.id)) {
                     changed = true;
-                    return { ...s, videoStatus: "completed" as const, videoUrl: (task as any).video_url };
+                    return { ...s, videoStatus: task.status as "pending" | "processing", videoTaskId: task.id };
                 }
-                if (task.status === "failed" && s.videoStatus !== "failed") {
+                if (task.status === "completed" && (s.videoStatus !== "completed" || s.videoTaskId !== task.id)) {
                     changed = true;
-                    return { ...s, videoStatus: "failed" as const };
+                    return { ...s, videoStatus: "completed" as const, videoUrl: (task as any).video_url, videoTaskId: task.id };
+                }
+                if (task.status === "failed" && (s.videoStatus !== "failed" || s.videoTaskId !== task.id)) {
+                    changed = true;
+                    return { ...s, videoStatus: "failed" as const, videoTaskId: task.id };
                 }
                 return s;
             });
@@ -1932,10 +2589,11 @@ export default function StoryboardR2V() {
         return allVideoTasks.filter((t) => {
             if (t.frame_id !== shot.id) return false;
             if (t.workbench_tab != null) {
-                return t.workbench_tab === shot.tabMode;
+                return normalizeWorkbenchTabMode(t.workbench_tab) === shot.tabMode;
             }
-            // Legacy fallback: i2v tasks belong in t2i_i2v, r2v in direct_r2v.
-            if (shot.tabMode === "direct_r2v") return t.generation_mode === "r2v";
+            // Legacy fallback: i2v tasks belong in t2i_i2v, r2v in keyframe_r2v.
+            if (shot.tabMode === "keyframe_r2v") return t.generation_mode === "r2v";
+            if (shot.tabMode === "asset_compose") return false;
             return t.generation_mode !== "r2v"; // i2v + undefined → i2v tab
         });
     }, [allVideoTasks]);
@@ -1947,7 +2605,7 @@ export default function StoryboardR2V() {
     //  - videoConfig for shared knobs the user typically picks once
     //    and uses across all shots in a project.
     const paramsStateForShot = useCallback((shot: ShotNode): ParamsState => {
-        const isR2v = shot.tabMode === "direct_r2v";
+        const isR2v = shot.tabMode === "keyframe_r2v" || shot.tabMode === "asset_compose";
         const modelId = isR2v ? videoConfig.r2vModel : videoConfig.model;
         return {
             model: modelId,
@@ -2000,7 +2658,7 @@ export default function StoryboardR2V() {
             if (prev[shot.id] === next.seed) return prev;
             return { ...prev, [shot.id]: next.seed };
         });
-        const isR2v = shot.tabMode === "direct_r2v";
+        const isR2v = shot.tabMode === "keyframe_r2v" || shot.tabMode === "asset_compose";
         const ls = typeof window !== "undefined" ? window.localStorage : null;
         setVideoConfig(prev => {
             const updated: VideoConfig = {
@@ -2117,7 +2775,7 @@ export default function StoryboardR2V() {
             // Decide which slot the batch's model lives in (I2V or R2V).
             if (findR2vModel(first.model) || isExternalVideoModel(first.model)) {
                 updated.r2vModel = first.model!;
-            } else if (VIDEO_I2V_MODELS.some(m => m.id === first.model)) {
+            } else if (i2vModelList.some(m => m.id === first.model)) {
                 updated.model = first.model!;
             }
             if (first.duration) updated.duration = first.duration;
@@ -2125,30 +2783,7 @@ export default function StoryboardR2V() {
             if (first.negative_prompt !== undefined) updated.negativePrompt = first.negative_prompt;
             return updated;
         });
-    }, [findR2vModel, isExternalVideoModel]);
-
-    // Queue's jump-to-shot: scroll the shot's wrapper into view AND
-    // expand the shot panel + its sections (otherwise jumping to a
-    // collapsed shot lands the user on a 1-line strip and they have
-    // to expand manually).
-    const handleJumpToShot = useCallback((frameId: string) => {
-        setExpandedShots(prev => {
-            if (prev.has(frameId)) return prev;
-            const next = new Set(prev);
-            next.add(frameId);
-            return next;
-        });
-        // Force inner sections open too — feels right when arriving from
-        // a queue task: you want to see Params + Candidates for that shot.
-        overridePanelSectionState([frameId], ["params", "candidates"], true);
-        // Scroll after the next paint so the newly-expanded body is
-        // measured correctly. RAF is sufficient — we don't need the
-        // full layout effect cycle.
-        requestAnimationFrame(() => {
-            const el = shotWrapperRefs.current.get(frameId);
-            if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-        });
-    }, []);
+    }, [findR2vModel, isExternalVideoModel, i2vModelList]);
 
     // Active candidate URL resolver — many backend video URLs are
     // relative paths needing the asset prefix to render in <video>.
@@ -2161,12 +2796,8 @@ export default function StoryboardR2V() {
     );
 
     return (
-        // Layout v4: outer horizontal split. StepHeader belongs to main
-        // column (not page-wide), so the right TaskQueuePanel can be a
-        // true floor-to-ceiling sidebar with its own SidePanelHeader.
+        // Layout v4: outer shell keeps the storyboard column full-height.
         <div className="h-full flex overflow-hidden relative">
-        {/* Main column — pushed (compressed) when the queue panel opens
-            so the queue doesn't overlay content. */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
             <StepHeader
                 stepNumber={3}
@@ -2197,17 +2828,11 @@ export default function StoryboardR2V() {
                             <span>{t("currentModel")}:</span>
                             <span className="ml-1 text-foreground/95">{currentModelName}</span>
                         </span>
-                        {/* Open task queue */}
-                        <TaskQueueButton
-                            inFlightCount={inFlightTaskCount}
-                            open={queueOpen}
-                            onToggle={() => setQueueOpen(v => !v)}
-                        />
                     </>
                 )}
             />
             {/* Top Toolbar — 简化版：只保留 shot 计数 / + shot / 全展开-全折叠
-                model name + queue button + 画风 已上移到 StepHeader trailing. */}
+                model name + 画风 已上移到 StepHeader trailing. */}
             <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 border-b border-white/[0.06] bg-white/[0.015] shrink-0 sm:px-6">
                 <span className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-text-muted">
                     <span className="text-foreground font-medium">{shots.length}</span>
@@ -2341,7 +2966,26 @@ export default function StoryboardR2V() {
                     ).length;
                     const paramsState = paramsStateForShot(shot);
                     const isI2vTab = shot.tabMode === "t2i_i2v";
-                    const modelList = shot.tabMode === "direct_r2v" ? r2vModelList : i2vModelList;
+                    const isKeyframeTab = shot.tabMode === "keyframe_r2v";
+                    const isAssetComposeTab = shot.tabMode === "asset_compose";
+                    const keyframeUrls = getShotKeyframeUrls(shot);
+                    const keyframeSourceOptions = collectKeyframeSourceOptions(shot);
+                    const taggedPromptForShot = buildPromptWithReferenceTags(
+                        shot,
+                        drawerAssetPools.characters,
+                        drawerAssetPools.scenes,
+                        drawerAssetPools.props,
+                    );
+                    const imageReferenceSummary = parseAssetReferenceTags(taggedPromptForShot, drawerAssetPools, shot);
+                    const imageReferenceCount = imageReferenceSummary.urls.length;
+                    const imageReferenceUnresolvedCount = imageReferenceSummary.unresolved.length;
+                    const keyframeStartPrompt = shot.keyframeStartPrompt
+                        || defaultKeyframePrompt(taggedPromptForShot, shot, "start");
+                    const keyframeEndPrompt = shot.keyframeEndPrompt
+                        || defaultKeyframePrompt(taggedPromptForShot, shot, "end");
+                    const storyboardImagePrompt = shot.storyboardImagePrompt
+                        ?? defaultKeyframePrompt(taggedPromptForShot, shot, "neutral");
+                    const modelList = (isKeyframeTab || isAssetComposeTab) ? r2vModelList : i2vModelList;
                     return (
                     /* Plain div (was motion.div) — staggered enter
                        animation re-fired every time the user switched
@@ -2350,15 +2994,14 @@ export default function StoryboardR2V() {
                        motion is kept inside the card itself. */
                     <div
                         key={shot.id}
-                        ref={(el) => { shotWrapperRefs.current.set(shot.id, el); }}
                     >
                         <ShotCard
                             shot={shot}
                             index={index}
                             totalShots={shots.length}
-                            characters={characters}
-                            scenes={scenes}
-                            props={props}
+                            characters={drawerAssetPools.characters}
+                            scenes={drawerAssetPools.scenes}
+                            props={drawerAssetPools.props}
                             onUpdatePrompt={(prompt) => updatePrompt(index, prompt)}
                             onUpdateField={(field, value) => handleUpdateField(index, field, value)}
                             durationEditorConfig={durationEditorCfg}
@@ -2399,13 +3042,13 @@ export default function StoryboardR2V() {
                             }}
                             expanded={expandedShots.has(shot.id)}
                             onToggleExpanded={() => toggleShotExpanded(shot.id)}
-                            /* PR-3c · 闭环生成: ShotCard 内全宽生成行 + count selector.
-                               canGenerate: direct_r2v 需 prompt; t2i_i2v 还需 first frame. */
+                            /* PR-3c · 闭环生成: ShotCard 内全宽生成行 + count selector. */
                             generateCount={paramsState.count}
                             canGenerate={
                                 shot.prompt.trim().length > 0
                                 && (
-                                    shot.tabMode === "direct_r2v"
+                                    (isKeyframeTab && keyframeUrls.length > 0)
+                                    || isAssetComposeTab
                                     || !!shot.t2iImageUrl
                                     || (shot.t2iImageUrls?.length ?? 0) > 0
                                 )
@@ -2512,23 +3155,54 @@ export default function StoryboardR2V() {
                                 </div>
                             );
                         })()}
-                        {/* Attached workbench: t2i_i2v 模式下渲染顺序为
-                            Step 1 (T2ISubsection) → Step 2 (ParamsSection)
-                            → CandidatesSection；direct_r2v 模式无 T2I 区，
-                            ParamsSection → CandidatesSection。
-                            Spec: docs/design/r2v-workflow-v3-unified.md §4.3.2
-                            (PR-3a · Option A 最小修复)
-                            v1 不加 explicit section header / first-frame
-                            thumbnail in Step 2 — 看用户反馈再升级 v2. */}
+                        {/* Attached workbench:
+                            首帧 I2V / 资产合成: generate or upload complete keyframes.
+                            关键帧 R2V: choose complete keyframes, then generate takes. */}
                         {expandedShots.has(shot.id) ? (
-                        <div className="ml-2 mr-1 mt-1.5 rounded-lg border border-glass-border bg-black/30 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_2px_12px_-6px_rgba(0,0,0,0.5)] backdrop-blur-[2px] motion-safe:animate-[shotPanelIn_220ms_cubic-bezier(0.22,1,0.36,1)_both] md:ml-5">
-                            {isI2vTab ? (
-                                <div>
+                        <div className="relative ml-7 mr-2 mt-1.5 border-l border-primary/20 pl-4 pb-2 motion-safe:animate-[shotPanelIn_220ms_cubic-bezier(0.22,1,0.36,1)_both] md:ml-12 md:pl-5">
+                            <span className="absolute -left-[5px] top-3 h-2.5 w-2.5 rounded-full border border-primary/45 bg-[#050508] shadow-[0_0_10px_rgba(100,108,255,0.28)]" aria-hidden="true" />
+                            <div className="mb-2 flex items-center gap-2">
+                                <span className="font-mono text-[9.5px] font-medium uppercase tracking-[0.2em] text-primary/70">
+                                    Workbench
+                                </span>
+                                <span className="h-px flex-1 bg-gradient-to-r from-primary/20 via-white/[0.05] to-transparent" aria-hidden="true" />
+                                <span className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-text-muted">
+                                    #{String(index + 1).padStart(2, "0")}
+                                </span>
+                            </div>
+                            {(isI2vTab || isAssetComposeTab) ? (
+                                <div className="overflow-hidden rounded-md border border-white/[0.07] bg-black/18 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]">
+                                    <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-1.5">
+                                        <span className="font-mono text-[9.5px] font-medium uppercase tracking-[0.18em] text-text-muted">
+                                            Asset refs
+                                        </span>
+                                        <span className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium ${
+                                            imageReferenceCount > 0
+                                                ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
+                                                : "border-amber-400/25 bg-amber-400/10 text-amber-200"
+                                        }`}>
+                                            {imageReferenceCount > 0
+                                                ? `生成当前帧会引用 ${imageReferenceCount} 张资产图`
+                                                : "未解析到资产参考图"}
+                                            {imageReferenceUnresolvedCount > 0 ? ` · ${imageReferenceUnresolvedCount} 个未就绪` : ""}
+                                        </span>
+                                    </div>
+                                    <label className="block border-b border-white/[0.06] px-3 py-2.5">
+                                        <span className="mb-1.5 block text-[12px] font-semibold text-text-secondary">
+                                            分镜图提示词
+                                        </span>
+                                        <textarea
+                                            value={storyboardImagePrompt}
+                                            onChange={(e) => updateStoryboardImagePrompt(index, e.target.value)}
+                                            rows={3}
+                                            className="w-full resize-y rounded-md border border-glass-border bg-black/30 px-3 py-2 text-[13px] leading-relaxed text-foreground outline-none transition-colors placeholder:text-text-muted focus:border-primary/45 focus:bg-black/40"
+                                        />
+                                    </label>
                                     <T2ISubsection
                                         imageUrls={shot.t2iImageUrls ?? []}
                                         selectedIndex={shot.t2iSelectedIndex ?? 0}
                                         storyboardFrameUrl={shot.imageUrl || undefined}
-                                        promptIsEmpty={!shot.prompt.trim()}
+                                        promptIsEmpty={!storyboardImagePrompt.trim()}
                                         generating={shot.t2iStatus === "pending" || shot.t2iStatus === "processing"}
                                         inFlightTaskId={shot.t2iTaskId}
                                         inFlightStatus={shot.t2iStatus}
@@ -2550,108 +3224,231 @@ export default function StoryboardR2V() {
                                             return next;
                                         }))}
                                         onGenerate={() => generateT2I(index)}
-                                        onUpload={async (file) => {
-                                            // Issue 10: upload an external image as a T2I首帧 candidate.
-                                            // Backend appends + auto-selects; we mirror state from the
-                                            // returned frame (single source of truth for the URL the
-                                            // server actually persisted).
-                                            //
-                                            // Frontend may hold a synthetic shot id (`shot_<ts>_<rand>`)
-                                            // for shots created via the + button that haven't been
-                                            // persisted yet. The backend has no such frame_id → 404.
-                                            // Lazy-create the frame on backend first, then upload.
-                                            if (!currentProject) return { code: "network", detail: "no current project" };
-                                            try {
-                                                let effectiveFrameId = shot.id;
-                                                const isSynthetic = effectiveFrameId.startsWith("shot_");
-                                                if (isSynthetic) {
-                                                    // Materialize the shot on backend before any
-                                                    // frame-scoped op. Send minimum viable payload —
-                                                    // the prompt + tab mode survives via separate
-                                                    // workbench PATCH calls already triggered elsewhere.
-                                                    try {
-                                                        const created = await crudApi.createFrame(currentProject.id, {
-                                                            scene_id: "",
-                                                            action_description: shot.prompt || "",
-                                                            insert_at: index,
-                                                        } as any);
-                                                        // Find the newly inserted frame by index in the response
-                                                        const newFrame = Array.isArray(created?.frames)
-                                                            ? created.frames[Math.min(index, created.frames.length - 1)]
-                                                            : null;
-                                                        if (newFrame?.id) {
-                                                            effectiveFrameId = newFrame.id;
-                                                            // Swap synthetic id → backend id locally so
-                                                            // subsequent ops (workbench persist, generate, etc.)
-                                                            // hit the real frame.
-                                                            setShots(prev => prev.map((s, j) =>
-                                                                j === index ? { ...s, id: newFrame.id } : s,
-                                                            ));
-                                                        }
-                                                    } catch (createErr: any) {
-                                                        debugLog.error("Studio", "Lazy createFrame failed", createErr);
-                                                        const cdetail = createErr?.response?.data?.detail || createErr?.message || "create frame failed";
-                                                        return { code: "server", detail: `先创建镜头失败：${cdetail}` };
-                                                    }
-                                                }
-
-                                                const updatedFrame = await api.uploadT2IFrame(
-                                                    currentProject.id,
-                                                    effectiveFrameId,
-                                                    file,
-                                                );
-                                                if (!updatedFrame) return { code: "network", detail: "empty response" };
-                                                const nextUrls: string[] = updatedFrame.t2i_image_urls ?? [];
-                                                const nextIdx: number = typeof updatedFrame.t2i_selected_index === "number"
-                                                    ? updatedFrame.t2i_selected_index
-                                                    : Math.max(0, nextUrls.length - 1);
-                                                setShots(prev => prev.map((s, j) => {
-                                                    if (j !== index) return s;
-                                                    return {
-                                                        ...s,
-                                                        t2iImageUrls: nextUrls,
-                                                        t2iSelectedIndex: nextIdx,
-                                                        t2iImageUrl: nextUrls[nextIdx],
-                                                        t2iStatus: "completed",
-                                                    };
-                                                }));
-                                                return undefined;
-                                            } catch (err: any) {
-                                                debugLog.error("Studio", "T2I upload failed", err);
-                                                const status = err?.response?.status;
-                                                // Always surface the backend detail string so the
-                                                // user can self-diagnose ("frame not found", "OSS
-                                                // write denied", etc.) instead of "请重试".
-                                                const detail = err?.response?.data?.detail
-                                                    || err?.message
-                                                    || `HTTP ${status ?? "?"}`;
-                                                if (status === 413) return { code: "size", detail: String(detail) };
-                                                if (status === 415) return { code: "type", detail: String(detail) };
-                                                if (status === 404) return { code: "not_found", detail: String(detail) };
-                                                if (status && status >= 500) return { code: "server", detail: String(detail) };
-                                                return { code: "network", detail: String(detail) };
-                                            }
-                                        }}
+                                        onUpload={(file) => uploadT2IForShot(index, shot, file)}
                                         resolveUrl={resolveAssetUrl}
                                     />
                                 </div>
                             ) : null}
-                            {/* Step 2 · 生成视频 (ParamsSection) — always shown
-                                when shot expanded; renders below Step 1 in
-                                t2i_i2v mode, and is the only section above
-                                candidates in direct_r2v mode. */}
-                            <div className={isI2vTab ? "border-t border-glass-border" : ""}>
+                            {isKeyframeTab ? (
+                                <div className="border-b border-glass-border px-4 py-3">
+                                    <div className="mb-3 flex items-center justify-between gap-3">
+                                        <div>
+                                            <div className="font-mono text-[10px] font-medium uppercase tracking-[0.16em] text-text-muted">
+                                                Keyframes
+                                            </div>
+                                            <div className="text-[13px] font-semibold text-foreground">
+                                                首尾帧设定
+                                            </div>
+                                        </div>
+                                        <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${
+                                            imageReferenceCount > 0
+                                                ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
+                                                : "border-amber-400/25 bg-amber-400/10 text-amber-200"
+                                        }`}>
+                                            {imageReferenceCount > 0
+                                                ? `生成首尾帧会引用 ${imageReferenceCount} 张资产图`
+                                                : "未解析到资产参考图"}
+                                            {imageReferenceUnresolvedCount > 0 ? ` · ${imageReferenceUnresolvedCount} 个未就绪` : ""}
+                                        </span>
+                                    </div>
+                                    <div className="mb-3 grid gap-3 lg:grid-cols-2">
+                                        {([
+                                            { role: "start" as const, label: "首帧提示词", value: keyframeStartPrompt },
+                                            { role: "end" as const, label: "尾帧提示词", value: keyframeEndPrompt },
+                                        ]).map((item) => (
+                                            <label key={item.role} className="block">
+                                                <span className="mb-1.5 block text-[12px] font-semibold text-text-secondary">
+                                                    {item.label}
+                                                </span>
+                                                <textarea
+                                                    value={item.value}
+                                                    onChange={(e) => updateKeyframePrompt(index, item.role, e.target.value)}
+                                                    rows={3}
+                                                    className="w-full resize-y rounded-md border border-glass-border bg-black/30 px-3 py-2 text-[13px] leading-relaxed text-foreground outline-none transition-colors placeholder:text-text-muted focus:border-primary/45 focus:bg-black/40"
+                                                />
+                                            </label>
+                                        ))}
+                                    </div>
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                        {([
+                                            {
+                                                role: "start" as const,
+                                                label: "首帧",
+                                                url: shot.keyframeStartImageUrl || keyframeUrls[0],
+                                                required: true,
+                                            },
+                                            {
+                                                role: "end" as const,
+                                                label: "尾帧",
+                                                url: shot.keyframeEndImageUrl || keyframeUrls[1],
+                                                required: false,
+                                            },
+                                        ]).map((slot) => {
+                                            const url = slot.url;
+                                            const slotCandidates = slot.role === "start"
+                                                ? shot.keyframeStartImageUrls ?? []
+                                                : shot.keyframeEndImageUrls ?? [];
+                                            const isBusy = !!keyframeGenerating[shot.id]?.[slot.role];
+                                            const isUploading = !!keyframeUploading[shot.id]?.[slot.role];
+                                            const slotBusy = isBusy || isUploading;
+                                            const slotPrompt = slot.role === "start" ? keyframeStartPrompt : keyframeEndPrompt;
+                                            const canGenerateSlot = !!slotPrompt.trim() && !slotBusy;
+                                            const uploadInputId = `keyframe-upload-${shot.id}-${slot.role}`;
+                                            return (
+                                                <div
+                                                    key={slot.role}
+                                                    className="overflow-hidden rounded-lg border border-glass-border bg-black/30"
+                                                >
+                                                    <div className="flex items-center justify-between border-b border-glass-border px-3 py-2">
+                                                        <span className="text-[12px] font-semibold text-foreground">{slot.label}</span>
+                                                        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-text-muted">
+                                                            {url ? "Ready" : slot.required ? "Required" : "Optional"}
+                                                        </span>
+                                                    </div>
+                                                    <div
+                                                        className="relative grid place-items-center overflow-hidden bg-black/45"
+                                                        style={{ height: 132 }}
+                                                    >
+                                                        {url ? (
+                                                            <img
+                                                                src={resolveAssetUrl(url)}
+                                                                alt={slot.label}
+                                                                className="absolute inset-0 h-full w-full object-contain"
+                                                            />
+                                                        ) : (
+                                                            <div className="flex flex-col items-center gap-2 text-text-muted">
+                                                                <ImageIcon size={22} />
+                                                                <span className="text-[12px]">
+                                                                    {slot.required ? "请先生成首帧" : "可继续生成尾帧"}
+                                                                </span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    <div className="relative z-10 space-y-2 border-t border-glass-border bg-[#050508]/95 p-3">
+                                                        <div className="grid grid-cols-2 gap-2">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => generateT2I(index, slot.role)}
+                                                                disabled={!canGenerateSlot}
+                                                                className="inline-flex items-center justify-center gap-1.5 rounded-md border border-amber-400/30 bg-amber-400/10 px-2.5 py-1.5 text-[12px] font-semibold text-amber-200 transition-colors hover:bg-amber-400/16 disabled:cursor-not-allowed disabled:opacity-45"
+                                                            >
+                                                                {isBusy ? (
+                                                                    <Loader2 size={13} className="animate-spin" />
+                                                                ) : (
+                                                                    <Sparkles size={13} />
+                                                                )}
+                                                                {url ? "重新生成" : "生成"}
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => document.getElementById(uploadInputId)?.click()}
+                                                                disabled={slotBusy}
+                                                                className="inline-flex items-center justify-center gap-1.5 rounded-md border border-glass-border bg-black/25 px-2.5 py-1.5 text-[12px] font-semibold text-text-secondary transition-colors hover:border-primary/40 hover:bg-primary/10 hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                                                            >
+                                                                {isUploading ? (
+                                                                    <Loader2 size={13} className="animate-spin" />
+                                                                ) : (
+                                                                    <Upload size={13} />
+                                                                )}
+                                                                上传
+                                                            </button>
+                                                            <input
+                                                                id={uploadInputId}
+                                                                type="file"
+                                                                accept={KEYFRAME_UPLOAD_TYPES.join(",")}
+                                                                className="sr-only"
+                                                                onChange={(e) => {
+                                                                    const file = e.target.files?.[0];
+                                                                    if (file) void uploadKeyframeImage(index, shot, slot.role, file);
+                                                                    e.target.value = "";
+                                                                }}
+                                                            />
+                                                        </div>
+                                                        {keyframeSourceOptions.length > 0 ? (
+                                                            <div>
+                                                                <div className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-text-muted">
+                                                                    可选分镜图
+                                                                </div>
+                                                                <div className="flex flex-wrap gap-1.5">
+                                                                    {keyframeSourceOptions.map((source, sourceIndex) => {
+                                                                        const active = source.url === url;
+                                                                        return (
+                                                                            <button
+                                                                                key={`${slot.role}-source-${source.url}-${sourceIndex}`}
+                                                                                type="button"
+                                                                                onClick={() => selectKeyframeImage(index, slot.role, source.url)}
+                                                                                title={`选择 ${source.label} 为${slot.label}`}
+                                                                                aria-label={`选择 ${source.label} 为${slot.label}`}
+                                                                                className={`group relative h-12 w-16 overflow-hidden rounded border transition-colors ${
+                                                                                    active
+                                                                                        ? "border-primary bg-primary/10"
+                                                                                        : "border-glass-border bg-black/30 hover:border-white/25"
+                                                                                }`}
+                                                                            >
+                                                                                <img
+                                                                                    src={resolveAssetUrl(source.url)}
+                                                                                    alt={source.label}
+                                                                                    className="h-full w-full object-contain"
+                                                                                />
+                                                                                <span className="absolute inset-x-0 bottom-0 truncate bg-black/65 px-1 py-0.5 text-[9px] text-white/85 opacity-0 transition-opacity group-hover:opacity-100">
+                                                                                    {source.label}
+                                                                                </span>
+                                                                            </button>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            </div>
+                                                        ) : null}
+                                                        {slotCandidates.length > 0 ? (
+                                                            <div>
+                                                                <div className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-text-muted">
+                                                                    当前槽位候选
+                                                                </div>
+                                                            <div className="flex flex-wrap gap-1.5">
+                                                                {slotCandidates.map((candidateUrl, candidateIndex) => {
+                                                                    const active = candidateUrl === url;
+                                                                    return (
+                                                                        <button
+                                                                            key={`${slot.role}-${candidateUrl}-${candidateIndex}`}
+                                                                            type="button"
+                                                                            onClick={() => selectKeyframeImage(index, slot.role, candidateUrl)}
+                                                                            aria-label={`选择为${slot.label} ${candidateIndex + 1}`}
+                                                                            className={`h-12 w-16 overflow-hidden rounded border transition-colors ${
+                                                                                active
+                                                                                    ? "border-primary bg-primary/10"
+                                                                                    : "border-glass-border bg-black/30 hover:border-white/25"
+                                                                            }`}
+                                                                        >
+                                                                            <img
+                                                                                src={resolveAssetUrl(candidateUrl)}
+                                                                                alt={`候选 ${candidateIndex + 1}`}
+                                                                                className="h-full w-full object-contain"
+                                                                            />
+                                                                        </button>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                            </div>
+                                                        ) : null}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            ) : null}
+                            <div className={(isI2vTab || isKeyframeTab || isAssetComposeTab) ? "mt-2 overflow-hidden rounded-md border border-white/[0.07] bg-black/[0.18]" : ""}>
                                 <ParamsSection
                                     shotId={shot.id}
                                     modelList={modelList}
-                                    title={isI2vTab ? "I2V Params" : "R2V Params"}
+                                    title={isI2vTab ? "I2V Params" : isAssetComposeTab ? "Video Output Model" : "Keyframe R2V Params"}
                                     params={paramsState}
                                     onChange={(next) => handleShotParamsChange(shot, next)}
                                     inFlightCount={shotInFlight}
                                     errorMessage={shotErrors[shot.id] ?? null}
                                 />
                             </div>
-                            <div className="border-t border-glass-border">
+                            <div className="mt-2 overflow-hidden rounded-md border border-white/[0.07] bg-black/[0.18]">
                                 <CandidatesSection
                                     shotId={shot.id}
                                     tasks={shotTasks}
@@ -2665,6 +3462,7 @@ export default function StoryboardR2V() {
                                     onCancel={handleCancelTask}
                                     onRetry={handleRetryTask}
                                     onReuseBatchParams={handleReuseBatchParams}
+                                    onUploadVideo={(file) => uploadVideoCandidate(index, shot, file, paramsState.model)}
                                     onOpenCompare={() => setCompareModalOpen(true)}
                                     resolveUrl={resolveAssetUrl}
                                 />
@@ -2694,24 +3492,12 @@ export default function StoryboardR2V() {
             <AssetDrawer
                 isOpen={drawerState.isOpen}
                 onClose={() => setDrawerState({ isOpen: false, targetShotIndex: null })}
-                characters={characters}
-                scenes={scenes}
-                props={props}
+                characters={drawerAssetPools.characters}
+                scenes={drawerAssetPools.scenes}
+                props={drawerAssetPools.props}
                 onSelectAsset={insertAssetFromDrawer}
             />
         </div>
-        {/* Right-side Task Queue — pushes (does not overlay) the main
-            column. Mounted in the layout flex, not as a fixed overlay,
-            so width compression is automatic when it opens. */}
-        <TaskQueuePanel
-            open={queueOpen}
-            onClose={() => setQueueOpen(false)}
-            tasks={allVideoTasks}
-            shotLabelByFrameId={shotLabelByFrameId}
-            onJumpToShot={handleJumpToShot}
-            onCancel={handleCancelTask}
-            onRetry={handleRetryTask}
-        />
         {/* Compare modal — portaled to body to escape clipped/transformed
             ancestors. Shows once user has shift-selected ≥2 and clicked
             the floating Compare button in any CandidatesSection. */}

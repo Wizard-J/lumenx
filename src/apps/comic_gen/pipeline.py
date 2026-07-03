@@ -11,7 +11,7 @@ import platform
 from urllib.parse import quote
 from .models import Script, GenerationStatus, VideoTask, Character, Scene, Prop, StoryboardFrame, Series, PromptConfig, ArtDirection, AssetStage, ImageVariant
 from .llm import ScriptProcessor
-from .assets import AssetGenerator
+from .assets import AssetGenerator, SCENE_REFERENCE_NEGATIVE_PROMPT, PROP_REFERENCE_NEGATIVE_PROMPT
 from .storyboard import StoryboardGenerator
 from .video import VideoGenerator
 from .audio import AudioGenerator
@@ -49,6 +49,45 @@ def _safe_resolve_path(base_dir: str, untrusted_rel: str) -> str:
     return resolved
 
 class ComicGenPipeline:
+    VIDEO_NO_BGM_INSTRUCTION = (
+        "Audio policy: do not generate background music, BGM, music score, theme music, "
+        "songs, jingles, or musical accompaniment. If the model produces audio, keep it "
+        "limited to diegetic ambience and necessary sound effects only; leave dialogue "
+        "and music beds for post-production."
+    )
+    VIDEO_NO_BGM_NEGATIVE = (
+        "background music, bgm, music, soundtrack, music score, theme music, song, singing, "
+        "jingle, musical accompaniment, non-diegetic music, 配乐, 背景音乐, 音乐, 歌声, 歌曲"
+    )
+
+    @classmethod
+    def _ensure_video_no_bgm_prompt(cls, prompt: Optional[str]) -> str:
+        prompt_text = (prompt or "").strip()
+        if cls.VIDEO_NO_BGM_INSTRUCTION.lower() in prompt_text.lower():
+            return prompt_text
+        return f"{prompt_text}\n\n{cls.VIDEO_NO_BGM_INSTRUCTION}".strip()
+
+    @classmethod
+    def _ensure_video_no_bgm_negative_prompt(cls, negative_prompt: Optional[str]) -> str:
+        negative_text = (negative_prompt or "").strip()
+        existing = negative_text.lower()
+        terms = [
+            term.strip()
+            for term in cls.VIDEO_NO_BGM_NEGATIVE.split(",")
+            if term.strip()
+        ]
+        missing = [term for term in terms if term.lower() not in existing]
+        if not negative_text:
+            return ", ".join(terms)
+        if not missing:
+            return negative_text
+        return f"{negative_text}, {', '.join(missing)}"
+
+    @classmethod
+    def _apply_video_audio_policy(cls, task: VideoTask) -> None:
+        task.prompt = cls._ensure_video_no_bgm_prompt(task.prompt)
+        task.negative_prompt = cls._ensure_video_no_bgm_negative_prompt(task.negative_prompt)
+
     def __init__(self, config: Dict[str, Any] = None, db_path: str = "output/lumenx.db"):
         self.config = config or {}
         self.script_processor = ScriptProcessor()
@@ -187,7 +226,7 @@ class ComicGenPipeline:
                             pass
                     recovered += 1
 
-        asset_recovered = self._recover_orphan_image_assets()
+        asset_recovered = self._recover_orphan_image_assets() or 0
 
         if recovered > 0 or asset_recovered > 0:
             try:
@@ -667,7 +706,7 @@ class ComicGenPipeline:
 
     _T2I_HISTORY_LIMIT = 10
     _MAX_GENERATE_COUNT = 6
-    _WORKBENCH_TAB_VALUES = ("t2i_i2v", "direct_r2v")
+    _WORKBENCH_TAB_VALUES = ("t2i_i2v", "keyframe_r2v", "asset_compose", "direct_r2v")
 
     def update_frame_workbench(
         self,
@@ -677,18 +716,33 @@ class ComicGenPipeline:
         t2i_image_urls: Optional[List[str]] = None,
         t2i_selected_index: Optional[int] = None,
         workbench_generate_count: Optional[int] = None,
+        storyboard_image_prompt: Optional[str] = None,
+        keyframe_start_prompt: Optional[str] = None,
+        keyframe_end_prompt: Optional[str] = None,
+        keyframe_start_image_url: Optional[str] = None,
+        keyframe_end_image_url: Optional[str] = None,
+        keyframe_start_image_urls: Optional[List[str]] = None,
+        keyframe_end_image_urls: Optional[List[str]] = None,
     ) -> Optional["StoryboardFrame"]:
         """Persist Storyboard R2V workbench state onto a frame.
 
         Each field is optional; only the ones the caller passes get
         written. The four fields cover everything the per-shot panel
         carries that needs to survive refresh/cross-device:
-          - workbench_tab_mode: 't2i_i2v' | 'direct_r2v'
+          - workbench_tab_mode: 't2i_i2v' | 'keyframe_r2v' | 'asset_compose'
           - t2i_image_urls: full ordered history (caller is the source
             of truth, server clamps to _T2I_HISTORY_LIMIT FIFO)
           - t2i_selected_index: active首帧 index, clamped to range
           - workbench_generate_count: per-shot batch size, clamped to
             [1, _MAX_GENERATE_COUNT]
+          - storyboard_image_prompt: editable prompt for generating
+            storyboard/first-frame images in I2V or asset-compose tabs
+          - keyframe_start_prompt / keyframe_end_prompt: editable prompts
+            for generating start/end keyframes
+          - keyframe_start_image_url / keyframe_end_image_url: selected
+            complete shot keyframes for keyframe R2V
+          - keyframe_start_image_urls / keyframe_end_image_urls:
+            independent candidate pools for start/end keyframes
 
         Returns the updated StoryboardFrame, or None if the
         script/frame can't be found (caller maps to 404).
@@ -730,6 +784,26 @@ class ComicGenPipeline:
                 frame.workbench_generate_count = max(
                     1, min(int(workbench_generate_count), self._MAX_GENERATE_COUNT)
                 )
+            if storyboard_image_prompt is not None:
+                frame.storyboard_image_prompt = storyboard_image_prompt.strip() or None
+            if keyframe_start_prompt is not None:
+                frame.keyframe_start_prompt = keyframe_start_prompt.strip() or None
+            if keyframe_end_prompt is not None:
+                frame.keyframe_end_prompt = keyframe_end_prompt.strip() or None
+            if keyframe_start_image_url is not None:
+                frame.keyframe_start_image_url = keyframe_start_image_url.strip() or None
+            if keyframe_end_image_url is not None:
+                frame.keyframe_end_image_url = keyframe_end_image_url.strip() or None
+            if keyframe_start_image_urls is not None:
+                cleaned = [u for u in keyframe_start_image_urls if isinstance(u, str) and u.strip()]
+                if len(cleaned) > self._T2I_HISTORY_LIMIT:
+                    cleaned = cleaned[-self._T2I_HISTORY_LIMIT:]
+                frame.keyframe_start_image_urls = cleaned
+            if keyframe_end_image_urls is not None:
+                cleaned = [u for u in keyframe_end_image_urls if isinstance(u, str) and u.strip()]
+                if len(cleaned) > self._T2I_HISTORY_LIMIT:
+                    cleaned = cleaned[-self._T2I_HISTORY_LIMIT:]
+                frame.keyframe_end_image_urls = cleaned
             frame.updated_at = time.time()
             try:
                 self._save_data()
@@ -776,6 +850,62 @@ class ComicGenPipeline:
             except Exception:
                 logger.warning("upload_t2i_frame: save failed")
             return frame
+
+    def upload_video_candidate(
+        self,
+        script_id: str,
+        frame_id: str,
+        file_path: str,
+        prompt: str = "",
+        model: str = "uploaded-video",
+        duration: int = 5,
+        resolution: str = "uploaded",
+        workbench_tab: Optional[str] = None,
+    ) -> Optional["VideoTask"]:
+        """Add an uploaded video as a completed take for a storyboard frame."""
+        with self._save_lock:
+            script = self.scripts.get(script_id)
+            if not script:
+                return None
+            frames = getattr(script, "frames", None) or []
+            frame = next((f for f in frames if getattr(f, "id", None) == frame_id), None)
+            if not frame:
+                return None
+            if workbench_tab is not None and workbench_tab not in self._WORKBENCH_TAB_VALUES:
+                raise ValueError(
+                    f"workbench_tab must be one of {self._WORKBENCH_TAB_VALUES}, "
+                    f"got {workbench_tab!r}",
+                )
+            task = VideoTask(
+                id=str(uuid.uuid4()),
+                project_id=script_id,
+                frame_id=frame_id,
+                image_url="",
+                prompt=prompt or getattr(frame, "action_description", "") or "",
+                status="completed",
+                video_url=file_path,
+                duration=max(1, int(duration or 5)),
+                resolution=resolution or "uploaded",
+                generate_audio=False,
+                prompt_extend=False,
+                model=model or "uploaded-video",
+                generation_mode="r2v" if workbench_tab in ("keyframe_r2v", "asset_compose") else "i2v",
+                workbench_tab=workbench_tab,
+                label="上传",
+                created_at=time.time(),
+            )
+            if not script.video_tasks:
+                script.video_tasks = []
+            script.video_tasks.append(task)
+            if not getattr(frame, "selected_video_id", None):
+                frame.selected_video_id = task.id
+                frame.video_url = file_path
+            frame.updated_at = time.time()
+            try:
+                self._save_data()
+            except Exception:
+                logger.warning("upload_video_candidate: save failed")
+            return task
 
     def _append_frame_t2i_url(self, frame: "StoryboardFrame", image_url: str) -> None:
         if not image_url:
@@ -848,7 +978,19 @@ class ComicGenPipeline:
             return "dashscope"
 
     def _get_video_model(self, model_name: Optional[str] = None):
-        """Get video model based on current VIDEO_PROVIDER env var."""
+        """Get video model based on selected model and VIDEO_PROVIDER env var."""
+        effective_model = (model_name or os.environ.get("VIDEO_MODEL", "") or "").lower()
+        if effective_model.startswith("agnes-"):
+            from ...models.agnes_video import AgnesVideoModel
+            video_config = getattr(self, "config", {}).get("video", {}).get("model", {})
+            logger.info("Using Agnes Video model")
+            return AgnesVideoModel(video_config)
+        if effective_model.startswith("seedance-") or effective_model.startswith("dreamina-seedance-"):
+            from ...models.seedance import SeedanceVideoModel
+            video_config = getattr(self, "config", {}).get("video", {}).get("model", {})
+            logger.info("Using Seedance Video model")
+            return SeedanceVideoModel(video_config)
+
         if model_name:
             try:
                 if resolve_provider_backend(model_name) == "dashscope":
@@ -962,6 +1104,61 @@ class ComicGenPipeline:
         self._extraction_cache[script_id] = (time.time(), new_script)
         return new_script
 
+    def normalize_script_preview(self, script_id: str, text: str) -> Dict[str, Any]:
+        """Rewrite arbitrary script text into the structured LumenX format.
+
+        This is a dry run: it does not save or replace project data. The returned
+        counts are deterministic parser estimates from the normalized text so the
+        frontend can show what will be applied.
+        """
+        existing_script = self.scripts.get(script_id)
+        if not existing_script:
+            raise ValueError("Script not found")
+        normalized_text = self.script_processor.normalize_storyboard_script(existing_script.title, text)
+
+        entity_preview = self._fast_parse_entities(normalized_text, existing_script.title)
+        try:
+            frame_preview = self.script_processor._try_parse_frames_from_text(normalized_text)
+        except Exception as exc:
+            logger.warning(f"normalize_script_preview: frame preview parse failed: {exc}")
+            frame_preview = []
+
+        return {
+            "normalized_text": normalized_text,
+            "counts": {
+                "characters": len(entity_preview.characters) if entity_preview else 0,
+                "scenes": len(entity_preview.scenes) if entity_preview else 0,
+                "props": len(entity_preview.props) if entity_preview else 0,
+                "frames": len(frame_preview or []),
+            },
+        }
+
+    def normalize_extract_storyboard(
+        self,
+        script_id: str,
+        text: str,
+        normalized_text: Optional[str] = None,
+    ) -> Script:
+        """Normalize script text, overwrite original_text, extract entities and frames."""
+        existing_script = self.scripts.get(script_id)
+        if not existing_script:
+            raise ValueError("Script not found")
+
+        final_text = (normalized_text or "").strip()
+        if not final_text:
+            final_text = self.script_processor.normalize_storyboard_script(existing_script.title, text)
+        if not final_text:
+            raise RuntimeError("脚本格式整理未返回可用文本。")
+
+        fast_result = self._fast_parse_entities(final_text, existing_script.title)
+        if fast_result is not None:
+            self._extraction_cache[script_id] = (time.time(), fast_result, True)
+
+        updated_script = self.reparse_project(script_id, final_text)
+        updated_script.original_text = final_text
+        self.scripts[script_id] = updated_script
+        return self.analyze_text_to_frames(script_id, final_text)
+
     def _cleanup_old_entity_oss_images(self, script: "Script") -> None:
         """Delete orphaned OSS images from entities being replaced."""
         for char in (script.characters or []):
@@ -1063,12 +1260,101 @@ class ComicGenPipeline:
         if hasattr(target, "visual_weight") and hasattr(incoming, "visual_weight"):
             target.visual_weight = max(target.visual_weight, incoming.visual_weight)
 
+    @staticmethod
+    def _has_entity_visual_assets(entity: Any) -> bool:
+        if not entity:
+            return False
+        legacy_fields = (
+            "image_url", "full_body_image_url", "three_view_image_url",
+            "headshot_image_url", "avatar_url", "reference_image_url",
+        )
+        if any(getattr(entity, field_name, None) for field_name in legacy_fields):
+            return True
+        for asset_field in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset"):
+            asset = getattr(entity, asset_field, None)
+            if asset and getattr(asset, "variants", None):
+                return True
+        for unit_field in ("reference_sheet", "full_body", "three_views", "head_shot"):
+            unit = getattr(entity, unit_field, None)
+            if unit and (getattr(unit, "image_variants", None) or getattr(unit, "video_variants", None)):
+                return True
+        if any(getattr(stage, "reference_images", None) for stage in (getattr(entity, "stages", None) or [])):
+            return True
+        return False
+
+    def _copy_entity_visual_assets(self, target: Any, source: Any, only_if_missing: bool = True) -> None:
+        """Preserve generated/uploaded reference assets across entity re-extraction.
+
+        Re-running entity extraction creates fresh model objects. Exact-name
+        matches represent the same logical asset, so generated image references
+        should move forward instead of being treated as orphaned leftovers.
+        """
+        if not source or not target:
+            return
+        if only_if_missing and self._has_entity_visual_assets(target):
+            return
+        import copy as _copy
+
+        for field_name in (
+            "image_url", "full_body_image_url", "three_view_image_url",
+            "headshot_image_url", "avatar_url", "reference_image_url",
+            "full_body_prompt", "three_view_prompt", "headshot_prompt",
+            "video_prompt", "video_url", "audio_url", "sfx_url", "bgm_url",
+        ):
+            if hasattr(target, field_name) and hasattr(source, field_name):
+                value = getattr(source, field_name, None)
+                if value not in (None, "", []):
+                    setattr(target, field_name, _copy.deepcopy(value))
+
+        for field_name in (
+            "image_asset", "full_body_asset", "three_view_asset", "headshot_asset",
+            "reference_sheet", "full_body", "three_views", "head_shot",
+            "video_assets", "stages",
+        ):
+            if hasattr(target, field_name) and hasattr(source, field_name):
+                value = getattr(source, field_name, None)
+                if value:
+                    setattr(target, field_name, _copy.deepcopy(value))
+
+        if self._has_entity_visual_assets(source):
+            if hasattr(target, "status") and getattr(target, "status", GenerationStatus.PENDING) == GenerationStatus.PENDING:
+                target.status = getattr(source, "status", GenerationStatus.COMPLETED)
+            for field_name in ("locked", "is_consistent"):
+                if hasattr(target, field_name) and hasattr(source, field_name):
+                    setattr(target, field_name, getattr(source, field_name))
+
+    def _preserve_matching_entity_assets(self, existing_script: Script, parsed_script: Script) -> None:
+        """Carry existing visual references into freshly parsed exact-name entities."""
+        series = self.series_store.get(existing_script.series_id) if existing_script.series_id else None
+        for attr in ("characters", "scenes", "props"):
+            previous_by_name = {
+                self._entity_name_key(item.name): item
+                for item in getattr(existing_script, attr, [])
+            }
+            if series:
+                for item in getattr(series, attr, []):
+                    previous_by_name.setdefault(self._entity_name_key(item.name), item)
+            for incoming in getattr(parsed_script, attr, []):
+                previous = previous_by_name.get(self._entity_name_key(incoming.name))
+                if previous:
+                    self._copy_entity_visual_assets(incoming, previous, only_if_missing=True)
+
+    def _cleanup_replaced_episode_entity_images(self, existing_script: Script, protected_keys: set) -> None:
+        """Clean only episode-local entities that are genuinely absent after reparse."""
+        for attr in ("characters", "scenes", "props"):
+            for entity in getattr(existing_script, attr, []):
+                key = self._entity_name_key(entity.name)
+                if key and key in protected_keys:
+                    continue
+                self._cleanup_single_entity_oss_images(entity)
+
     def _merge_exact_series_entities(self, script: Script) -> None:
         """Automatically reconcile exact-name matches into the shared library.
 
-        When a fresh (PENDING) episode entity matches a series entity, the
-        series entity's old image variants are cleared and OSS files deleted
-        so stale images don't persist in Cast after a re-extraction.
+        When a fresh episode entity matches a series entity, keep the shared
+        entity as the durable asset record: update textual metadata/prompts
+        from the new extraction, but preserve generated images, uploaded
+        variants, and stage reference images.
         """
         series = self.series_store.get(script.series_id) if script.series_id else None
         if not series:
@@ -1083,31 +1369,7 @@ class ComicGenPipeline:
                     remaining.append(local)
                     continue
                 self._merge_entity_visual_metadata(shared, local)
-                # Fresh re-parsed entity is PENDING → clear stale series images
-                if getattr(local, "status", None) == GenerationStatus.PENDING:
-                    # Delete OSS files for stale series entity images
-                    self._cleanup_single_entity_oss_images(shared)
-                    # Reset series entity image variants to avoid stale images
-                    for img_field in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset"):
-                        img = getattr(shared, img_field, None)
-                        if img:
-                            img.selected_id = None
-                            img.variants = []
-                    # Clear stages reference images (Cast page's primary image source)
-                    for stage in (getattr(shared, "stages", None) or []):
-                        stage.selected_image_id = None
-                        stage.reference_images = []
-                    # Clear AssetUnit fields (reference_sheet, full_body, three_views, head_shot)
-                    for unit_field in ("reference_sheet", "full_body", "three_views", "head_shot"):
-                        unit = getattr(shared, unit_field, None)
-                        if unit:
-                            unit.selected_image_id = None
-                            unit.image_variants = []
-                    for legacy in ("image_url", "full_body_image_url", "three_view_image_url",
-                                   "headshot_image_url", "avatar_url"):
-                        if hasattr(shared, legacy):
-                            setattr(shared, legacy, None)
-                    shared.status = GenerationStatus.PENDING
+                self._copy_entity_visual_assets(shared, local, only_if_missing=True)
                 changed = True
             setattr(script, attr, remaining)
         if changed:
@@ -1165,112 +1427,43 @@ class ComicGenPipeline:
         new_script.frames = existing_script.frames
         new_script.video_tasks = existing_script.video_tasks
 
+        # Carry generated/uploaded references forward for exact-name matches.
+        # Entity extraction is allowed to refresh descriptions, but it must not
+        # make already-generated Cast reference images disappear.
+        self._preserve_matching_entity_assets(existing_script, new_script)
+
         # Exact-name matches are the same logical entity in this product's
         # cross-episode model. Merge them immediately so confirmation never
         # leaves a transient episode-local duplicate beside the shared card.
         self._merge_exact_series_entities(new_script)
-        
-        # Clean up old entity OSS images — orphaned by entity replacement
-        self._cleanup_old_entity_oss_images(existing_script)
 
-        import logging as _lg2
-        _lg2.getLogger(__name__).warning(f"reparse_project: series_id={new_script.series_id}, has_series={new_script.series_id is not None}")
-        # Also clean up SERIES entity images for any entities that MIGHT be
-        # shown in Cast alongside the new episode entities. The Cast page
-        # merges series entities (by ID) and adds series-only entities.
-        # Without this, old series entity images persist after re-extraction.
+        protected_keys = set()
+        for attr in ("characters", "scenes", "props"):
+            for entity in getattr(new_script, attr, []):
+                key = self._entity_name_key(entity.name)
+                if key:
+                    protected_keys.add(key)
         if new_script.series_id:
             series = self.series_store.get(new_script.series_id)
             if series:
-                # Collect entity names from BOTH the new episode AND the old episode,
-                # because old extraction runs may have produced slightly different names
-                # (e.g. "晨雾原始森林" vs "原始森林上空") that still need cleanup.
-                target_keys = set()
                 for attr in ("characters", "scenes", "props"):
-                    for e in getattr(new_script, attr, []):
-                        target_keys.add(self._entity_name_key(e.name))
-                    for e in getattr(existing_script, attr, []):
-                        target_keys.add(self._entity_name_key(e.name))
-                # Phase 1: Clean series entities whose names match known episode names
-                for attr in ("characters", "scenes", "props"):
-                    for se in list(getattr(series, attr, [])):
-                        if self._entity_name_key(se.name) in target_keys:
-                            self._cleanup_single_entity_oss_images(se)
-                            for img_field in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset"):
-                                img = getattr(se, img_field, None)
-                                if img:
-                                    img.selected_id = None
-                                    img.variants = []
-                            for stage in (getattr(se, "stages", None) or []):
-                                stage.selected_image_id = None
-                                stage.reference_images = []
-                            for unit_field in ("reference_sheet", "full_body", "three_views", "head_shot"):
-                                unit = getattr(se, unit_field, None)
-                                if unit:
-                                    unit.selected_image_id = None
-                                    unit.image_variants = []
-                            for legacy in ("image_url", "full_body_image_url", "three_view_image_url",
-                                           "headshot_image_url", "avatar_url", "reference_image_url"):
-                                if hasattr(se, legacy):
-                                    setattr(se, legacy, None)
-                            se.status = GenerationStatus.PENDING
-                # Phase 2: Clean series entities that have images but whose names
-                # DON'T appear in the raw script text. These are likely orphaned
-                # artifacts from previous extraction runs (e.g. "铝合金碎片" when
-                # the current script only has "飞机残骸碎片").
-                text_normalized = (text or "").casefold().replace(" ", "").replace("　", "")
-                for attr in ("characters", "scenes", "props"):
-                    for se in list(getattr(series, attr, [])):
-                        se_key = self._entity_name_key(se.name)
-                        # Already handled by Phase 1 (exact name match)
-                        if se_key in target_keys:
-                            continue
-                        has_images = bool(
-                            getattr(se, "image_url", None)
-                            or getattr(se, "full_body_image_url", None)
-                            or getattr(se, "three_view_image_url", None)
-                            or getattr(se, "headshot_image_url", None)
-                            or getattr(se, "avatar_url", None)
-                            or any(
-                                getattr(getattr(se, imgf, None), "variants", None)
-                                for imgf in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset")
-                            )
-                            or any(
-                                getattr(stage, "reference_images", None)
-                                for stage in (getattr(se, "stages", None) or [])
-                            )
-                            or any(
-                                getattr(getattr(se, uf, None), "image_variants", None)
-                                for uf in ("reference_sheet", "full_body", "three_views", "head_shot")
-                            )
-                        )
-                        if not has_images:
-                            continue
-                        # If the entity name doesn't appear in the raw script text,
-                        # it's an orphan from a previous extraction — clean it up.
-                        if text_normalized and se_key not in text_normalized:
-                            import logging as _lg
-                            _lg.getLogger(__name__).warning(f"Phase2 cleanup: attr={attr} name={se.name} se_key={se_key} in_text={se_key in text_normalized}")
-                            self._cleanup_single_entity_oss_images(se)
-                            for img_field in ("image_asset", "full_body_asset", "three_view_asset", "headshot_asset"):
-                                img = getattr(se, img_field, None)
-                                if img:
-                                    img.selected_id = None
-                                    img.variants = []
-                            for stage in (getattr(se, "stages", None) or []):
-                                stage.selected_image_id = None
-                                stage.reference_images = []
-                            for unit_field in ("reference_sheet", "full_body", "three_views", "head_shot"):
-                                unit = getattr(se, unit_field, None)
-                                if unit:
-                                    unit.selected_image_id = None
-                                    unit.image_variants = []
-                            for legacy in ("image_url", "full_body_image_url", "three_view_image_url",
-                                           "headshot_image_url", "avatar_url", "reference_image_url"):
-                                if hasattr(se, legacy):
-                                    setattr(se, legacy, None)
-                            se.status = GenerationStatus.PENDING
+                    for entity in getattr(series, attr, []):
+                        key = self._entity_name_key(entity.name)
+                        if key:
+                            protected_keys.add(key)
 
+        # Clean up only old episode-local visuals that are no longer represented
+        # by either the fresh episode entities or the parent series library.
+        self._cleanup_replaced_episode_entity_images(existing_script, protected_keys)
+
+        import logging as _lg2
+        _lg2.getLogger(__name__).warning(f"reparse_project: series_id={new_script.series_id}, has_series={new_script.series_id is not None}")
+        # Series assets are durable shared library entries. Re-extracting one
+        # episode may update exact-name metadata, but it must not clear generated
+        # images for series assets that are absent from the current text.
+        if new_script.series_id:
+            series = self.series_store.get(new_script.series_id)
+            if series:
                 series.updated_at = time.time()
                 self._save_series_data()
 
@@ -1392,9 +1585,9 @@ class ComicGenPipeline:
                     size=effective_size
                 )
             elif asset_type == "scene":
-                self.asset_generator.generate_scene(target_asset, effective_positive_prompt, effective_negative_prompt, batch_size=batch_size, model_name=t2i_model, size=effective_size)
+                self.asset_generator.generate_scene(target_asset, effective_positive_prompt, effective_negative_prompt, batch_size=batch_size, model_name=t2i_model, size=effective_size, prompt=prompt)
             elif asset_type == "prop":
-                self.asset_generator.generate_prop(target_asset, effective_positive_prompt, effective_negative_prompt, batch_size=batch_size, model_name=t2i_model, size=effective_size)
+                self.asset_generator.generate_prop(target_asset, effective_positive_prompt, effective_negative_prompt, batch_size=batch_size, model_name=t2i_model, size=effective_size, prompt=prompt)
                 
             target_asset.status = GenerationStatus.COMPLETED
         except Exception as e:
@@ -1515,7 +1708,30 @@ class ComicGenPipeline:
                 "Plain light neutral studio background, clean production character-design sheet, even lighting. "
                 "No action pose, no perspective pose, no scenery, no props, no text, no numbers, no logo, no watermark."
             )
-        return f"Environment reference image for {asset.name}. {description}. {stage_detail}. No text, no numbers, no logo, no watermark."
+        if asset_type == "scene":
+            return (
+                f"Photorealistic location still for {asset.name}. {description}. {stage_detail}. "
+                "Create exactly one single full-frame environment photograph, one continuous landscape shot, empty location. "
+                "If the scene description mentions a person, survivor, or occupancy capacity, treat that only as scale/context and do not draw any person. "
+                "Do not create a reference sheet, contact sheet, collage, grid, storyboard panel, multi-panel layout, "
+                "inset image, thumbnail strip, border, caption, social-media mark, weibo mark, logo, watermark, or any text. "
+                "No people, no characters, no figures, no portraits, no faces, no hands."
+            )
+        return (
+            f"Photorealistic object still for {asset.name}. {description}. {stage_detail}. "
+            "Create exactly one single centered prop reference photograph only, one continuous image. "
+            "Do not create a reference sheet, contact sheet, collage, grid, multi-panel layout, secondary views, "
+            "detail close-up panels, inset images, thumbnail strip, border, caption, social-media mark, weibo mark, logo, watermark, or any text. "
+            "No hands, no thumbs-up, no people, no characters."
+        )
+
+    @staticmethod
+    def _stage_reference_negative_prompt(asset_type: str) -> str:
+        if asset_type == "scene":
+            return SCENE_REFERENCE_NEGATIVE_PROMPT
+        if asset_type == "prop":
+            return PROP_REFERENCE_NEGATIVE_PROMPT
+        return "single portrait, single front view, close-up only, cropped body, action pose, scenery, text, watermark, logo"
 
     def _process_stage_asset_task(self, task: Dict[str, Any], params: Dict[str, Any]) -> None:
         """Generate a stage-only reference without mutating the base asset image pools."""
@@ -1527,11 +1743,12 @@ class ComicGenPipeline:
         stage = next((item for item in getattr(asset, "stages", []) if item.id == task["stage_id"]), None) if asset else None
         if not asset or not stage:
             raise ValueError("Stage asset not found")
+        series = self.series_store.get(script.series_id) if script.series_id else None
+        model_settings = series.model_settings if source == "series" and series else script.model_settings
 
         prompt = str(params.get("prompt") or self._build_stage_generation_prompt(asset, asset_type, stage))
         resolved_art_direction = script.art_direction
-        if not resolved_art_direction and script.series_id:
-            series = self.series_store.get(script.series_id)
+        if not resolved_art_direction and series:
             resolved_art_direction = series.art_direction if series else None
         if isinstance(resolved_art_direction, dict):
             resolved_art_direction = ArtDirection(**resolved_art_direction)
@@ -1546,7 +1763,10 @@ class ComicGenPipeline:
         stage.last_generation_prompt = actual_prompt
 
         selected_stage_image = next((item for item in stage.reference_images if item.id == stage.selected_image_id), None)
-        reference_url = (selected_stage_image.url if selected_stage_image else None) or self._asset_primary_image_url(asset, asset_type)
+        # Scene/prop stages must regenerate from text only. Reusing the current
+        # image as i2i input recursively preserves bad contact sheets, grids,
+        # watermarks, and accidental people.
+        reference_url = ((selected_stage_image.url if selected_stage_image else None) or self._asset_primary_image_url(asset, asset_type)) if asset_type == "character" else None
         reference_path = None
         if reference_url:
             if is_object_key(reference_url) or str(reference_url).startswith(("http://", "https://", "data:")):
@@ -1558,16 +1778,28 @@ class ComicGenPipeline:
 
         from .assets import ASPECT_RATIO_TO_SIZE
         if asset_type == "character":
-            aspect = params.get("aspect_ratio") or script.model_settings.character_aspect_ratio
+            aspect = params.get("aspect_ratio") or model_settings.character_aspect_ratio
             default_size = "576*1024"
+        elif asset_type == "prop":
+            aspect = params.get("aspect_ratio") or model_settings.prop_aspect_ratio
+            default_size = "1024*1024"
         else:
-            aspect = params.get("aspect_ratio") or script.model_settings.scene_aspect_ratio
+            aspect = params.get("aspect_ratio") or model_settings.scene_aspect_ratio
             default_size = "1024*576"
         size = ASPECT_RATIO_TO_SIZE.get(aspect, default_size)
-        model_name = script.model_settings.i2i_model if reference_path else (params.get("model_name") or script.model_settings.t2i_model)
-        if asset_type == "character":
-            layout_negative = "single portrait, single front view, close-up only, cropped body, action pose, scenery, text, watermark, logo"
-            negative_prompt = f"{negative_prompt}, {layout_negative}" if negative_prompt else layout_negative
+        model_name = model_settings.i2i_model if reference_path else (params.get("model_name") or model_settings.t2i_model)
+        reference_negative = self._stage_reference_negative_prompt(asset_type)
+        negative_prompt = f"{negative_prompt}, {reference_negative}" if negative_prompt else reference_negative
+        logger.info(
+            "Stage asset generation asset_type=%s asset_id=%s stage_id=%s model=%s request_mode=%s reference_path=%s size=%s",
+            asset_type,
+            asset.id,
+            stage.id,
+            model_name,
+            "i2i" if reference_path else "t2i",
+            reference_path[:160] if isinstance(reference_path, str) else None,
+            size,
+        )
 
         extension_dir = os.path.join(self.asset_generator.output_dir, "stages")
         os.makedirs(extension_dir, exist_ok=True)
@@ -1675,6 +1907,7 @@ class ComicGenPipeline:
             self.asset_generator.generate_scene(
                 target, positive_prompt=positive_prompt, negative_prompt=negative_prompt,
                 batch_size=batch_size, model_name=t2i_model, size=effective_size,
+                prompt=prompt,
             )
         elif asset_type == "prop":
             target = next((p for p in series.props if p.id == asset_id), None)
@@ -1683,6 +1916,7 @@ class ComicGenPipeline:
             self.asset_generator.generate_prop(
                 target, positive_prompt=positive_prompt, negative_prompt=negative_prompt,
                 batch_size=batch_size, model_name=t2i_model, size=effective_size,
+                prompt=prompt,
             )
         else:
             raise ValueError(f"Unknown asset type: {asset_type}")
@@ -2124,20 +2358,15 @@ class ComicGenPipeline:
             image_url: URL of the uploaded image (OSS Object Key)
             description: Optional modified description for reverse generation
         """
-        from .models import ImageVariant, AssetUnit
+        from .models import ImageVariant, AssetUnit, ImageAsset
         
         script = self.scripts.get(script_id)
         if not script:
             raise ValueError("Script not found")
         
-        # Find target asset
-        target_asset = None
-        if asset_type == "character":
-            target_asset = next((c for c in script.characters if c.id == asset_id), None)
-        elif asset_type == "scene":
-            target_asset = next((s for s in script.scenes if s.id == asset_id), None)
-        elif asset_type == "prop":
-            target_asset = next((p for p in script.props if p.id == asset_id), None)
+        # Find target asset. Cast displays a union of episode-local and
+        # series-shared assets, so uploads must route to the owning container.
+        target_asset, source = self._find_asset_with_source(script, asset_id, asset_type)
         
         if not target_asset:
             raise ValueError(f"Asset {asset_id} of type {asset_type} not found")
@@ -2220,20 +2449,18 @@ class ComicGenPipeline:
             logger.info(f"Added uploaded variant {new_variant.id} to character {asset_id} {upload_type}")
             
         elif asset_type in ["scene", "prop"]:
-            # Scene and Prop have a single 'image' asset unit
-            if not hasattr(target_asset, 'image') or target_asset.image is None:
-                target_asset.image = AssetUnit()
-            
-            target_asset.image.image_variants.append(new_variant)
-            target_asset.image.selected_image_id = new_variant.id
-            target_asset.image.image_updated_at = time.time()
-            
-            # Also update legacy image_url field
+            # Scene and Prop use the standard ImageAsset container.
+            if target_asset.image_asset is None:
+                target_asset.image_asset = ImageAsset()
+
+            target_asset.image_asset.variants.append(new_variant)
+            target_asset.image_asset.selected_id = new_variant.id
             target_asset.image_url = image_url
+            target_asset.status = GenerationStatus.COMPLETED
             
             logger.info(f"Added uploaded variant {new_variant.id} to {asset_type} {asset_id}")
         
-        self._save_data()
+        self._save_after_asset_mutation(source)
         return script
 
     def update_project_style(self, script_id: str, style_preset: str, style_prompt: Optional[str] = None) -> Script:
@@ -3342,6 +3569,8 @@ class ComicGenPipeline:
                 model = "pixverse-c1-r2v"
             elif model and model.startswith("vidu"):
                 model = "viduq3-pro-r2v"
+            elif model and model.startswith("seedance-"):
+                model = "seedance-2.0-r2v"
             else:
                 model = "wan2.7-r2v"
 
@@ -3410,6 +3639,9 @@ class ComicGenPipeline:
             if frame:
                 from .prompt_assembly import enrich_prompt_with_dialogue
                 prompt = enrich_prompt_with_dialogue(prompt, frame)
+
+        prompt = self._ensure_video_no_bgm_prompt(prompt)
+        negative_prompt = self._ensure_video_no_bgm_negative_prompt(negative_prompt)
 
         task = VideoTask(
             id=task_id,
@@ -4322,6 +4554,7 @@ class ComicGenPipeline:
         try:
             # Update status to processing
             task.status = "processing"
+            self._apply_video_audio_policy(task)
             self._save_data()
             
             # Download image to temp file
@@ -4405,7 +4638,7 @@ class ComicGenPipeline:
                     resolution=task.resolution,
                     aspect_ratio=task.ratio or "16:9",
                     seed=task.seed or 0,
-                    audio=task.vidu_audio if task.vidu_audio is not None else True,
+                    audio=task.vidu_audio if task.vidu_audio is not None else False,
                     movement_amplitude=task.movement_amplitude or "auto",
                 )
             else:
@@ -4439,6 +4672,7 @@ class ComicGenPipeline:
                     ref_video_urls=task.reference_video_urls if task.generation_mode == "r2v" else None,
                     ref_image_urls=task.reference_image_urls if task.generation_mode == "r2v" else None,
                     ratio=task.ratio,
+                    mode=task.mode,
                     # Pass watermark explicitly; wanx.generate's default is False so
                     # None becomes False, matching "leave to provider default = off".
                     watermark=bool(task.watermark) if task.watermark is not None else False,
@@ -4591,6 +4825,9 @@ class ComicGenPipeline:
         except Exception:
             pass
 
+        prompt = self._ensure_video_no_bgm_prompt(prompt)
+        negative_prompt = self._ensure_video_no_bgm_negative_prompt(None)
+
         task = VideoTask(
             id=task_id,
             project_id=script_id,
@@ -4600,6 +4837,7 @@ class ComicGenPipeline:
             status="pending",
             duration=duration,
             resolution="720p",
+            negative_prompt=negative_prompt,
             ratio=aspect_ratio,
             model="wan2.6-i2v", # Asset video uses I2V
             created_at=time.time()

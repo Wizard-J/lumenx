@@ -19,7 +19,7 @@
  *   · NO inspector right rail yet (Q9 decision: 3-section flat, no inspector)
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Users, MapPin, Box, AlertTriangle, Sparkles, Plus, Upload, X, Loader2, Play, Pause, Volume2, Wand2, Layers, Maximize2, GitMerge } from "lucide-react";
+import { Users, MapPin, Box, Sparkles, Plus, Upload, X, Loader2, Play, Pause, Volume2, Layers, GitMerge, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useProjectStore } from "@/store/projectStore";
 import { api, crudApi } from "@/lib/api";
@@ -31,55 +31,104 @@ import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
 import VoicePickerModal from "./cast/VoicePickerModal";
 import CastWorkbenchModal, { hasActivePoll } from "./cast/CastWorkbenchModal";
 import AssetStageDialog, { type StageAction } from "@/components/common/AssetStageDialog";
+import AssetVisualCard from "@/components/common/AssetVisualCard";
+import UploadAssetModal from "../modals/UploadAssetModal";
 
 type AssetKind = "character" | "scene" | "prop";
+type CastStatus = "ready" | "pending" | "new" | "generating";
 
 interface CastItem {
     id: string;
     name: string;
     kind: AssetKind;
-    appearances: number;            // 出场次数（在多少 frame 中被引用）
-    referenceImageUrl?: string;     // 参考图（优先 reference_sheet → full_body fallback）
-    status: "ready" | "pending" | "new";
-    persona?: string;               // R2V v2 P1-a — characters only; groups visual variants of same person
+    appearances: number;
+    referenceImageUrl?: string;
+    previewLayout?: "portrait" | "sheet";
+    /** Whether this asset originates from the current episode project,
+     *  from the parent series, or is a merged copy. Used to determine
+     *  whether project-level deletion is effective vs. misleading. */
+    source?: "episode" | "series" | "merged";
+    status: CastStatus;
+    persona?: string;
     asset: any;
 }
 
-/**
- * Resolve a character's primary reference image URL with legacy fallback.
- * Per design v2 (Q12-补充 A): new schema is `reference_sheet`; old
- * schema is `full_body / three_views / head_shot`. Read with fallback
- * so existing data keeps rendering during migration.
- */
-function resolveCharacterImage(c: any, episodeNumber?: number): string | undefined {
-    const activeStage = c?.stages?.find((stage: any) =>
+type CharacterPreview = {
+    url?: string;
+    layout: "portrait" | "sheet";
+};
+
+function getActiveStage(asset: any, episodeNumber?: number): any {
+    return asset?.stages?.find((stage: any) =>
         episodeNumber && stage.from_episode <= episodeNumber && episodeNumber <= stage.to_episode,
-    );
-    const stageImage = activeStage?.reference_images?.find(
+    ) || asset?.stages?.[0];
+}
+
+function isProcessingStatus(status: unknown): boolean {
+    return String(status || "").toLowerCase() === "processing";
+}
+
+function assetHasProcessingState(asset: any, episodeNumber?: number): boolean {
+    return isProcessingStatus(asset?.status) || isProcessingStatus(getActiveStage(asset, episodeNumber)?.status);
+}
+
+function isAssetRunning(
+    assetId: string,
+    runningOps: Record<string, boolean>,
+    generatingTasks: { assetId: string }[],
+): boolean {
+    return !!runningOps[`stage:${assetId}`] || generatingTasks.some((task) => task.assetId === assetId);
+}
+
+function getCastStatus(hasImage: boolean, generating: boolean): CastStatus {
+    if (generating) return "generating";
+    return hasImage ? "ready" : "pending";
+}
+
+function resolveCharacterImage(c: any, episodeNumber?: number): CharacterPreview {
+    const activeStage = getActiveStage(c, episodeNumber);
+    const stageImages = activeStage?.reference_images || [];
+    const stageImage = stageImages.find(
         (image: any) => image.id === activeStage.selected_image_id,
-    )?.url;
-    if (stageImage) return stageImage;
-    // New unified field (v2, not yet populated)
+    )?.url || stageImages[stageImages.length - 1]?.url;
+    if (stageImage) return { url: stageImage, layout: "portrait" };
+    // New unified field (v2) — reference_sheet is a three-view sheet
     const sheet = c?.reference_sheet?.image_variants?.find(
         (v: any) => v.id === c.reference_sheet.selected_image_id,
     )?.url;
-    if (sheet) return sheet;
-    // Legacy AssetUnit v2: full_body selected variant
+    if (sheet) return { url: sheet, layout: "sheet" };
+    // Legacy AssetUnit v2: three_views is a sheet
+    const threeViews = c?.three_views?.image_variants?.find(
+        (v: any) => v.id === c.three_views.selected_image_id,
+    )?.url;
+    if (threeViews) return { url: threeViews, layout: "sheet" };
+    // Legacy ImageAsset: three_view_asset is a sheet
+    const threeViewAsset = c?.three_view_asset?.variants?.find(
+        (v: any) => v.id === c.three_view_asset.selected_id,
+    )?.url;
+    if (threeViewAsset) return { url: threeViewAsset, layout: "sheet" };
+    // Legacy v1: three_view_image_url is a sheet
+    if (c?.three_view_image_url) return { url: c.three_view_image_url, layout: "sheet" };
+    // Legacy AssetUnit v2: full_body is portrait
     const fullBody = c?.full_body?.image_variants?.find(
         (v: any) => v.id === c.full_body.selected_image_id,
     )?.url;
-    if (fullBody) return fullBody;
+    if (fullBody) return { url: fullBody, layout: "portrait" };
+    // Legacy ImageAsset: full_body_asset is portrait
+    const fullBodyAsset = c?.full_body_asset?.variants?.find(
+        (v: any) => v.id === c.full_body_asset.selected_id,
+    )?.url;
+    if (fullBodyAsset) return { url: fullBodyAsset, layout: "portrait" };
     // Legacy v1 url fields
-    return c?.full_body_image_url || c?.three_view_image_url || c?.headshot_image_url || c?.image_url;
+    return { url: c?.full_body_image_url || c?.headshot_image_url || c?.image_url, layout: "portrait" };
 }
 
 function resolveSceneImage(s: any, episodeNumber?: number): string | undefined {
-    const activeStage = s?.stages?.find((stage: any) =>
-        episodeNumber && stage.from_episode <= episodeNumber && episodeNumber <= stage.to_episode,
-    );
-    const stageImage = activeStage?.reference_images?.find(
+    const activeStage = getActiveStage(s, episodeNumber);
+    const stageImages = activeStage?.reference_images || [];
+    const stageImage = stageImages.find(
         (image: any) => image.id === activeStage.selected_image_id,
-    )?.url;
+    )?.url || stageImages[stageImages.length - 1]?.url;
     if (stageImage) return stageImage;
     const selectedAssetImage = s?.image_asset?.variants?.find(
         (image: any) => image.id === s.image_asset.selected_id,
@@ -88,7 +137,10 @@ function resolveSceneImage(s: any, episodeNumber?: number): string | undefined {
 }
 
 function resolvePropImage(p: any): string | undefined {
-    return p?.image_url || p?.reference_image_url;
+    const selectedAssetImage = p?.image_asset?.variants?.find(
+        (image: any) => image.id === p.image_asset.selected_id,
+    )?.url;
+    return selectedAssetImage || p?.image_url || p?.reference_image_url;
 }
 
   /** Safe merge: episode fields override series ONLY when non-null and non-undefined.
@@ -107,6 +159,8 @@ export default function Cast() {
     const tStep = useTranslations("stepHeader");
     const t = useTranslations("cast");
     const currentProject = useProjectStore((state) => state.currentProject);
+    const runningOps = useProjectStore((state) => state.runningOps);
+    const generatingTasks = useProjectStore((state) => state.generatingTasks);
     
     // Series-level asset fallback — Episode characters may lack image variants
     const [seriesAssets, setSeriesAssets] = useState<{ characters: any[]; scenes: any[]; props: any[] } | null>(null);
@@ -152,6 +206,7 @@ export default function Cast() {
     // PR-3* · Cast redesign — tab filter + workbench launcher.
     const [activeTab, setActiveTab] = useState<"all" | "character" | "scene" | "prop">("all");
     const [workbench, setWorkbench] = useState<{ kind: "character" | "scene" | "prop"; entityId: string } | null>(null);
+    const [uploadTarget, setUploadTarget] = useState<CastItem | null>(null);
 
     const updateProject = useProjectStore((s) => s.updateProject);
 
@@ -160,6 +215,61 @@ export default function Cast() {
 
     const handleStartMerge = (sourceId: string, sourceName: string) => {
         setMergeSource({ id: sourceId, name: sourceName });
+    };
+
+    const handleDeleteAsset = async (item: CastItem) => {
+        if (!currentProject?.id) return;
+
+        // Route delete to the correct owner: series-level or project-level.
+        const isSeriesOwned = item.source === "series" || item.source === "merged";
+        const label = item.kind === "character" ? "角色" : item.kind === "scene" ? "场景" : "道具";
+
+        if (isSeriesOwned) {
+            if (!currentProject?.series_id) {
+                alert("当前项目不属于任何系列，无法删除系列素材。");
+                return;
+            }
+            if (!confirm(`这是系列公共${label}。确定从整个系列中删除「${item.name}」吗？所有剧集都将不再继承它。`)) return;
+        } else {
+            if (!confirm(`确定删除当前剧集的${label}「${item.name}」吗？\n\n删除后会从当前项目素材中移除，相关引用可能需要重新检查。`)) return;
+        }
+
+        try {
+            if (isSeriesOwned) {
+                const seriesId = currentProject.series_id!;
+                if (item.kind === "character") await crudApi.deleteSeriesCharacter(seriesId, item.id);
+                else if (item.kind === "scene") await crudApi.deleteSeriesScene(seriesId, item.id);
+                else await crudApi.deleteSeriesProp(seriesId, item.id);
+            } else {
+                if (item.kind === "character") await crudApi.deleteCharacter(currentProject.id, item.id);
+                else if (item.kind === "scene") await crudApi.deleteScene(currentProject.id, item.id);
+                else await crudApi.deleteProp(currentProject.id, item.id);
+            }
+            // Reliable refresh for both project and series pools
+            await Promise.all([
+                loadSeriesAssets(),
+                useProjectStore.getState().selectProject(currentProject.id),
+            ]);
+        } catch (error: any) {
+            console.error("Failed to delete asset:", error);
+            if (error?.response?.status === 404) {
+                alert("删除失败：素材不存在或已被删除，请刷新后重试。");
+            } else {
+                alert(error?.response?.data?.detail || error?.message || "删除素材失败");
+            }
+        }
+    };
+
+    const handleUploadComplete = async (updatedProject: any) => {
+        if (!currentProject?.id) return;
+        if (updatedProject?.id) {
+            updateProject(currentProject.id, updatedProject);
+        }
+        await Promise.all([
+            loadSeriesAssets(),
+            useProjectStore.getState().selectProject(currentProject.id),
+        ]);
+        setUploadTarget(null);
     };
 
     const handleCancelMerge = () => {
@@ -182,7 +292,6 @@ export default function Cast() {
     };
 
     const removeGeneratingTask = useProjectStore((s) => s.removeGeneratingTask);
-    const generatingTasks = useProjectStore((s) => s.generatingTasks);
     useEffect(() => {
         if (generatingTasks.length === 0) return;
         for (const task of generatingTasks) {
@@ -231,48 +340,51 @@ export default function Cast() {
             if (sc) {
                 const epHasImg = !!(ec?.full_body_asset?.variants?.length || ec?.full_body?.image_variants?.length);
                 const scHasImg = !!(sc?.full_body_asset?.variants?.length || sc?.full_body?.image_variants?.length);
-                if (!epHasImg && scHasImg) return { ...ec, ...sc };
-                return { ...safeMerge(sc, ec), stages: sc.stages || ec.stages || [] };
+                if (!epHasImg && scHasImg) return { ...ec, ...sc, __castSource: "merged" };
+                return { ...safeMerge(sc, ec), stages: sc.stages || ec.stages || [], __castSource: "merged" };
             }
-            return ec;
+            return { ...ec, __castSource: "episode" };
         });
         // Add Series-only characters not in Episode (reconciled entities)
         const epCharIds = new Set(characterPool.map((c: any) => c.id));
         for (const sc of seriesChars) {
             if (!epCharIds.has(sc.id)) {
-                characterPool.push({ ...sc });
+                characterPool.push({ ...sc, __castSource: "series" });
             }
         }
 
         const scenePool: any[] = epScenes.map((es: any) => {
             const ss = seriesScenes.find((s: any) => s.id === es.id);
-            if (ss) return { ...ss, ...es, image_url: es.image_url || ss.image_url, image_asset: es.image_asset?.variants?.length ? es.image_asset : ss.image_asset, stages: ss.stages || es.stages || [] };
-            return es;
+            if (ss) return { ...ss, ...es, image_url: es.image_url || ss.image_url, image_asset: es.image_asset?.variants?.length ? es.image_asset : ss.image_asset, stages: ss.stages || es.stages || [], __castSource: "merged" };
+            return { ...es, __castSource: "episode" };
         });
         const epSceneIds = new Set(scenePool.map((s: any) => s.id));
         for (const ss of seriesScenes) {
-            if (!epSceneIds.has(ss.id)) scenePool.push({ ...ss });
+            if (!epSceneIds.has(ss.id)) scenePool.push({ ...ss, __castSource: "series" });
         }
 
         const propPool: any[] = epProps.map((ep: any) => {
             const sp = seriesProps.find((s: any) => s.id === ep.id);
-            if (sp && !ep.image_url && sp.image_url) return { ...ep, image_url: sp.image_url, image_asset: sp.image_asset };
-            return ep;
+            if (sp && !ep.image_url && sp.image_url) return { ...ep, image_url: sp.image_url, image_asset: sp.image_asset, __castSource: "merged" };
+            return { ...ep, __castSource: "episode" };
         });
         const epPropIds = new Set(propPool.map((p: any) => p.id));
         for (const sp of seriesProps) {
-            if (!epPropIds.has(sp.id)) propPool.push({ ...sp });
+            if (!epPropIds.has(sp.id)) propPool.push({ ...sp, __castSource: "series" });
         }
 
         const characters: CastItem[] = characterPool.map((c: any) => {
-            const imageUrl = resolveCharacterImage(c, currentProject?.episode_number);
+            const { url, layout } = resolveCharacterImage(c, currentProject?.episode_number);
+            const generating = isAssetRunning(c.id, runningOps, generatingTasks) || assetHasProcessingState(c, currentProject?.episode_number);
             return {
                 id: c.id,
                 name: c.name ?? c.id,
                 kind: "character" as const,
                 appearances: characterCounts.get(c.id) ?? 0,
-                referenceImageUrl: imageUrl,
-                status: (imageUrl ? "ready" : "pending") as "ready" | "pending",
+                referenceImageUrl: url,
+                previewLayout: layout,
+                source: c.__castSource,
+                status: getCastStatus(!!url, generating),
                 persona: c.persona ?? "",
                 asset: c,
             };
@@ -280,32 +392,36 @@ export default function Cast() {
 
         const scenes: CastItem[] = scenePool.map((s: any) => {
             const imageUrl = resolveSceneImage(s, currentProject?.episode_number);
+            const generating = isAssetRunning(s.id, runningOps, generatingTasks) || assetHasProcessingState(s, currentProject?.episode_number);
             return {
                 id: s.id,
                 name: s.name ?? s.id,
                 kind: "scene" as const,
                 appearances: sceneCounts.get(s.id) ?? 0,
                 referenceImageUrl: imageUrl,
-                status: (imageUrl ? "ready" : "pending") as "ready" | "pending",
+                source: s.__castSource,
+                status: getCastStatus(!!imageUrl, generating),
                 asset: s,
             };
         }).sort((a, b) => b.appearances - a.appearances || a.name.localeCompare(b.name));
 
         const props: CastItem[] = propPool.map((p: any) => {
             const imageUrl = resolvePropImage(p);
+            const generating = isAssetRunning(p.id, runningOps, generatingTasks) || assetHasProcessingState(p, currentProject?.episode_number);
             return {
                 id: p.id,
                 name: p.name ?? p.id,
                 kind: "prop" as const,
                 appearances: propCounts.get(p.id) ?? 0,
                 referenceImageUrl: imageUrl,
-                status: (imageUrl ? "ready" : "pending") as "ready" | "pending",
+                source: p.__castSource,
+                status: getCastStatus(!!imageUrl, generating),
                 asset: p,
             };
         }).sort((a, b) => b.appearances - a.appearances || a.name.localeCompare(b.name));
 
         return { characters, scenes, props };
-    }, [currentProject?.frames, currentProject?.characters, currentProject?.scenes, currentProject?.props, currentProject?.episode_number, seriesAssets]);
+    }, [currentProject?.frames, currentProject?.characters, currentProject?.scenes, currentProject?.props, currentProject?.episode_number, seriesAssets, runningOps, generatingTasks]);
 
     const totalCast = characters.length + scenes.length + props.length;
 
@@ -402,6 +518,8 @@ export default function Cast() {
                                 onOpenWorkbench={(id) => setWorkbench({ kind: "character", entityId: id })}
                                 hideHeader={activeTab === "character"}
                                 onStageAction={handleStageAction}
+                                onDeleteAsset={handleDeleteAsset}
+                                onUploadAsset={setUploadTarget}
                             />
                         )}
                         {(activeTab === "all" || activeTab === "scene") && (
@@ -416,6 +534,8 @@ export default function Cast() {
                                 onOpenWorkbench={(id) => setWorkbench({ kind: "scene", entityId: id })}
                                 hideHeader={activeTab === "scene"}
                                 onStageAction={handleStageAction}
+                                onDeleteAsset={handleDeleteAsset}
+                                onUploadAsset={setUploadTarget}
                             />
                         )}
                         {(activeTab === "all" || activeTab === "prop") && (
@@ -433,6 +553,8 @@ export default function Cast() {
                                 onStartMerge={handleStartMerge}
                                 onConfirmMerge={handleConfirmMerge}
                                 onCancelMerge={handleCancelMerge}
+                                onDeleteAsset={handleDeleteAsset}
+                                onUploadAsset={setUploadTarget}
                             />
                         )}
                     </div>
@@ -469,6 +591,18 @@ export default function Cast() {
                     }
                 }}
             />
+            {uploadTarget && currentProject?.id && (
+                <UploadAssetModal
+                    isOpen={!!uploadTarget}
+                    onClose={() => setUploadTarget(null)}
+                    assetId={uploadTarget.id}
+                    assetType={uploadTarget.kind}
+                    assetName={uploadTarget.name}
+                    defaultDescription={uploadTarget.asset?.description || ""}
+                    scriptId={currentProject.id}
+                    onUploadComplete={handleUploadComplete}
+                />
+            )}
         </div>
     );
 }
@@ -756,9 +890,11 @@ interface CastSectionProps {
     onStartMerge?: (sourceId: string, sourceName: string) => void;
     onConfirmMerge?: (targetId: string, targetName: string) => void;
     onCancelMerge?: () => void;
+    onDeleteAsset?: (item: CastItem) => void;
+    onUploadAsset?: (item: CastItem) => void;
 }
 
-function CastSection({ kind, icon, title, items, emptyLabel, onAddNew, addLabel, groupByPersona, onOpenWorkbench, hideHeader, onStageAction, mergeSource, onStartMerge, onConfirmMerge, onCancelMerge }: CastSectionProps) {
+function CastSection({ kind, icon, title, items, emptyLabel, onAddNew, addLabel, groupByPersona, onOpenWorkbench, hideHeader, onStageAction, mergeSource, onStartMerge, onConfirmMerge, onCancelMerge, onDeleteAsset, onUploadAsset }: CastSectionProps) {
     const t = useTranslations("cast");
     // R2V v2 P1-a — persona grouping (characters only)
     const groups = useMemo(() => {
@@ -789,15 +925,13 @@ function CastSection({ kind, icon, title, items, emptyLabel, onAddNew, addLabel,
         return out;
     }, [items, groupByPersona]);
 
-    // Per-kind layout: characters portrait 3:4 + denser, scenes landscape
-    // 16:9 + roomier, props 1:1 + densest. Matches each kind's natural
-    // composition habit (portrait for people, landscape for environments,
-    // square for objects) so thumbs don't letterbox.
+    // Keep asset cards at inspectable catalog sizes instead of stretching
+    // each column to fill ultra-wide workspaces.
     const gridCols = kind === "scene"
-        ? "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
+        ? "grid-cols-[repeat(auto-fill,minmax(280px,360px))]"
         : kind === "character"
-            ? "grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
-            : "grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6";
+            ? "grid-cols-[repeat(auto-fill,minmax(170px,220px))]"
+            : "grid-cols-[repeat(auto-fill,minmax(150px,200px))]";
     return (
         <section>
             {!hideHeader && (
@@ -844,27 +978,27 @@ function CastSection({ kind, icon, title, items, emptyLabel, onAddNew, addLabel,
                                 </div>
                             )}
                             <div className={`grid gap-3 ${gridCols}`}>
-                                {group.items.map(item => <CastCard key={item.id} item={item} onOpenWorkbench={() => onOpenWorkbench?.(item.id)} onStageAction={onStageAction} mergeSource={mergeSource} onStartMerge={onStartMerge} onConfirmMerge={onConfirmMerge} />)}
+                                {group.items.map(item => <CastCard key={item.id} item={item} onOpenWorkbench={() => onOpenWorkbench?.(item.id)} onStageAction={onStageAction} mergeSource={mergeSource} onStartMerge={onStartMerge} onConfirmMerge={onConfirmMerge} onDelete={() => onDeleteAsset?.(item)} onUpload={() => onUploadAsset?.(item)} />)}
                             </div>
                         </div>
                     ))}
                 </div>
             ) : (
                 <div className={`grid gap-3 ${gridCols}`}>
-                    {items.map(item => <CastCard key={item.id} item={item} onOpenWorkbench={() => onOpenWorkbench?.(item.id)} onStageAction={onStageAction} mergeSource={mergeSource} onStartMerge={onStartMerge} onConfirmMerge={onConfirmMerge} />)}
+                    {items.map(item => <CastCard key={item.id} item={item} onOpenWorkbench={() => onOpenWorkbench?.(item.id)} onStageAction={onStageAction} mergeSource={mergeSource} onStartMerge={onStartMerge} onConfirmMerge={onConfirmMerge} onDelete={() => onDeleteAsset?.(item)} onUpload={() => onUploadAsset?.(item)} />)}
                 </div>
             )}
         </section>
     );
 }
 
-function CastCard({ item, onOpenWorkbench, onStageAction, mergeSource, onStartMerge, onConfirmMerge }: { item: CastItem; onOpenWorkbench?: () => void; onStageAction?: StageAction; mergeSource?: { id: string; name: string } | null; onStartMerge?: (sourceId: string, sourceName: string) => void; onConfirmMerge?: (targetId: string, targetName: string) => void }) {
+function CastCard({ item, onOpenWorkbench, onStageAction, mergeSource, onStartMerge, onConfirmMerge, onDelete, onUpload }: { item: CastItem; onOpenWorkbench?: () => void; onStageAction?: StageAction; mergeSource?: { id: string; name: string } | null; onStartMerge?: (sourceId: string, sourceName: string) => void; onConfirmMerge?: (targetId: string, targetName: string) => void; onDelete?: () => void; onUpload?: () => void }) {
     const t = useTranslations("cast");
     const { open: openLightbox } = useLightbox();
     const currentProject = useProjectStore((state) => state.currentProject);
     const generatingTasks = useProjectStore((state) => state.generatingTasks);
     const stageGenerating = useProjectStore((state) => !!state.runningOps[`stage:${item.id}`]);
-    const isGenerating = stageGenerating || generatingTasks.some((task) => task.assetId === item.id);
+    const isGenerating = item.status === "generating" || stageGenerating || generatingTasks.some((task) => task.assetId === item.id);
     const [historyOpen, setHistoryOpen] = useState(false);
     const [pickerOpen, setPickerOpen] = useState(false);
     const [previewing, setPreviewing] = useState(false);
@@ -930,73 +1064,9 @@ function CastCard({ item, onOpenWorkbench, onStageAction, mergeSource, onStartMe
         }
     }, []);
 
-    // Per-kind visual treatment WITHOUT bulk color fills (per impeccable
-    // product register: 'Heavy color or full-saturation accents on inactive
-    // states' is banned). Differentiation is carried by:
-    //   1. Aspect ratio (already in section grid + the `aspect` class)
-    //   2. A subtle CSS pattern on the empty thumb (hairlines for character,
-    //      horizon for scene, dot grid for prop) — all in 3-6% white
-    //   3. A small mono-caps kind chip top-right with hairline border
-    //   4. Hover only: a quiet 1px top-edge hairline in the kind tint
-    // No saturated background fills anywhere. Color only appears on hover
-    // (an active state) and on the kind chip (which is itself near-mono).
-    const kindStyles: Record<AssetKind, {
-        aspect: string;
-        emptyPattern: React.CSSProperties;
-        chipLabel: string;
-        hoverAccent: string;
-        watermarkIcon: React.ReactNode;
-        ctaIcon: React.ReactNode;
-        ctaLabel: string;
-    }> = {
-        character: {
-            aspect: "aspect-[3/4]",
-            emptyPattern: {
-                backgroundImage:
-                    "repeating-linear-gradient(0deg, transparent 0, transparent 23px, rgba(255,255,255,0.025) 23px, rgba(255,255,255,0.025) 24px)",
-            },
-            chipLabel: t("tabCharacters"),
-            hoverAccent: "rgba(167,139,250,0.55)",
-            watermarkIcon: <Users size={48} className="text-white/[0.04]" strokeWidth={1} />,
-            ctaIcon: <Wand2 size={14} strokeWidth={1.75} />,
-            ctaLabel: t("generateReference"),
-        },
-        scene: {
-            aspect: "aspect-[16/9]",
-            emptyPattern: {
-                backgroundImage: [
-                    "linear-gradient(to bottom, transparent calc(33% - 0.5px), rgba(255,255,255,0.03) 33%, transparent calc(33% + 0.5px))",
-                    "linear-gradient(to bottom, transparent calc(66% - 0.5px), rgba(255,255,255,0.05) 66%, transparent calc(66% + 0.5px))",
-                ].join(", "),
-            },
-            chipLabel: t("tabScenes"),
-            hoverAccent: "rgba(110,231,183,0.5)",
-            watermarkIcon: <MapPin size={64} className="text-white/[0.035]" strokeWidth={0.75} />,
-            ctaIcon: <Sparkles size={14} strokeWidth={1.75} />,
-            ctaLabel: t("generateScene"),
-        },
-        prop: {
-            aspect: "aspect-square",
-            emptyPattern: {
-                backgroundImage:
-                    "radial-gradient(rgba(255,255,255,0.04) 0.8px, transparent 0.8px)",
-                backgroundSize: "10px 10px",
-                backgroundPosition: "5px 5px",
-            },
-            chipLabel: t("tabProps"),
-            hoverAccent: "rgba(252,211,77,0.5)",
-            watermarkIcon: <Box size={40} className="text-white/[0.04]" strokeWidth={1} />,
-            ctaIcon: <Layers size={13} strokeWidth={1.75} />,
-            ctaLabel: t("generateProp"),
-        },
-    };
-    const k = kindStyles[item.kind];
-
     const isMergeSource = mergeSource?.id === item.id;
     const isMergeTargetable = mergeSource && mergeSource.id !== item.id && item.kind === "prop";
     const showMergeOption = !mergeSource && item.kind === "prop";
-
-    const cardRadius = item.kind === "scene" ? "rounded-md" : "rounded-lg";
 
     const handleCardClick = () => {
         if (isMergeTargetable && onConfirmMerge) {
@@ -1021,116 +1091,89 @@ function CastCard({ item, onOpenWorkbench, onStageAction, mergeSource, onStartMe
 
     return (
         <>
-            <div
-                className={`group/cast-card relative flex flex-col gap-2 ${cardRadius} border p-2 transition-[border-color,background-color] duration-fast ease-out-quart ${
+            <AssetVisualCard
+                kind={item.kind}
+                name={item.name}
+                imageUrl={item.referenceImageUrl}
+                imageClassName={item.kind === "character" && item.previewLayout === "sheet" ? "object-cover object-left" : undefined}
+                autoCropWideCharacterSheet={item.kind === "character"}
+                meta={t("appearancesCount", { count: item.appearances })}
+                status={item.status}
+                onCardClick={handleCardClick}
+                onImageClick={isMergeTargetable ? handleCardClick : handleImageClick}
+                onMagnify={item.referenceImageUrl && !isMergeTargetable ? () => openLightbox({ src: getAssetUrl(item.referenceImageUrl!), alt: item.name, kind: "image" }) : undefined}
+                className={`${
                     isMergeSource
                         ? 'border-amber-500/70 bg-amber-500/5'
                         : isMergeTargetable
                             ? 'border-amber-500/30 bg-amber-500/[0.03] hover:border-amber-500/50 cursor-pointer'
-                            : 'border-glass-border bg-glass hover:border-white/15'
+                            : ''
                 }`}
-            >
-                {/* Kind chip — top-right, near-mono. Sits on TOP of the thumb
-                    so it works for both empty and ready states without
-                    occluding the image (small + corner-tucked). */}
-                <span className="absolute top-2.5 right-2.5 z-10 pointer-events-none inline-flex items-center rounded-sm border border-white/10 bg-black/40 px-1.5 py-[1px] font-mono text-[8.5px] uppercase tracking-[0.18em] text-text-muted backdrop-blur-sm">
-                    {k.chipLabel}
-                </span>
-                {/* Hover hairline accent — single top edge, animated on group-hover */}
-                <span
-                    aria-hidden="true"
-                    className="pointer-events-none absolute inset-x-2 top-0 h-px opacity-0 group-hover/cast-card:opacity-100 transition-opacity"
-                    style={{ background: k.hoverAccent }}
-                />
-                <div
-                    className={`${k.aspect} overflow-hidden rounded-md bg-black/40 relative ${isMergeTargetable ? 'cursor-pointer' : 'cursor-pointer'}`}
-                    onClick={(e) => { if (isMergeTargetable) { e.stopPropagation(); handleCardClick(); return; } handleImageClick(); }}
-                >
-                    {item.referenceImageUrl ? (
-                        <>
-                            <PreviewImage src={item.referenceImageUrl} alt={item.name} className="h-full w-full bg-white/[.03] object-contain object-top" noLightbox />
+                imageOverlay={(
+                    <>
+                        {isMergeTargetable && (
+                            <div className="absolute inset-0 z-20 bg-amber-500/10 backdrop-blur-[2px] border-2 border-amber-500/40 rounded-md flex items-center justify-center pointer-events-none">
+                                <span className="text-amber-200 text-xs font-bold px-3 py-1.5 rounded-full bg-amber-500/20 backdrop-blur-md">
+                                    Merge → here
+                                </span>
+                            </div>
+                        )}
+                        {isMergeSource && (
+                            <div className="absolute top-2 left-2 z-20 px-2 py-1 rounded-full backdrop-blur-md bg-amber-500/30 text-amber-200 text-[11px] font-medium flex items-center gap-1">
+                                <GitMerge size={11} /> Source
+                            </div>
+                        )}
+                        {showMergeOption && (
                             <button
                                 onClick={(e) => {
                                     e.stopPropagation();
-                                    if (isMergeTargetable) return;
-                                    openLightbox({ src: getAssetUrl(item.referenceImageUrl!), alt: item.name, kind: "image" });
+                                    onStartMerge?.(item.id, item.name);
                                 }}
-                                aria-label="放大查看"
-                                title="放大查看"
-                                className="absolute left-1.5 top-1.5 z-10 grid h-6 w-6 place-items-center rounded bg-black/55 text-white/80 backdrop-blur opacity-0 group-hover/cast-card:opacity-100 transition-opacity hover:bg-black/75"
+                                className="absolute right-1.5 top-1.5 z-20 grid h-7 w-7 place-items-center rounded bg-amber-500/25 text-amber-300 backdrop-blur opacity-0 group-hover/cast-card:opacity-100 transition-opacity hover:bg-amber-500/40"
+                                title="Merge"
                             >
-                                <Maximize2 size={11} />
+                                <GitMerge size={13} />
                             </button>
-                        </>
-                    ) : (
-                        <button
-                            onClick={(e) => { e.stopPropagation(); handleImageClick(); }}
-                            className="relative grid h-full w-full place-items-center bg-black/20 text-text-secondary hover:text-foreground transition-colors overflow-hidden"
-                            style={k.emptyPattern}
-                        >
-                            <span className="pointer-events-none absolute inset-0 grid place-items-center">
-                                {k.watermarkIcon}
-                            </span>
-                            {item.kind === "scene" && (
-                                <>
-                                    <span className="pointer-events-none absolute inset-x-0 top-0 h-3 bg-gradient-to-b from-black/30 to-transparent" aria-hidden="true" />
-                                    <span className="pointer-events-none absolute inset-x-0 bottom-0 h-3 bg-gradient-to-t from-black/30 to-transparent" aria-hidden="true" />
-                                </>
-                            )}
-                            <CornerMarks />
-                            <span className="relative flex flex-col items-center gap-1.5 z-10">
-                                {k.ctaIcon}
-                                <span className="text-[10px] font-medium tracking-wide">{k.ctaLabel}</span>
-                            </span>
-                        </button>
-                    )}
-                    {/* Merge target overlay */}
-                    {isMergeTargetable && (
-                        <div className="absolute inset-0 z-20 bg-amber-500/10 backdrop-blur-[2px] border-2 border-amber-500/40 rounded-md flex items-center justify-center pointer-events-none">
-                            <span className="text-amber-200 text-xs font-bold px-3 py-1.5 rounded-full bg-amber-500/20 backdrop-blur-md">
-                                Merge → here
-                            </span>
-                        </div>
-                    )}
-                    {/* Merge source badge */}
-                    {isMergeSource && (
-                        <div className="absolute top-2 left-2 z-20 px-2 py-1 rounded-full backdrop-blur-md bg-amber-500/30 text-amber-200 text-[11px] font-medium flex items-center gap-1">
-                            <GitMerge size={11} /> Source
-                        </div>
-                    )}
-                    {/* Merge floating button — top-right of the image area */}
-                    {showMergeOption && (
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                onStartMerge?.(item.id, item.name);
-                            }}
-                            className="absolute right-1.5 top-1.5 z-20 grid h-7 w-7 place-items-center rounded bg-amber-500/25 text-amber-300 backdrop-blur opacity-0 group-hover/cast-card:opacity-100 transition-opacity hover:bg-amber-500/40"
-                            title="Merge"
-                        >
-                            <GitMerge size={13} />
-                        </button>
-                    )}
-                    {isGenerating && (
-                        <div className="absolute inset-0 z-20 grid place-items-center bg-black/60 backdrop-blur-sm rounded-md">
-                            <div className="flex flex-col items-center gap-1.5">
-                                <Loader2 size={20} className="animate-spin text-primary" />
-                                <span className="text-[10px] text-text-secondary">生成中...</span>
+                        )}
+                        {isGenerating && (
+                            <div className="absolute inset-0 z-20 grid place-items-center bg-black/60 backdrop-blur-sm rounded-md">
+                                <div className="flex flex-col items-center gap-1.5">
+                                    <Loader2 size={20} className="animate-spin text-primary" />
+                                    <span className="text-[10px] text-text-secondary">生成中...</span>
+                                </div>
                             </div>
-                        </div>
-                    )}
-                </div>
-                <div className="space-y-1 px-0.5">
-                    <p className="truncate font-sans text-[13px] font-medium text-foreground" title={item.name}>
-                        {item.name}
-                    </p>
-                    <div className="flex items-center justify-between gap-1">
-                        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
-                            {t("appearancesCount", { count: item.appearances })}
-                        </span>
-                        <StatusBadge status={item.status} />
-                    </div>
-                </div>
+                        )}
+                        {onUpload && !isMergeTargetable && !isMergeSource && !isGenerating && (
+                            <button
+                                type="button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onUpload();
+                                }}
+                                className="absolute right-1.5 bottom-1.5 z-20 grid h-7 w-7 place-items-center rounded bg-black/55 text-white/80 opacity-0 backdrop-blur transition-opacity hover:bg-primary/35 hover:text-white group-hover/cast-card:opacity-100"
+                                title="上传参考图"
+                                aria-label={`上传${item.name}参考图`}
+                            >
+                                <Upload size={13} />
+                            </button>
+                        )}
+                        {onDelete && !isMergeTargetable && !isMergeSource && !isGenerating && (
+                            <button
+                                type="button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onDelete();
+                                }}
+                                className="absolute left-1.5 bottom-1.5 z-20 grid h-7 w-7 place-items-center rounded bg-red-500/20 text-red-200 opacity-0 backdrop-blur transition-opacity hover:bg-red-500/35 group-hover/cast-card:opacity-100"
+                                title="删除素材"
+                                aria-label={`删除${item.name}`}
+                            >
+                                <Trash2 size={13} />
+                            </button>
+                        )}
+                    </>
+                )}
+            >
                 {/* PR-3g Stage B · Voice binding hover bar (Q2 A · characters only).
                     Bound state: 🔊 voice_name + ▶ inline preview + ▼ open picker.
                     Unbound state: 🔊 + 添加音色 (clickable, opens picker). */}
@@ -1166,14 +1209,14 @@ function CastCard({ item, onOpenWorkbench, onStageAction, mergeSource, onStartMe
                     Only for characters in series-affiliated episodes. */}
                 {item.kind === "character" && currentProject?.series_id && (
                     <button
-                        onClick={() => setHistoryOpen(true)}
+                        onClick={(e) => { e.stopPropagation(); setHistoryOpen(true); }}
                         className="absolute top-1 right-1 p-1 rounded bg-overlay/0 text-text-muted opacity-0 group-hover/cast-card:opacity-100 hover:text-foreground hover:bg-overlay transition-all"
                         title={t("viewHistory")}
                     >
                         <Sparkles size={11} />
                     </button>
                 )}
-            </div>
+            </AssetVisualCard>
             {historyOpen && currentProject?.series_id && (
                 <CharacterHistoryPopover
                     seriesId={currentProject.series_id}
@@ -1267,54 +1310,5 @@ function CharacterHistoryPopover({ seriesId, characterId, onClose }: { seriesId:
                 )}
             </div>
         </div>
-    );
-}
-
-function CornerMarks() {
-    const stroke = "rgba(255,255,255,0.12)";
-    const size = 10;
-    return (
-        <>
-            {/* TL */}
-            <svg className="pointer-events-none absolute top-2 left-2" width={size} height={size} aria-hidden="true">
-                <path d={`M0 ${size} V0 H${size}`} fill="none" stroke={stroke} strokeWidth="1" />
-            </svg>
-            {/* TR */}
-            <svg className="pointer-events-none absolute top-2 right-2" width={size} height={size} aria-hidden="true">
-                <path d={`M${size} ${size} V0 H0`} fill="none" stroke={stroke} strokeWidth="1" />
-            </svg>
-            {/* BL */}
-            <svg className="pointer-events-none absolute bottom-2 left-2" width={size} height={size} aria-hidden="true">
-                <path d={`M0 0 V${size} H${size}`} fill="none" stroke={stroke} strokeWidth="1" />
-            </svg>
-            {/* BR */}
-            <svg className="pointer-events-none absolute bottom-2 right-2" width={size} height={size} aria-hidden="true">
-                <path d={`M${size} 0 V${size} H0`} fill="none" stroke={stroke} strokeWidth="1" />
-            </svg>
-        </>
-    );
-}
-
-function StatusBadge({ status }: { status: "ready" | "pending" | "new" }) {
-    const t = useTranslations("cast");
-    if (status === "ready") {
-        return (
-            <span className="inline-flex items-center rounded-full bg-[rgba(100,108,255,0.12)] px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-wider text-[#a5aaff]">
-                {t("statusReady")}
-            </span>
-        );
-    }
-    if (status === "pending") {
-        return (
-            <span className="inline-flex items-center gap-1 rounded-full bg-[rgba(245,158,11,0.12)] px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-wider text-[#fbbf24]">
-                <AlertTriangle size={9} aria-hidden="true" />
-                {t("statusPending")}
-            </span>
-        );
-    }
-    return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-[rgba(236,72,153,0.14)] px-1.5 py-0.5 font-mono text-[9px] font-medium uppercase tracking-wider text-[#f472b6]">
-            🆕 {t("statusNew")}
-        </span>
     );
 }

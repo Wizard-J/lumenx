@@ -3,6 +3,7 @@ import hashlib
 import mimetypes
 import time
 from typing import Optional
+from urllib.parse import urlparse, unquote
 from . import get_logger
 from .media_refs import classify_media_ref, MEDIA_REF_LOCAL_PATH, MEDIA_REF_OBJECT_KEY
 
@@ -69,6 +70,79 @@ def is_local_path(value: str) -> bool:
         classify_media_ref(value, oss_base_path=get_oss_base_path())
         == MEDIA_REF_LOCAL_PATH
     )
+
+
+def object_key_to_local_display_path(value: str) -> Optional[str]:
+    """Return a local output-relative path for an object key when a local copy exists.
+
+    Generated media is saved under ``output/`` first, then optionally uploaded to
+    OSS/MinIO and persisted as an object key such as ``lumenx/assets/foo.png``.
+    For UI display, prefer the local copy when present so thumbnails do not pay
+    a MinIO round trip. Provider calls can still upload/sign that local path.
+    """
+    if not isinstance(value, str) or not is_object_key(value):
+        return None
+
+    base_path = get_oss_base_path()
+    relative = value.strip().lstrip("/")
+    if base_path and relative.startswith(f"{base_path}/"):
+        relative = relative[len(base_path) + 1 :]
+
+    if not relative or relative.startswith("..") or os.path.isabs(relative):
+        return None
+
+    local_path = os.path.join("output", relative)
+    if os.path.exists(local_path) and os.path.isfile(local_path):
+        return relative
+
+    # Backward-compatible fallback: old uploaded assets may have object keys
+    # like "lumenx/assets/<uuid>.png" but the actual local file is at
+    # "output/uploads/<uuid>.png". Try the uploads/ directory as a fallback.
+    # Only applies to direct assets/<filename> keys, not nested generated paths.
+    parts = relative.split("/")
+    if len(parts) == 2 and parts[0] == "assets":
+        basename = parts[1]
+        if basename:
+            uploads_path = os.path.join("output", "uploads", basename)
+            if os.path.exists(uploads_path) and os.path.isfile(uploads_path):
+                return f"uploads/{basename}"
+
+    return None
+
+
+def remote_url_to_local_display_path(value: str) -> Optional[str]:
+    """Return local output-relative display path for legacy OSS/MinIO signed URLs.
+
+    Historical project data may contain full signed URLs like:
+      https://minio.example/bucket/lumenx/assets/<uuid>.png?X-Amz-Signature=...
+
+    Extracts the object key by finding the base-path segment that is followed
+    by a known media/object directory. This correctly handles paths where a
+    bucket name happens to match the base path (e.g. /lumenx/lumenx/assets/...).
+    """
+    OBJECT_KEY_ROOTS = {"assets", "uploads", "storyboard", "video", "audio", "export"}
+
+    if not isinstance(value, str) or not value.startswith(("http://", "https://")):
+        return None
+    try:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        path = unquote(parsed.path).lstrip("/")
+        base_path = get_oss_base_path()
+        segments = [s for s in path.split("/") if s]
+        # Find the base-path segment whose next segment is a known media root
+        idx = None
+        for i, segment in enumerate(segments):
+            if segment == base_path and i + 1 < len(segments) and segments[i + 1] in OBJECT_KEY_ROOTS:
+                idx = i
+                break
+        if idx is None:
+            return None
+        object_key = "/".join(segments[idx:])
+        return object_key_to_local_display_path(object_key)
+    except Exception:
+        return None
 
 
 # ── Storage Backend Detection ────────────────────────────────────────
@@ -380,14 +454,22 @@ def sign_oss_urls_in_data(data, uploader: OSSImageUploader = None):
     """Recursively traverse data structure and convert Object Keys to signed URLs."""
     if uploader is None:
         uploader = OSSImageUploader()
-    if not uploader.is_configured:
-        return data
+    oss_configured = uploader.is_configured
 
     def process_value(value):
         if isinstance(value, str):
             if is_object_key(value):
-                signed_url = uploader.sign_url_for_display(value)
-                return signed_url if signed_url else value
+                local_display_path = object_key_to_local_display_path(value)
+                if local_display_path:
+                    return local_display_path
+                if oss_configured:
+                    signed_url = uploader.sign_url_for_display(value)
+                    return signed_url if signed_url else value
+                return value
+            # Fallback: check legacy full OSS/MinIO signed URLs
+            remote_local = remote_url_to_local_display_path(value)
+            if remote_local:
+                return remote_local
             return value
         elif isinstance(value, dict):
             return {k: process_value(v) for k, v in value.items()}

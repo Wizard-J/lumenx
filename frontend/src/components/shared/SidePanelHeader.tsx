@@ -9,7 +9,6 @@
  * 适用场景：
  *   · ArtDirection 风格编辑器 ("风格编辑器")
  *   · ScriptProcessor entities panel ("实体识别面板")
- *   · StoryboardR2V TaskQueuePanel ("任务队列")
  *   · VideoAssembly variants panel ("候选变体")
  *
  * 视觉一致点：

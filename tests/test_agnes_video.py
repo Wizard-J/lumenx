@@ -1,8 +1,10 @@
 from pathlib import Path
 
 import pytest
+import requests
 
 from src.models.agnes_video import AgnesVideoModel, _duration_to_frames
+from src.apps.comic_gen.pipeline import ComicGenPipeline
 
 
 def test_duration_is_normalized_to_agnes_8n_plus_1_rule():
@@ -18,13 +20,64 @@ def test_base_url_accepts_optional_v1_suffix(monkeypatch):
     assert AgnesVideoModel({}).base_url == "https://apihub.agnes-ai.com"
 
 
-def test_submit_timeout_defaults_to_180_and_is_configurable(monkeypatch):
+def test_pipeline_routes_selected_agnes_model_to_agnes_adapter(monkeypatch):
+    monkeypatch.setenv("VIDEO_PROVIDER", "openai")
+    monkeypatch.setenv("VIDEO_API_KEY", "test-key")
+    monkeypatch.setenv("VIDEO_MODEL", "some-openai-video-model")
+
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.config = {"video": {"model": {}}}
+
+    assert isinstance(
+        pipeline._get_video_model("agnes-video-v2.0"),
+        AgnesVideoModel,
+    )
+
+
+def test_explicit_model_name_overrides_video_model_env(monkeypatch, tmp_path: Path):
+    captured = {}
+
+    class Response:
+        ok = True
+
+        def json(self):
+            return {"id": "task_123", "video_id": "video_123", "status": "processing"}
+
+    def fake_post(*args, **kwargs):
+        captured["json"] = kwargs["json"]
+        return Response()
+
+    monkeypatch.setenv("VIDEO_API_KEY", "test-key")
+    monkeypatch.setenv("VIDEO_MODEL", "env-video-model")
+    monkeypatch.setattr("src.models.agnes_video.requests.post", fake_post)
+    monkeypatch.setattr("src.models.agnes_video.enter_operation", lambda *a, **k: 1)
+    monkeypatch.setattr("src.models.agnes_video.update_operation", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "src.models.agnes_video.AgnesVideoModel._poll_agnes",
+        lambda *a, **k: "https://cdn.example.com/out.mp4",
+    )
+    monkeypatch.setattr(
+        "src.models.agnes_video.AgnesVideoModel._download_video",
+        lambda *a, **k: None,
+    )
+
+    AgnesVideoModel({}).generate(
+        prompt="test",
+        output_path=str(tmp_path / "out.mp4"),
+        model_name="agnes-video-v2.0",
+        duration=2,
+    )
+
+    assert captured["json"]["model"] == "agnes-video-v2.0"
+
+
+def test_submit_timeout_defaults_to_300_and_is_configurable(monkeypatch):
     monkeypatch.delenv("VIDEO_SUBMIT_TIMEOUT", raising=False)
-    assert AgnesVideoModel({}).submit_timeout == 180
+    assert AgnesVideoModel({}).submit_timeout == 300
     monkeypatch.setenv("VIDEO_SUBMIT_TIMEOUT", "240")
     assert AgnesVideoModel({}).submit_timeout == 240
     monkeypatch.setenv("VIDEO_SUBMIT_TIMEOUT", "invalid")
-    assert AgnesVideoModel({}).submit_timeout == 180
+    assert AgnesVideoModel({}).submit_timeout == 300
 
 
 def test_remote_image_is_preferred_over_downloaded_copy(tmp_path: Path):
@@ -305,3 +358,83 @@ def test_submit_uses_separate_connect_and_read_timeouts(monkeypatch, tmp_path: P
         )
 
     assert captured["timeout"] == (15, 240)
+
+
+def test_submit_read_timeout_has_actionable_message(monkeypatch, tmp_path: Path):
+    updates = []
+
+    def fake_post(*args, **kwargs):
+        raise requests.ReadTimeout(
+            "HTTPSConnectionPool(host='apihub.agnes-ai.com', port=443): Read timed out."
+        )
+
+    monkeypatch.setenv("VIDEO_API_KEY", "test-key")
+    monkeypatch.setenv("VIDEO_SUBMIT_TIMEOUT", "240")
+    monkeypatch.setattr("src.models.agnes_video.requests.post", fake_post)
+    monkeypatch.setattr("src.models.agnes_video.enter_operation", lambda *a, **k: 1)
+    monkeypatch.setattr(
+        "src.models.agnes_video.update_operation",
+        lambda *a, **k: updates.append((a, k)) or True,
+    )
+
+    with pytest.raises(RuntimeError, match="submit timed out after 240s"):
+        AgnesVideoModel({}).generate(
+            prompt="test", output_path=str(tmp_path / "out.mp4"), duration=2
+        )
+
+    assert "provider queue/log" in updates[-1][1]["exception"]["message"]
+
+
+def test_submit_retries_when_agnes_service_is_busy(monkeypatch, tmp_path: Path):
+    calls = []
+    updates = []
+
+    class BusyResponse:
+        ok = False
+        status_code = 503
+        reason = "Service Unavailable"
+        text = '{"error":{"message":"Service busy (tasks: 1)"}}'
+
+        def json(self):
+            return {
+                "code": "fail_to_fetch_task",
+                "message": '{"error":{"message":"Service busy (tasks: 1)"}}',
+                "data": None,
+            }
+
+    class OkResponse:
+        ok = True
+        status_code = 200
+
+        def json(self):
+            return {"id": "task_123", "video_id": "video_123", "status": "processing"}
+
+    def fake_post(*args, **kwargs):
+        calls.append(kwargs)
+        return BusyResponse() if len(calls) == 1 else OkResponse()
+
+    monkeypatch.setenv("VIDEO_API_KEY", "test-key")
+    monkeypatch.setenv("VIDEO_BUSY_RETRY_ATTEMPTS", "2")
+    monkeypatch.setenv("VIDEO_BUSY_RETRY_DELAY", "5")
+    monkeypatch.setattr("src.models.agnes_video.time.sleep", lambda *_: None)
+    monkeypatch.setattr("src.models.agnes_video.requests.post", fake_post)
+    monkeypatch.setattr("src.models.agnes_video.enter_operation", lambda *a, **k: 1)
+    monkeypatch.setattr(
+        "src.models.agnes_video.update_operation",
+        lambda *a, **k: updates.append((a, k)) or True,
+    )
+    monkeypatch.setattr(
+        "src.models.agnes_video.AgnesVideoModel._poll_agnes",
+        lambda *a, **k: "https://cdn.example.com/out.mp4",
+    )
+    monkeypatch.setattr(
+        "src.models.agnes_video.AgnesVideoModel._download_video",
+        lambda *a, **k: None,
+    )
+
+    AgnesVideoModel({}).generate(
+        prompt="test", output_path=str(tmp_path / "out.mp4"), duration=2
+    )
+
+    assert len(calls) == 2
+    assert any("Agnes busy" in update[1].get("detail", "") for update in updates)

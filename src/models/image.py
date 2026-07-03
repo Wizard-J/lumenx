@@ -108,7 +108,24 @@ class WanxImageModel(ImageGenModel):
         logger.info(f"Prompt: {prompt}")
         logger.info(f"Model: {final_model_name}, Size: {size}, N: {n}")
 
-        op_id = enter_operation("image", detail=prompt[:200], model=final_model_name)
+        op_extra = {
+            "ref_count": len(all_ref_paths),
+            "has_reference": bool(all_ref_paths),
+            "request_mode": "i2i" if all_ref_paths else "t2i",
+            "size": size,
+            "n": n,
+        }
+        if all_ref_paths:
+            op_extra["ref_sources"] = [
+                ref[:160] if isinstance(ref, str) else str(type(ref))
+                for ref in all_ref_paths[:5]
+            ]
+        logger.info(
+            "DashScope Image request mode=%s ref_count=%s",
+            op_extra["request_mode"],
+            op_extra["ref_count"],
+        )
+        op_id = enter_operation("image", detail=prompt[:200], model=final_model_name, **op_extra)
         try:
             api_start_time = time.time()
             # Use HTTP API for wan2.6+ models and qwen-image models
@@ -144,7 +161,8 @@ class WanxImageModel(ImageGenModel):
             update_operation(op_id, "success",
                              detail=f"Image: {image_url[:100]}",
                              duration_ms=api_duration * 1000,
-                             output_path=output_path[:200])
+                             output_path=output_path[:200],
+                             **op_extra)
             
             # Download image
             self._download_image(image_url, output_path)
@@ -156,7 +174,8 @@ class WanxImageModel(ImageGenModel):
             logger.error(traceback.format_exc())
             update_operation(op_id, "error",
                              detail=f"Error: {str(e)[:200]}",
-                             duration_ms=(time.time() - api_start_time) * 1000)
+                             duration_ms=(time.time() - api_start_time) * 1000,
+                             **op_extra)
             raise
 
     def _generate_dashscope_image_http(

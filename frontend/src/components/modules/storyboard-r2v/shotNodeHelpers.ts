@@ -7,7 +7,15 @@
  * Kept free of React / state so unit tests can exercise the migration
  * + history bookkeeping independently of the UI layer.
  */
-import { T2I_HISTORY_LIMIT, type ShotNode } from "./ShotCard";
+import { T2I_HISTORY_LIMIT, type ShotNode, type WorkbenchTabMode } from "./ShotCard";
+
+export function normalizeWorkbenchTabMode(value?: string | null): WorkbenchTabMode {
+    if (value === "t2i_i2v" || value === "keyframe_r2v" || value === "asset_compose") {
+        return value;
+    }
+    if (value === "direct_r2v") return "keyframe_r2v";
+    return "asset_compose";
+}
 
 /** Bring a shot from disk (localStorage draft) into the v2 shape.
  *  Idempotent — calling on an already-v2 shot returns identity. */
@@ -45,7 +53,7 @@ export function migrateShotNode(shot: ShotNode): ShotNode {
         // Backfill: legacy single videoTaskId belongs to the shot's
         // current tabMode so the candidates panel sees it instead of
         // pretending there's no history.
-        const buckets: { t2i_i2v?: string[]; direct_r2v?: string[] } = {};
+        const buckets: ShotNode["videoTaskIdsByTab"] = {};
         if (next.videoTaskId) {
             buckets[next.tabMode] = [next.videoTaskId];
         }
@@ -161,7 +169,7 @@ export function getActiveT2IImageUrl(shot: ShotNode): string | undefined {
  *  script's video_tasks array). Idempotent on dup ids. */
 export function appendVideoTaskId(
     shot: ShotNode,
-    tabMode: "t2i_i2v" | "direct_r2v",
+    tabMode: WorkbenchTabMode,
     taskId: string,
 ): ShotNode {
     if (!taskId) return shot;
@@ -182,9 +190,10 @@ export function appendVideoTaskId(
 /** Per-tab task id list, with legacy single-id fallback. */
 export function videoTaskIdsForTab(
     shot: ShotNode,
-    tabMode: "t2i_i2v" | "direct_r2v",
+    tabMode: WorkbenchTabMode,
 ): string[] {
-    const direct = shot.videoTaskIdsByTab?.[tabMode];
+    const direct = shot.videoTaskIdsByTab?.[tabMode]
+        ?? (tabMode === "keyframe_r2v" ? shot.videoTaskIdsByTab?.direct_r2v : undefined);
     if (Array.isArray(direct)) return direct;
     // Legacy: only one task in shot.videoTaskId, assume it belonged
     // to the shot's current tabMode (which is the same tab as it was
